@@ -1,0 +1,7 @@
+.env
+.venv/
+.railway/
+__pycache__/
+*.pyc
+tmp/
+logs/

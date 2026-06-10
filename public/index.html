@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>爆款复刻工作台</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">VR</div>
+      <div>
+        <h1>爆款复刻工作台</h1>
+        <p>视频拆解 -> 主图入库 -> 商品组图 -> 视频任务 -> 视频生成</p>
+      </div>
+    </div>
+    <div class="auth">
+      <input id="adminToken" type="password" placeholder="Admin Token（如已配置）">
+      <button id="saveToken">保存</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="status-strip">
+      <div>
+        <span class="eyebrow">配置</span>
+        <strong id="configLine">加载中</strong>
+      </div>
+      <button id="refreshConfig" class="secondary">刷新</button>
+    </section>
+
+    <nav class="page-tabs" aria-label="工作区">
+      <button id="pageMaterials" class="tab active" type="button" data-page="materials">素材处理</button>
+      <button id="pageVideos" class="tab" type="button" data-page="videos">视频生成</button>
+      <button id="pagePrompts" class="tab" type="button" data-page="prompts">Prompt配置</button>
+    </nav>
+
+    <section id="materialsPage" class="page-view active">
+      <div class="panel source-panel">
+        <div class="panel-head">
+          <div>
+            <h2>素材处理</h2>
+            <p>v3-墨西哥-爆款短视频带货项目数据</p>
+          </div>
+          <div class="actions">
+            <button id="loadMaterials" class="secondary">读取</button>
+          </div>
+        </div>
+        <div class="metric-row">
+          <div><span id="metricMaterials">0</span><small>素材</small></div>
+          <div><span id="metricMainImages">0</span><small>主图转存</small></div>
+          <div><span id="metricScripts">0</span><small>Prompt</small></div>
+          <div><span id="metricImages">0</span><small>组图</small></div>
+          <div><span id="metricTasks">0</span><small>任务</small></div>
+        </div>
+        <div class="batch-bar">
+          <label class="checkline">
+            <input id="selectAllMaterials" type="checkbox">
+            <span>全选当前素材</span>
+          </label>
+          <strong id="selectedMaterialCount">已选 0 条</strong>
+          <div class="actions">
+            <button id="batchAnalyze" class="secondary">批量生成Prompt</button>
+            <button id="batchStoreImage" class="secondary">批量主图入库</button>
+            <button id="batchGenerateImages" class="secondary">批量生成组图</button>
+            <button id="batchCreateTasks">批量创建任务</button>
+          </div>
+        </div>
+        <div id="materials" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="videosPage" class="page-view">
+      <div class="panel task-panel">
+        <div class="panel-head">
+          <div>
+            <h2>视频生成</h2>
+            <p>爆款复刻视频生成任务</p>
+          </div>
+          <div class="actions">
+            <button id="loadTasks" class="secondary">读取</button>
+            <button id="batchVideos">批量生成视频</button>
+          </div>
+        </div>
+        <div id="selectedMaterial" class="selected-box">未选择素材</div>
+        <div id="tasks" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="promptsPage" class="page-view">
+      <div class="panel prompt-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Prompt配置</h2>
+            <p>爆款复刻Prompt配置：全局模板、版本和启停状态</p>
+          </div>
+          <div class="actions">
+            <button id="loadPrompts" class="secondary">读取</button>
+          </div>
+        </div>
+        <div class="prompt-note">
+          <strong>推荐调试方式</strong>
+          <span>先在配置表改模板版本并启用，再重跑单条素材；工具会把实际发送给模型的 Prompt 快照写回素材表。</span>
+        </div>
+        <div id="prompts" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>运行记录</h2>
+          <p>后台任务与接口日志</p>
+        </div>
+        <div class="actions">
+          <button id="loadJobs" class="secondary">刷新任务</button>
+          <button id="loadLogs" class="secondary">刷新日志</button>
+        </div>
+      </div>
+      <div id="jobs" class="jobs"></div>
+      <pre id="logs" class="logs"></pre>
+    </section>
+  </main>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
