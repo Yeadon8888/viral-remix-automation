@@ -124,6 +124,31 @@ class ViralRemixWorkflow:
             })
         return out
 
+    def update_prompt_config(self, record_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        allowed_fields = {
+            "Prompt名称",
+            "版本",
+            "是否启用",
+            "目标地区",
+            "模板内容",
+            "变量说明",
+            "备注",
+        }
+        fields = {
+            key: str(value or "").strip()
+            for key, value in patch.items()
+            if key in allowed_fields
+        }
+        if not fields:
+            raise RuntimeError("没有可更新的 Prompt 字段")
+        if "是否启用" in fields and fields["是否启用"] not in {"启用", "停用"}:
+            raise RuntimeError("是否启用只能是：启用 / 停用")
+        if "目标地区" in fields and fields["目标地区"] not in {"墨西哥", "马来", "通用"}:
+            raise RuntimeError("目标地区只能是：墨西哥 / 马来 / 通用")
+        if "模板内容" in fields and not fields["模板内容"]:
+            raise RuntimeError("模板内容不能为空")
+        return self.feishu.update_record(self.settings.prompt_table_id, record_id, fields)
+
     def _active_prompt_templates(self, region: str) -> tuple[dict[str, str], dict[str, str]]:
         templates: dict[str, tuple[int, str]] = {
             "video_analysis": (0, DEFAULT_VIDEO_ANALYSIS_TEMPLATE),

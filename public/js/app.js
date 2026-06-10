@@ -3,6 +3,7 @@ const state = {
   materials: [],
   tasks: [],
   prompts: [],
+  editingPromptId: "",
   selectedMaterialId: localStorage.getItem("viral-remix-selected-material") || "",
   selectedMaterialIds: new Set(),
   activePage: localStorage.getItem("viral-remix-active-page") || "materials",
@@ -313,12 +314,13 @@ function renderTasks() {
 }
 
 function renderPrompts() {
+  renderPromptEditor();
   if (!state.prompts.length) {
     $("prompts").innerHTML = `<div class="selected-box">暂无 Prompt 配置</div>`;
     return;
   }
   $("prompts").innerHTML = `<table><thead><tr>
-    <th>Prompt</th><th>类型</th><th>Key</th><th>版本</th><th>状态</th><th>地区</th><th>模板内容</th>
+    <th>Prompt</th><th>类型</th><th>Key</th><th>版本</th><th>状态</th><th>地区</th><th>模板内容</th><th>操作</th>
   </tr></thead><tbody>${state.prompts.map((row) => {
     const content = String(row["模板内容"] || "").trim();
     return `<tr>
@@ -329,8 +331,55 @@ function renderPrompts() {
       <td>${status(row["是否启用"] || "未设置")}</td>
       <td>${esc(row["目标地区"] || "")}</td>
       <td>${renderPromptDetail("查看模板", content)}<div class="muted">${esc(row["变量说明"] || "")}</div></td>
+      <td><button class="mini" data-action="edit-prompt" data-id="${esc(row.record_id)}">编辑</button></td>
     </tr>`;
   }).join("")}</tbody></table>`;
+
+  document.querySelectorAll("[data-action='edit-prompt']").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.editingPromptId = button.dataset.id;
+      renderPromptEditor();
+      $("promptEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  });
+}
+
+function renderPromptEditor() {
+  const box = $("promptEditor");
+  const row = state.prompts.find((item) => item.record_id === state.editingPromptId);
+  if (!row) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  box.hidden = false;
+  box.innerHTML = `<div class="editor-head">
+    <div>
+      <strong>编辑 Prompt</strong>
+      <span>${esc(row["模板Key"] || "")} · ${esc(row["Prompt类型"] || "")}</span>
+    </div>
+    <button id="closePromptEditor" class="mini secondary" type="button">收起</button>
+  </div>
+  <div class="editor-grid">
+    <label>Prompt名称<input id="editPromptName" type="text" value="${esc(row["Prompt名称"] || "")}"></label>
+    <label>版本<input id="editPromptVersion" type="text" value="${esc(row["版本"] || "")}"></label>
+    <label>状态<select id="editPromptEnabled">
+      ${["启用", "停用"].map((item) => `<option value="${item}" ${row["是否启用"] === item ? "selected" : ""}>${item}</option>`).join("")}
+    </select></label>
+    <label>地区<select id="editPromptRegion">
+      ${["通用", "墨西哥", "马来"].map((item) => `<option value="${item}" ${row["目标地区"] === item ? "selected" : ""}>${item}</option>`).join("")}
+    </select></label>
+  </div>
+  <label class="editor-block">模板内容<textarea id="editPromptContent" rows="18">${esc(row["模板内容"] || "")}</textarea></label>
+  <label class="editor-block">变量说明<textarea id="editPromptVars" rows="3">${esc(row["变量说明"] || "")}</textarea></label>
+  <label class="editor-block">备注<textarea id="editPromptNote" rows="3">${esc(row["备注"] || "")}</textarea></label>
+  <div class="editor-actions">
+    <button id="savePromptEdit" type="button">保存到飞书</button>
+    <button id="cancelPromptEdit" class="secondary" type="button">取消</button>
+  </div>`;
+  $("closePromptEditor").onclick = closePromptEditor;
+  $("cancelPromptEdit").onclick = closePromptEditor;
+  $("savePromptEdit").onclick = savePromptEdit;
 }
 
 function selectMaterial(id) {
@@ -361,7 +410,41 @@ async function loadTasks() {
 async function loadPrompts() {
   const data = await api("/api/prompts");
   state.prompts = data.data;
+  if (state.editingPromptId && !state.prompts.some((row) => row.record_id === state.editingPromptId)) {
+    state.editingPromptId = "";
+  }
   renderPrompts();
+}
+
+function closePromptEditor() {
+  state.editingPromptId = "";
+  renderPromptEditor();
+}
+
+async function savePromptEdit() {
+  if (!state.editingPromptId) return;
+  const button = $("savePromptEdit");
+  const oldText = button.textContent;
+  button.disabled = true;
+  button.textContent = "保存中";
+  try {
+    await api(`/api/prompts/${state.editingPromptId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        "Prompt名称": $("editPromptName").value,
+        "版本": $("editPromptVersion").value,
+        "是否启用": $("editPromptEnabled").value,
+        "目标地区": $("editPromptRegion").value,
+        "模板内容": $("editPromptContent").value,
+        "变量说明": $("editPromptVars").value,
+        "备注": $("editPromptNote").value,
+      }),
+    });
+    await loadPrompts();
+  } finally {
+    button.disabled = false;
+    button.textContent = oldText;
+  }
 }
 
 async function loadJobs() {

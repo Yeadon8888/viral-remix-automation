@@ -85,6 +85,26 @@ input {
   font: inherit;
 }
 
+select,
+textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+  letter-spacing: 0;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 90px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 button {
   border: 0;
   border-radius: 8px;
@@ -509,6 +529,55 @@ tr.selected { background: #edf5ff; }
   color: var(--ink);
 }
 
+.prompt-editor {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 12px;
+  border: 1px solid #ccd8e8;
+  border-radius: 8px;
+  background: #fbfcfe;
+  padding: 12px;
+}
+
+.editor-head,
+.editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.editor-head span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.editor-grid {
+  display: grid;
+  grid-template-columns: 1.5fr .7fr .6fr .7fr;
+  gap: 10px;
+}
+
+.editor-grid label,
+.editor-block {
+  display: grid;
+  gap: 6px;
+  color: #263244;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.editor-grid input {
+  width: 100%;
+}
+
+.editor-actions {
+  justify-content: flex-end;
+}
+
 code {
   border: 1px solid #dbe6f5;
   border-radius: 6px;
@@ -654,4 +723,5 @@ code {
   input { width: 100%; }
   .actions { justify-content: flex-start; }
   .metric-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .editor-grid { grid-template-columns: 1fr; }
 }

@@ -119,6 +119,14 @@ def list_prompts():
     return jsonify({"success": True, "data": workflow.list_prompt_configs()})
 
 
+@app.route("/api/prompts/<record_id>", methods=["PATCH"])
+def update_prompt(record_id):
+    body = request.get_json(silent=True) or {}
+    workflow = ViralRemixWorkflow(settings)
+    data = workflow.update_prompt_config(record_id, body)
+    return jsonify({"success": True, "data": data})
+
+
 @app.route("/api/materials/<record_id>/templates", methods=["POST"])
 def update_material_templates(record_id):
     body = request.get_json(silent=True) or {}
