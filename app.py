@@ -169,6 +169,13 @@ def generate_doubao_prompt(record_id):
     return jsonify({"success": True, "job_id": job_id})
 
 
+@app.route("/api/doubao-items/<record_id>/store-image", methods=["POST"])
+def store_doubao_image(record_id):
+    workflow = ViralRemixWorkflow(settings)
+    job_id = run_job(f"doubao-store-image:{record_id}", workflow.store_doubao_image, record_id)
+    return jsonify({"success": True, "job_id": job_id})
+
+
 @app.route("/api/materials/<record_id>/prepare", methods=["POST"])
 def prepare_material(record_id):
     workflow = ViralRemixWorkflow(settings)

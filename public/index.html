@@ -98,12 +98,14 @@
           </div>
           <div class="actions">
             <button id="loadDoubao" class="secondary">读取</button>
+            <button id="batchDoubaoStoreImages" class="secondary">批量图片入库</button>
             <button id="batchDoubaoPrompts">批量生成提示词</button>
           </div>
         </div>
         <div class="metric-row compact">
           <div><span id="metricDoubaoRows">0</span><small>记录</small></div>
-          <div><span id="metricDoubaoImages">0</span><small>已上传图</small></div>
+          <div><span id="metricDoubaoImages">0</span><small>可用原图</small></div>
+          <div><span id="metricDoubaoStored">0</span><small>已入库</small></div>
           <div><span id="metricDoubaoPrompts">0</span><small>已生成Prompt</small></div>
         </div>
         <div id="doubaoItems" class="table-wrap"></div>

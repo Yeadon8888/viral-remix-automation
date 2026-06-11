@@ -222,8 +222,8 @@ main {
 }
 
 .metric-row.compact {
-  grid-template-columns: repeat(3, minmax(120px, 1fr));
-  max-width: 620px;
+  grid-template-columns: repeat(4, minmax(110px, 1fr));
+  max-width: 760px;
 }
 
 .batch-bar {

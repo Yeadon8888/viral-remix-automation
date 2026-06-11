@@ -275,11 +275,13 @@ class ViralRemixWorkflow:
             fields = record.get("fields", {})
             attachment = first_attachment(fields, "商品图")
             image_url = str(field_value(fields, "商品图链接", "") or "").strip()
+            stored_image_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
             out.append({
                 "record_id": record.get("record_id"),
                 "商品名称": field_value(fields, "商品名称", ""),
                 "商品链接": field_value(fields, "商品链接", ""),
                 "商品图链接": image_url,
+                "商品图存储链接": stored_image_url,
                 "图片来源": "附件" if attachment else "链接" if image_url.startswith("http") else "",
                 "商品图数量": len(fields.get("商品图") or []),
                 "商品图文件名": (attachment or {}).get("name", ""),
@@ -291,7 +293,12 @@ class ViralRemixWorkflow:
             })
         return out
 
-    def _resolve_doubao_image(self, fields: dict[str, Any]) -> tuple[bytes, str, str]:
+    def _resolve_doubao_image(self, fields: dict[str, Any], prefer_stored: bool = True) -> tuple[bytes, str, str]:
+        stored_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
+        if prefer_stored and stored_url.startswith("http"):
+            data, mime = self._download_url(stored_url)
+            return data, mime, stored_url.rsplit("/", 1)[-1] or "doubao-stored-image"
+
         attachment = first_attachment(fields, "商品图")
         if attachment:
             file_token = attachment.get("file_token")
@@ -309,12 +316,27 @@ class ViralRemixWorkflow:
 
         raise RuntimeError("缺少商品图：请上传商品图附件，或填写商品图链接")
 
+    def store_doubao_image(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
+        record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
+        fields = record.get("fields", {})
+        product_name = str(field_value(fields, "商品名称", record_id) or record_id).strip()
+        add_log("info", f"开始豆包商品图入库: {product_name}", "workflow", job_id)
+        data, mime, filename = self._resolve_doubao_image(fields, prefer_stored=False)
+        stored = self.r2.upload_bytes(data, filename or "doubao-product-image", mime)
+        self.feishu.update_record(
+            self.settings.doubao_table_id,
+            record_id,
+            {"商品图存储链接": url_cell(stored["url"])},
+        )
+        add_log("success", f"豆包商品图入库完成: {stored['url']}", "workflow", job_id)
+        return {"record_id": record_id, "stored_image_url": stored["url"]}
+
     def generate_doubao_prompt(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
         fields = record.get("fields", {})
         product_name = str(field_value(fields, "商品名称", "") or "").strip()
         product_link = str(field_value(fields, "商品链接", "") or "").strip()
-        image_bytes, image_mime, filename = self._resolve_doubao_image(fields)
+        image_bytes, image_mime, filename = self._resolve_doubao_image(fields, prefer_stored=True)
         prompt_rules, prompt_version = self._active_prompt_by_key(DOUBAO_PROMPT_KEY, "墨西哥", DOUBAO_FALLBACK_PROMPT)
         add_log("info", f"开始生成豆包视频提示词: {product_name or filename}", "workflow", job_id)
         result = self.gemini.generate_doubao_video_prompt(

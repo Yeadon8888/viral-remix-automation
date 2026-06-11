@@ -325,11 +325,16 @@ function renderTasks() {
 function renderDoubaoMetrics() {
   $("metricDoubaoRows").textContent = state.doubaoItems.length;
   $("metricDoubaoImages").textContent = state.doubaoItems.filter((row) => hasDoubaoImage(row)).length;
+  $("metricDoubaoStored").textContent = state.doubaoItems.filter((row) => hasDoubaoStoredImage(row)).length;
   $("metricDoubaoPrompts").textContent = state.doubaoItems.filter((row) => String(row["最终视频生成提示词"] || "").trim()).length;
 }
 
 function hasDoubaoImage(row) {
   return Number(row["商品图数量"] || 0) > 0 || String(row["商品图链接"] || "").startsWith("http");
+}
+
+function hasDoubaoStoredImage(row) {
+  return String(row["商品图存储链接"] || "").startsWith("http");
 }
 
 function renderDoubaoItems() {
@@ -339,10 +344,11 @@ function renderDoubaoItems() {
     return;
   }
   $("doubaoItems").innerHTML = `<table><thead><tr>
-    <th>商品</th><th>图片</th><th>最终视频生成提示词</th><th>发布内容</th><th>视频链接</th><th>操作</th>
+    <th>商品</th><th>图片</th><th>对象存储</th><th>最终视频生成提示词</th><th>发布内容</th><th>视频链接</th><th>操作</th>
   </tr></thead><tbody>${state.doubaoItems.map((row) => {
     const prompt = String(row["最终视频生成提示词"] || "").trim();
-    const running = isJobRunning(`doubao-generate-prompt:${row.record_id}`);
+    const promptRunning = isJobRunning(`doubao-generate-prompt:${row.record_id}`);
+    const storeRunning = isJobRunning(`doubao-store-image:${row.record_id}`);
     return `<tr>
       <td>
         <strong>${esc(row["商品名称"] || "未填写商品名称")}</strong>
@@ -354,6 +360,10 @@ function renderDoubaoItems() {
         <div class="muted">${esc(row["商品图文件名"] || "")}</div>
         ${row["商品图链接"] ? `<a href="${esc(row["商品图链接"])}" target="_blank">打开图片链接</a>` : ""}
       </td>
+      <td>
+        ${hasDoubaoStoredImage(row) ? `<a href="${esc(row["商品图存储链接"])}" target="_blank">对象存储</a>` : `<span class="muted">待入库</span>`}
+        <button class="mini ghost" data-action="doubao-store" data-id="${esc(row.record_id)}" ${storeRunning || !hasDoubaoImage(row) ? "disabled" : ""}>${storeRunning ? "入库中" : hasDoubaoStoredImage(row) ? "重新入库" : "图片入库"}</button>
+      </td>
       <td>${prompt ? renderPromptDetail("查看Prompt", prompt) : `<span class="muted">未生成</span>`}</td>
       <td class="publish-cell">
         <strong>${esc(row["标题"] || "")}</strong>
@@ -361,10 +371,13 @@ function renderDoubaoItems() {
         ${row["文案"] ? `<details class="prompt-preview"><summary>文案</summary><p>${esc(row["文案"])}</p></details>` : ""}
       </td>
       <td>${row["视频生成链接"] ? `<a href="${esc(row["视频生成链接"])}" target="_blank">打开视频</a>` : `<span class="muted">未填写</span>`}</td>
-      <td><button class="mini" data-action="doubao-generate" data-id="${esc(row.record_id)}" ${running ? "disabled" : ""}>${running ? "进行中" : prompt ? "重新生成" : "生成提示词"}</button></td>
+      <td><button class="mini" data-action="doubao-generate" data-id="${esc(row.record_id)}" ${promptRunning || !hasDoubaoImage(row) ? "disabled" : ""}>${promptRunning ? "进行中" : prompt ? "重新生成" : "生成提示词"}</button></td>
     </tr>`;
   }).join("")}</tbody></table>`;
 
+  document.querySelectorAll("[data-action='doubao-store']").forEach((button) => {
+    button.addEventListener("click", () => storeDoubaoImage(button.dataset.id));
+  });
   document.querySelectorAll("[data-action='doubao-generate']").forEach((button) => {
     button.addEventListener("click", () => generateDoubaoPrompt(button.dataset.id));
   });
@@ -581,6 +594,24 @@ async function generateDoubaoPrompt(id) {
   await loadJobs();
 }
 
+async function storeDoubaoImage(id) {
+  if (isJobRunning(`doubao-store-image:${id}`)) return;
+  const data = await api(`/api/doubao-items/${id}/store-image`, { method: "POST", body: "{}" });
+  alert(`已启动豆包商品图入库：${data.job_id}`);
+  await loadJobs();
+}
+
+async function batchDoubaoStoreImages() {
+  const rows = state.doubaoItems.filter((row) => hasDoubaoImage(row) && !isJobRunning(`doubao-store-image:${row.record_id}`));
+  const jobIds = [];
+  for (const row of rows) {
+    const data = await api(`/api/doubao-items/${row.record_id}/store-image`, { method: "POST", body: "{}" });
+    jobIds.push(data.job_id);
+  }
+  alert(`已启动豆包商品图入库：${jobIds.length} 个任务`);
+  await loadJobs();
+}
+
 async function batchDoubaoPrompts() {
   const rows = state.doubaoItems.filter((row) => hasDoubaoImage(row) && !isJobRunning(`doubao-generate-prompt:${row.record_id}`));
   const jobIds = [];
@@ -641,6 +672,7 @@ $("batchAnalyze").onclick = () => runBatchMaterialStep("analyze-video");
 $("batchStoreImage").onclick = () => runBatchMaterialStep("store-image");
 $("batchGenerateImages").onclick = () => runBatchMaterialStep("generate-images");
 $("batchCreateTasks").onclick = () => runBatchMaterialStep("create-tasks");
+$("batchDoubaoStoreImages").onclick = batchDoubaoStoreImages;
 $("batchDoubaoPrompts").onclick = batchDoubaoPrompts;
 
 $("batchVideos").onclick = async () => {
