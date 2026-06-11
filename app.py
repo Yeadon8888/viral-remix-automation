@@ -88,6 +88,7 @@ def config_status():
         "source_table_id": settings.source_table_id,
         "task_table_id": settings.task_table_id,
         "prompt_table_id": settings.prompt_table_id,
+        "doubao_table_id": settings.doubao_table_id,
         "gemini_model": settings.gemini_model,
         "cpa_model": settings.cpa_video_model,
         "image_styles": settings.image_scene_styles,
@@ -152,6 +153,20 @@ def list_tasks():
     workflow = ViralRemixWorkflow(settings)
     data = workflow.list_tasks(limit=int(request.args.get("limit", 100)))
     return jsonify({"success": True, "data": data})
+
+
+@app.route("/api/doubao-items")
+def list_doubao_items():
+    workflow = ViralRemixWorkflow(settings)
+    data = workflow.list_doubao_items(limit=int(request.args.get("limit", 100)))
+    return jsonify({"success": True, "data": data})
+
+
+@app.route("/api/doubao-items/<record_id>/generate-prompt", methods=["POST"])
+def generate_doubao_prompt(record_id):
+    workflow = ViralRemixWorkflow(settings)
+    job_id = run_job(f"doubao-generate-prompt:{record_id}", workflow.generate_doubao_prompt, record_id)
+    return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/prepare", methods=["POST"])

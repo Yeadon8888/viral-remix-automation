@@ -221,6 +221,11 @@ main {
   margin-bottom: 12px;
 }
 
+.metric-row.compact {
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  max-width: 620px;
+}
+
 .batch-bar {
   display: flex;
   align-items: center;
@@ -284,6 +289,7 @@ table {
 
 #materials table { min-width: 1220px; }
 #tasks table { min-width: 1120px; }
+#doubaoItems table { min-width: 1120px; }
 #prompts table { min-width: 1080px; }
 
 .select-col {

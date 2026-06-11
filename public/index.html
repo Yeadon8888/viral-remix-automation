@@ -33,6 +33,7 @@
     <nav class="page-tabs" aria-label="工作区">
       <button id="pageMaterials" class="tab active" type="button" data-page="materials">素材处理</button>
       <button id="pageVideos" class="tab" type="button" data-page="videos">视频生成</button>
+      <button id="pageDoubao" class="tab" type="button" data-page="doubao">豆包视频</button>
       <button id="pagePrompts" class="tab" type="button" data-page="prompts">Prompt配置</button>
     </nav>
 
@@ -85,6 +86,27 @@
         </div>
         <div id="selectedMaterial" class="selected-box">未选择素材</div>
         <div id="tasks" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="doubaoPage" class="page-view">
+      <div class="panel doubao-panel">
+        <div class="panel-head">
+          <div>
+            <h2>豆包视频</h2>
+            <p>豆包视频制作：商品图分析 -> Seedance 视频 Prompt -> 标题文案标签</p>
+          </div>
+          <div class="actions">
+            <button id="loadDoubao" class="secondary">读取</button>
+            <button id="batchDoubaoPrompts">批量生成提示词</button>
+          </div>
+        </div>
+        <div class="metric-row compact">
+          <div><span id="metricDoubaoRows">0</span><small>记录</small></div>
+          <div><span id="metricDoubaoImages">0</span><small>已上传图</small></div>
+          <div><span id="metricDoubaoPrompts">0</span><small>已生成Prompt</small></div>
+        </div>
+        <div id="doubaoItems" class="table-wrap"></div>
       </div>
     </section>
 

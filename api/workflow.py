@@ -16,6 +16,8 @@ from .r2 import R2Storage
 from .tikhub import TikHubClient
 
 MATERIAL_PROMPT_FIELD = "视频生成Prompt"
+DOUBAO_PROMPT_KEY = "doubao_seedance_video_prompt"
+DOUBAO_FALLBACK_PROMPT = "你是 TikTok 墨西哥带货视频 AI 导演。根据商品图生成 10 秒、4 镜头、UGC 风格、痛点到解决逻辑的 Seedance 视频生成提示词；中文描述画面，口播和字幕使用墨西哥西班牙语，严格保持商品一致性。"
 
 
 def now_ms() -> int:
@@ -175,6 +177,10 @@ class ViralRemixWorkflow:
                 versions[key] = f"{key}:{version}"
         return {key: value for key, (_, value) in templates.items()}, versions
 
+    def _active_prompt_by_key(self, key: str, region: str, fallback: str) -> tuple[str, str]:
+        templates, versions = self._active_prompt_templates(region)
+        return templates.get(key, fallback), versions.get(key, f"{key}:default")
+
     def list_materials(self, limit: int = 100) -> list[dict[str, Any]]:
         records = self.feishu.list_records(self.settings.source_table_id)[:limit]
         task_counts: dict[str, dict[str, int]] = {}
@@ -261,6 +267,66 @@ class ViralRemixWorkflow:
                 "失败原因": field_value(fields, "失败原因", ""),
             })
         return out
+
+    def list_doubao_items(self, limit: int = 100) -> list[dict[str, Any]]:
+        records = self.feishu.list_records(self.settings.doubao_table_id)[:limit]
+        out = []
+        for record in records:
+            fields = record.get("fields", {})
+            attachment = first_attachment(fields, "商品图")
+            out.append({
+                "record_id": record.get("record_id"),
+                "商品名称": field_value(fields, "商品名称", ""),
+                "商品链接": field_value(fields, "商品链接", ""),
+                "商品图数量": len(fields.get("商品图") or []),
+                "商品图文件名": (attachment or {}).get("name", ""),
+                "最终视频生成提示词": field_value(fields, "最终视频生成提示词", ""),
+                "标题": field_value(fields, "标题", ""),
+                "文案": field_value(fields, "文案", ""),
+                "标签": field_value(fields, "标签", ""),
+                "视频生成链接": field_value(fields, "视频生成链接", ""),
+            })
+        return out
+
+    def _resolve_doubao_image(self, fields: dict[str, Any]) -> tuple[bytes, str, str]:
+        attachment = first_attachment(fields, "商品图")
+        if not attachment:
+            raise RuntimeError("缺少商品图附件，请先在豆包视频制作表上传商品图")
+        file_token = attachment.get("file_token")
+        if not file_token:
+            raise RuntimeError("商品图附件缺少 file_token，无法下载")
+        with TemporaryDirectory() as tmpdir:
+            filename = str(attachment.get("name") or "doubao-product.png")
+            path, mime = self.feishu.download_media(str(file_token), Path(tmpdir) / filename)
+            return path.read_bytes(), mime, path.name
+
+    def generate_doubao_prompt(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
+        record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
+        fields = record.get("fields", {})
+        product_name = str(field_value(fields, "商品名称", "") or "").strip()
+        product_link = str(field_value(fields, "商品链接", "") or "").strip()
+        image_bytes, image_mime, filename = self._resolve_doubao_image(fields)
+        prompt_rules, prompt_version = self._active_prompt_by_key(DOUBAO_PROMPT_KEY, "墨西哥", DOUBAO_FALLBACK_PROMPT)
+        add_log("info", f"开始生成豆包视频提示词: {product_name or filename}", "workflow", job_id)
+        result = self.gemini.generate_doubao_video_prompt(
+            product_name=product_name,
+            product_link=product_link,
+            prompt_rules=prompt_rules,
+            image_bytes=image_bytes,
+            image_mime=image_mime,
+        )
+        self.feishu.update_record(
+            self.settings.doubao_table_id,
+            record_id,
+            {
+                "最终视频生成提示词": result["final_video_prompt"],
+                "标题": result["title"],
+                "文案": result["caption"],
+                "标签": result["tags"],
+            },
+        )
+        add_log("success", f"豆包视频提示词已回填: {product_name or filename} / {prompt_version}", "workflow", job_id)
+        return {"record_id": record_id, "prompt_version": prompt_version, "has_prompt": True}
 
     def _download_url(self, url: str, with_provider_auth: bool = False) -> tuple[bytes, str]:
         headers = {

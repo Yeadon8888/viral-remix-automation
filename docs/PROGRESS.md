@@ -27,6 +27,7 @@ Base：
 - 素材处理表：`tblDEJZwbA7iEuL1`，`v3-墨西哥-爆款短视频带货项目数据`
 - 视频生成任务表：`tblJSkNvzYaku9Kg`，`爆款复刻视频生成任务`
 - Prompt 配置表：`tblvFcsSoHnTP5Te`，`爆款复刻Prompt配置`
+- 豆包视频制作表：`tblvHL2tMBrksvpH`，`豆包视频制作`
 
 素材表新增的 Prompt 调试字段：
 
@@ -53,6 +54,7 @@ Base：
 - `image_flatlay`
 - `image_outdoor`
 - `image_studio`
+- `doubao_seedance_video_prompt`
 
 模板变量：
 
@@ -61,6 +63,8 @@ Base：
 - `{lang}`：目标地区语言
 - `{custom_prompt}`：人工补充要求
 - `{style_label}`：商品组图模板中文名
+
+豆包视频模板使用商品图作为多模态输入，回填 `最终视频生成提示词`、`标题`、`文案`、`标签`。
 
 ## 已完成能力
 
@@ -71,6 +75,8 @@ Base：
 - CPA 返回 `video.url` 时可直接下载并转存，避免 100% 后无视频链接。
 - 发布标题、文案和关键词在视频理解阶段生成，并关联写入视频任务。
 - Prompt 配置表和工具里的 Prompt 配置页已上线。
+- 豆包视频页已上线：读取 `豆包视频制作` 表的 `商品图` 附件，使用 Gemini 生成 Seedance 视频提示词、标题、文案和标签并回填。
+- 后端已加同名任务互斥，前端运行中按钮会禁用，避免误触重复执行。
 
 ## 线上部署
 

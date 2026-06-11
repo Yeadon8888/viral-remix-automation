@@ -61,6 +61,26 @@ def _normalize_analysis(text: str, product_name: str) -> dict[str, str]:
     }
 
 
+def _normalize_doubao_result(text: str, product_name: str) -> dict[str, str]:
+    data = _parse_json_object(text)
+    if not data:
+        return {
+            "final_video_prompt": text.strip(),
+            "title": product_name,
+            "caption": "",
+            "tags": "",
+        }
+    tags = data.get("tags") or data.get("keywords") or ""
+    if isinstance(tags, list):
+        tags = " ".join(str(item).strip() for item in tags if str(item).strip())
+    return {
+        "final_video_prompt": str(data.get("final_video_prompt") or data.get("video_prompt") or data.get("prompt") or "").strip(),
+        "title": str(data.get("title") or data.get("publish_title") or product_name).strip(),
+        "caption": str(data.get("caption") or data.get("publish_caption") or "").strip(),
+        "tags": str(tags).strip(),
+    }
+
+
 class GeminiClient:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -117,3 +137,66 @@ class GeminiClient:
             raise RuntimeError("Gemini returned empty video_prompt")
         analysis["analysis_prompt"] = prompt
         return analysis
+
+    def generate_doubao_video_prompt(
+        self,
+        *,
+        product_name: str,
+        product_link: str,
+        prompt_rules: str,
+        image_bytes: bytes,
+        image_mime: str,
+    ) -> dict[str, str]:
+        prompt = f"""
+请先理解商品图片中的真实商品，再严格参考以下【豆包/Seedance 视频导演规则】，生成可直接回填到表格的内容。
+
+【豆包/Seedance 视频导演规则】
+{prompt_rules}
+
+【商品信息】
+- 商品名称：{product_name or "未填写"}
+- 商品链接：{product_link or "未填写"}
+- 目标市场：墨西哥
+- 口播语言：墨西哥西班牙语
+
+请只输出 JSON，不要 Markdown，不要代码块：
+{{
+  "final_video_prompt": "[Video Prompt]\\n中文视频生成提示词，口播台词用墨西哥西班牙语",
+  "title": "可直接发布的墨西哥西班牙语标题",
+  "caption": "可直接发布的墨西哥西班牙语正文",
+  "tags": "#tag1 #tag2 #tag3"
+}}
+
+要求：
+1. final_video_prompt 必须用于 10 秒 4 镜头 TikTok 墨西哥带货视频，中文为主，口播/字幕文本用墨西哥西班牙语。
+2. 必须严格锁定图片中的商品外观、颜色、材质、结构和比例，不把海报文字、箭头、边框、光效当作商品本体。
+3. title、caption、tags 必须基于商品图片分析生成，适合 TikTok 墨西哥站直接发布。
+""".strip()
+        content: list[dict[str, Any]] = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": _data_url(image_mime, image_bytes)}},
+        ]
+        resp = requests.post(
+            f"{self.settings.gemini_base_url}/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.settings.gemini_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": self.settings.gemini_model,
+                "messages": [{"role": "user", "content": content}],
+                "max_tokens": 8192,
+            },
+            timeout=300,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:500]}")
+        data = resp.json()
+        text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        if not text:
+            raise RuntimeError("Gemini returned empty content")
+        result = _normalize_doubao_result(text, product_name)
+        if not result["final_video_prompt"]:
+            raise RuntimeError("Gemini returned empty final_video_prompt")
+        result["analysis_prompt"] = prompt
+        return result

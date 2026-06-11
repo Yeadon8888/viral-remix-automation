@@ -2,6 +2,7 @@ const state = {
   token: localStorage.getItem("viral-remix-admin-token") || "",
   materials: [],
   tasks: [],
+  doubaoItems: [],
   prompts: [],
   jobs: [],
   editingPromptId: "",
@@ -83,7 +84,7 @@ function renderConfig(data) {
   if (Array.isArray(data.image_styles) && data.image_styles.length) state.imageStyles = data.image_styles;
   if (data.image_style_labels && typeof data.image_style_labels === "object") state.imageStyleLabels = data.image_style_labels;
   $("configLine").textContent = ok
-    ? `已连接：素材表 ${data.source_table_id} / 任务表 ${data.task_table_id} / Prompt表 ${data.prompt_table_id || "-"} / 视频理解 ${data.gemini_model || "-"} / 存储 ${data.storage_mode}`
+    ? `已连接：素材表 ${data.source_table_id} / 任务表 ${data.task_table_id} / 豆包表 ${data.doubao_table_id || "-"} / Prompt表 ${data.prompt_table_id || "-"} / 视频理解 ${data.gemini_model || "-"} / 存储 ${data.storage_mode}`
     : `缺少配置：${data.missing.join(", ")}`;
 }
 
@@ -104,13 +105,15 @@ function renderMetrics() {
 }
 
 function renderPage() {
-  const page = ["materials", "videos", "prompts"].includes(state.activePage) ? state.activePage : "materials";
+  const page = ["materials", "videos", "doubao", "prompts"].includes(state.activePage) ? state.activePage : "materials";
   state.activePage = page;
   $("materialsPage").classList.toggle("active", page === "materials");
   $("videosPage").classList.toggle("active", page === "videos");
+  $("doubaoPage").classList.toggle("active", page === "doubao");
   $("promptsPage").classList.toggle("active", page === "prompts");
   $("pageMaterials").classList.toggle("active", page === "materials");
   $("pageVideos").classList.toggle("active", page === "videos");
+  $("pageDoubao").classList.toggle("active", page === "doubao");
   $("pagePrompts").classList.toggle("active", page === "prompts");
   localStorage.setItem("viral-remix-active-page", page);
 }
@@ -319,6 +322,46 @@ function renderTasks() {
   });
 }
 
+function renderDoubaoMetrics() {
+  $("metricDoubaoRows").textContent = state.doubaoItems.length;
+  $("metricDoubaoImages").textContent = state.doubaoItems.filter((row) => Number(row["商品图数量"] || 0) > 0).length;
+  $("metricDoubaoPrompts").textContent = state.doubaoItems.filter((row) => String(row["最终视频生成提示词"] || "").trim()).length;
+}
+
+function renderDoubaoItems() {
+  renderDoubaoMetrics();
+  if (!state.doubaoItems.length) {
+    $("doubaoItems").innerHTML = `<div class="selected-box">暂无豆包视频制作记录</div>`;
+    return;
+  }
+  $("doubaoItems").innerHTML = `<table><thead><tr>
+    <th>商品</th><th>图片</th><th>最终视频生成提示词</th><th>发布内容</th><th>视频链接</th><th>操作</th>
+  </tr></thead><tbody>${state.doubaoItems.map((row) => {
+    const prompt = String(row["最终视频生成提示词"] || "").trim();
+    const running = isJobRunning(`doubao-generate-prompt:${row.record_id}`);
+    return `<tr>
+      <td>
+        <strong>${esc(row["商品名称"] || "未填写商品名称")}</strong>
+        <div class="muted">${esc(row.record_id || "")}</div>
+        ${row["商品链接"] ? `<a href="${esc(row["商品链接"])}" target="_blank">商品链接</a>` : ""}
+      </td>
+      <td>${Number(row["商品图数量"] || 0) > 0 ? status(`已上传${row["商品图数量"]}张`) : status("缺少商品图")}<div class="muted">${esc(row["商品图文件名"] || "")}</div></td>
+      <td>${prompt ? renderPromptDetail("查看Prompt", prompt) : `<span class="muted">未生成</span>`}</td>
+      <td class="publish-cell">
+        <strong>${esc(row["标题"] || "")}</strong>
+        <div class="muted">${esc(row["标签"] || "")}</div>
+        ${row["文案"] ? `<details class="prompt-preview"><summary>文案</summary><p>${esc(row["文案"])}</p></details>` : ""}
+      </td>
+      <td>${row["视频生成链接"] ? `<a href="${esc(row["视频生成链接"])}" target="_blank">打开视频</a>` : `<span class="muted">未填写</span>`}</td>
+      <td><button class="mini" data-action="doubao-generate" data-id="${esc(row.record_id)}" ${running ? "disabled" : ""}>${running ? "进行中" : prompt ? "重新生成" : "生成提示词"}</button></td>
+    </tr>`;
+  }).join("")}</tbody></table>`;
+
+  document.querySelectorAll("[data-action='doubao-generate']").forEach((button) => {
+    button.addEventListener("click", () => generateDoubaoPrompt(button.dataset.id));
+  });
+}
+
 function renderPrompts() {
   renderPromptEditor();
   if (!state.prompts.length) {
@@ -413,6 +456,12 @@ async function loadTasks() {
   renderTasks();
 }
 
+async function loadDoubaoItems() {
+  const data = await api("/api/doubao-items?limit=200");
+  state.doubaoItems = data.data;
+  renderDoubaoItems();
+}
+
 async function loadPrompts() {
   const data = await api("/api/prompts");
   state.prompts = data.data;
@@ -462,6 +511,7 @@ async function loadJobs() {
   </div>`).join("");
   renderMaterials();
   renderTasks();
+  renderDoubaoItems();
 }
 
 async function loadLogs() {
@@ -516,6 +566,24 @@ async function generateVideo(id) {
   await loadTasks();
 }
 
+async function generateDoubaoPrompt(id) {
+  if (isJobRunning(`doubao-generate-prompt:${id}`)) return;
+  const data = await api(`/api/doubao-items/${id}/generate-prompt`, { method: "POST", body: "{}" });
+  alert(`已启动豆包视频提示词生成：${data.job_id}`);
+  await loadJobs();
+}
+
+async function batchDoubaoPrompts() {
+  const rows = state.doubaoItems.filter((row) => Number(row["商品图数量"] || 0) > 0 && !isJobRunning(`doubao-generate-prompt:${row.record_id}`));
+  const jobIds = [];
+  for (const row of rows) {
+    const data = await api(`/api/doubao-items/${row.record_id}/generate-prompt`, { method: "POST", body: "{}" });
+    jobIds.push(data.job_id);
+  }
+  alert(`已启动豆包视频提示词生成：${jobIds.length} 个任务`);
+  await loadJobs();
+}
+
 async function saveTemplates(id, button) {
   const menu = [...document.querySelectorAll("[data-template-id]")].find((item) => item.dataset.templateId === id);
   if (!menu) return;
@@ -551,7 +619,9 @@ $("loadJobs").onclick = loadJobs;
 $("loadLogs").onclick = loadLogs;
 $("pageMaterials").onclick = () => { state.activePage = "materials"; renderPage(); };
 $("pageVideos").onclick = () => { state.activePage = "videos"; renderPage(); loadTasks().catch(() => {}); };
+$("pageDoubao").onclick = () => { state.activePage = "doubao"; renderPage(); loadDoubaoItems().catch(() => {}); };
 $("pagePrompts").onclick = () => { state.activePage = "prompts"; renderPage(); loadPrompts().catch(() => {}); };
+$("loadDoubao").onclick = loadDoubaoItems;
 $("loadPrompts").onclick = loadPrompts;
 $("selectAllMaterials").onchange = () => {
   const ids = state.materials.map((row) => row.record_id).filter(Boolean);
@@ -563,6 +633,7 @@ $("batchAnalyze").onclick = () => runBatchMaterialStep("analyze-video");
 $("batchStoreImage").onclick = () => runBatchMaterialStep("store-image");
 $("batchGenerateImages").onclick = () => runBatchMaterialStep("generate-images");
 $("batchCreateTasks").onclick = () => runBatchMaterialStep("create-tasks");
+$("batchDoubaoPrompts").onclick = batchDoubaoPrompts;
 
 $("batchVideos").onclick = async () => {
   const rows = tasksForSelected().filter((row) => ["待生成视频", "内容已生成", ""].includes(row["生成状态"] || ""));
@@ -578,6 +649,7 @@ renderPage();
 loadConfig();
 loadMaterials().catch(() => {});
 loadTasks().catch(() => {});
+loadDoubaoItems().catch(() => {});
 loadPrompts().catch(() => {});
 loadJobs().catch(() => {});
 loadLogs().catch(() => {});
@@ -585,4 +657,5 @@ setInterval(() => {
   loadJobs().catch(() => {});
   loadLogs().catch(() => {});
   loadTasks().catch(() => {});
+  loadDoubaoItems().catch(() => {});
 }, 8000);
