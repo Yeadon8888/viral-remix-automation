@@ -324,8 +324,12 @@ function renderTasks() {
 
 function renderDoubaoMetrics() {
   $("metricDoubaoRows").textContent = state.doubaoItems.length;
-  $("metricDoubaoImages").textContent = state.doubaoItems.filter((row) => Number(row["商品图数量"] || 0) > 0).length;
+  $("metricDoubaoImages").textContent = state.doubaoItems.filter((row) => hasDoubaoImage(row)).length;
   $("metricDoubaoPrompts").textContent = state.doubaoItems.filter((row) => String(row["最终视频生成提示词"] || "").trim()).length;
+}
+
+function hasDoubaoImage(row) {
+  return Number(row["商品图数量"] || 0) > 0 || String(row["商品图链接"] || "").startsWith("http");
 }
 
 function renderDoubaoItems() {
@@ -345,7 +349,11 @@ function renderDoubaoItems() {
         <div class="muted">${esc(row.record_id || "")}</div>
         ${row["商品链接"] ? `<a href="${esc(row["商品链接"])}" target="_blank">商品链接</a>` : ""}
       </td>
-      <td>${Number(row["商品图数量"] || 0) > 0 ? status(`已上传${row["商品图数量"]}张`) : status("缺少商品图")}<div class="muted">${esc(row["商品图文件名"] || "")}</div></td>
+      <td>
+        ${hasDoubaoImage(row) ? status(row["图片来源"] === "链接" ? "图片链接" : `已上传${row["商品图数量"]}张`) : status("缺少商品图")}
+        <div class="muted">${esc(row["商品图文件名"] || "")}</div>
+        ${row["商品图链接"] ? `<a href="${esc(row["商品图链接"])}" target="_blank">打开图片链接</a>` : ""}
+      </td>
       <td>${prompt ? renderPromptDetail("查看Prompt", prompt) : `<span class="muted">未生成</span>`}</td>
       <td class="publish-cell">
         <strong>${esc(row["标题"] || "")}</strong>
@@ -574,7 +582,7 @@ async function generateDoubaoPrompt(id) {
 }
 
 async function batchDoubaoPrompts() {
-  const rows = state.doubaoItems.filter((row) => Number(row["商品图数量"] || 0) > 0 && !isJobRunning(`doubao-generate-prompt:${row.record_id}`));
+  const rows = state.doubaoItems.filter((row) => hasDoubaoImage(row) && !isJobRunning(`doubao-generate-prompt:${row.record_id}`));
   const jobIds = [];
   for (const row of rows) {
     const data = await api(`/api/doubao-items/${row.record_id}/generate-prompt`, { method: "POST", body: "{}" });

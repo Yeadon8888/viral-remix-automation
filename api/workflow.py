@@ -274,10 +274,13 @@ class ViralRemixWorkflow:
         for record in records:
             fields = record.get("fields", {})
             attachment = first_attachment(fields, "商品图")
+            image_url = str(field_value(fields, "商品图链接", "") or "").strip()
             out.append({
                 "record_id": record.get("record_id"),
                 "商品名称": field_value(fields, "商品名称", ""),
                 "商品链接": field_value(fields, "商品链接", ""),
+                "商品图链接": image_url,
+                "图片来源": "附件" if attachment else "链接" if image_url.startswith("http") else "",
                 "商品图数量": len(fields.get("商品图") or []),
                 "商品图文件名": (attachment or {}).get("name", ""),
                 "最终视频生成提示词": field_value(fields, "最终视频生成提示词", ""),
@@ -290,15 +293,21 @@ class ViralRemixWorkflow:
 
     def _resolve_doubao_image(self, fields: dict[str, Any]) -> tuple[bytes, str, str]:
         attachment = first_attachment(fields, "商品图")
-        if not attachment:
-            raise RuntimeError("缺少商品图附件，请先在豆包视频制作表上传商品图")
-        file_token = attachment.get("file_token")
-        if not file_token:
-            raise RuntimeError("商品图附件缺少 file_token，无法下载")
-        with TemporaryDirectory() as tmpdir:
-            filename = str(attachment.get("name") or "doubao-product.png")
-            path, mime = self.feishu.download_media(str(file_token), Path(tmpdir) / filename)
-            return path.read_bytes(), mime, path.name
+        if attachment:
+            file_token = attachment.get("file_token")
+            if not file_token:
+                raise RuntimeError("商品图附件缺少 file_token，无法下载")
+            with TemporaryDirectory() as tmpdir:
+                filename = str(attachment.get("name") or "doubao-product.png")
+                path, mime = self.feishu.download_media(str(file_token), Path(tmpdir) / filename)
+                return path.read_bytes(), mime, path.name
+
+        image_url = str(field_value(fields, "商品图链接", "") or "").strip()
+        if image_url.startswith("http"):
+            data, mime = self._download_url(image_url)
+            return data, mime, image_url.rsplit("/", 1)[-1] or "doubao-product-url"
+
+        raise RuntimeError("缺少商品图：请上传商品图附件，或填写商品图链接")
 
     def generate_doubao_prompt(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
