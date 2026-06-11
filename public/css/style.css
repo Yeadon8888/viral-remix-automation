@@ -120,6 +120,12 @@ button {
 button:hover { filter: brightness(.94); }
 button.secondary { background: #3d4b61; }
 button.ghost { background: #edf3ff; color: var(--accent); }
+button:disabled {
+  cursor: not-allowed;
+  filter: none;
+  background: #9aa7b8;
+  color: #f8fafc;
+}
 
 main {
   padding: 18px;

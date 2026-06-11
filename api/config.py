@@ -36,6 +36,7 @@ class Settings:
     newtoken_base_url: str = env("NEWTOKEN_IMAGE_BASE_URL", "https://api.newtoken.club").rstrip("/")
     newtoken_api_key: str = env("NEWTOKEN_IMAGE_API_KEY")
     newtoken_model: str = env("NEWTOKEN_IMAGE_MODEL", "gpt-image-2-1K")
+    newtoken_timeout_seconds: int = env_int("NEWTOKEN_IMAGE_TIMEOUT_SECONDS", 900)
     image_scene_styles: tuple[str, ...] = tuple(
         s.strip()
         for s in env("IMAGE_SCENE_STYLES", "lifestyle,model,detail,flatlay,outdoor,studio").split(",")

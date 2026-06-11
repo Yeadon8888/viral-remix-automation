@@ -68,7 +68,7 @@ class NewTokenImageClient:
         }
         data = self._request("POST", "/v1/videos", json=body, timeout=60)
         status = str(data.get("status", "queued")).lower()
-        if status in {"completed", "success", "succeeded"}:
+        if status in {"completed", "success", "succeeded", "done"}:
             url = self._extract_url(data)
             if url:
                 return url
@@ -79,12 +79,12 @@ class NewTokenImageClient:
         if not task_id:
             raise RuntimeError("NewToken did not return task_id")
 
-        deadline = time.time() + 300
+        deadline = time.time() + self.settings.newtoken_timeout_seconds
         while time.time() < deadline:
             time.sleep(5)
             data = self._request("GET", f"/v1/videos/{task_id}", timeout=60)
             status = str(data.get("status", "queued")).lower()
-            if status in {"completed", "success", "succeeded"}:
+            if status in {"completed", "success", "succeeded", "done"}:
                 url = self._extract_url(data)
                 if not url:
                     raise RuntimeError("NewToken completed without image URL")
@@ -124,6 +124,9 @@ class NewTokenImageClient:
             )
             if custom_prompt:
                 prompt += f"\n\n用户补充要求：{custom_prompt}"
-            url = self.edit_image(source_image_url, prompt)
-            results.append({"style": style, "url": url, "prompt": prompt})
+            try:
+                url = self.edit_image(source_image_url, prompt)
+                results.append({"style": style, "url": url, "prompt": prompt})
+            except Exception as exc:
+                results.append({"style": style, "url": "", "prompt": prompt, "error": str(exc)})
         return results

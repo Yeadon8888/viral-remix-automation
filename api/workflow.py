@@ -443,10 +443,17 @@ class ViralRemixWorkflow:
                 language=local_language(region),
             )
             image_urls = []
+            failures = []
             for item in generated:
+                if item.get("error"):
+                    message = f"{item['style']}: {item['error']}"
+                    failures.append(message)
+                    add_log("error", f"商品组图生成失败({item['style']}): {item['error']}", "workflow", job_id)
+                    continue
                 try:
                     image_urls.append(self._rehost_image(item["url"], item["style"]))
                 except Exception as exc:
+                    failures.append(f"{item['style']}: {exc}")
                     add_log("error", f"商品组图转存失败({item['style']}): {exc}", "workflow", job_id)
             if not image_urls:
                 raise RuntimeError("商品组图全部生成或转存失败，请检查图片模型返回 URL 是否可下载")
@@ -464,12 +471,12 @@ class ViralRemixWorkflow:
                     "商品组图实际提示词": image_prompt_snapshot(generated),
                     "Prompt配置版本": version_label,
                     "自动化状态": "组图已生成",
-                    "自动化错误": "",
+                    "自动化错误": ("部分组图失败：" + "；".join(failures))[:1000] if failures else "",
                     "自动化处理时间": now_ms(),
                 },
             )
-            add_log("success", f"商品组图生成完成: {len(image_urls)} 张", "workflow", job_id)
-            return {"record_id": record_id, "image_urls": image_urls}
+            add_log("success", f"商品组图生成完成: {len(image_urls)} 张 / 失败 {len(failures)} 张", "workflow", job_id)
+            return {"record_id": record_id, "image_urls": image_urls, "failures": failures}
         except Exception as exc:
             self.feishu.update_record(
                 self.settings.source_table_id,

@@ -3,6 +3,7 @@ const state = {
   materials: [],
   tasks: [],
   prompts: [],
+  jobs: [],
   editingPromptId: "",
   selectedMaterialId: localStorage.getItem("viral-remix-selected-material") || "",
   selectedMaterialIds: new Set(),
@@ -71,6 +72,10 @@ function sourceIdsOfTask(task) {
 function tasksForSelected() {
   if (!state.selectedMaterialId) return state.tasks;
   return state.tasks.filter((task) => sourceIdsOfTask(task).includes(state.selectedMaterialId));
+}
+
+function isJobRunning(name) {
+  return state.jobs.some((job) => job.name === name && job.status === "running");
 }
 
 function renderConfig(data) {
@@ -157,7 +162,8 @@ function renderTemplateControl(row) {
 }
 
 function stepActionButton(action, id, label, extraClass = "") {
-  return `<button class="mini ${extraClass}" data-step="${esc(action)}" data-id="${esc(id)}">${esc(label)}</button>`;
+  const running = isJobRunning(`${action}:${id}`);
+  return `<button class="mini ${extraClass}" data-step="${esc(action)}" data-id="${esc(id)}" ${running ? "disabled" : ""}>${running ? "进行中" : esc(label)}</button>`;
 }
 
 function renderPromptDetail(label, text) {
@@ -305,7 +311,7 @@ function renderTasks() {
     </td>
     <td>${row["首帧/参考图链接"] ? renderThumbs([row["首帧/参考图链接"]]) : `<span class="muted">无</span>`}</td>
     <td>${row["生成视频链接"] ? `<a href="${esc(row["生成视频链接"])}" target="_blank">打开视频</a>` : esc(row["失败原因"] || "")}</td>
-    <td><button class="mini" data-action="video" data-id="${esc(row.record_id)}">生成视频</button></td>
+    <td><button class="mini" data-action="video" data-id="${esc(row.record_id)}" ${isJobRunning(`generate-video:${row.record_id}`) ? "disabled" : ""}>${isJobRunning(`generate-video:${row.record_id}`) ? "进行中" : "生成视频"}</button></td>
   </tr>`).join("")}</tbody></table>`;
 
   document.querySelectorAll("[data-action='video']").forEach((button) => {
@@ -449,10 +455,13 @@ async function savePromptEdit() {
 
 async function loadJobs() {
   const data = await api("/api/jobs");
+  state.jobs = data.data;
   $("jobs").innerHTML = data.data.slice().reverse().map((job) => `<div class="job">
     <div><strong>${esc(job.name)}</strong><div class="muted">${esc(job.id)}</div></div>
     <div>${status(job.status)}</div>
   </div>`).join("");
+  renderMaterials();
+  renderTasks();
 }
 
 async function loadLogs() {
@@ -492,10 +501,11 @@ async function runBatchMaterialStep(step) {
   };
   const jobIds = [];
   for (const id of ids) {
+    if (isJobRunning(`${step}:${id}`)) continue;
     const data = await api(`/api/materials/${id}/${step}`, { method: "POST", body: "{}" });
     jobIds.push(data.job_id);
   }
-  alert(`${labels[step] || step}已启动：${jobIds.length} 个任务`);
+  alert(`${labels[step] || step}已启动：${jobIds.length} 个任务，已跳过运行中的任务`);
   await loadJobs();
 }
 

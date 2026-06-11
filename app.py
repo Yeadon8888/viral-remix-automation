@@ -1,6 +1,6 @@
 import os
 import traceback
-from threading import Thread
+from threading import Lock, Thread
 from uuid import uuid4
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -23,6 +23,7 @@ app = Flask(__name__, static_folder="public", static_url_path="")
 CORS(app)
 
 jobs: dict[str, dict] = {}
+job_lock = Lock()
 
 
 def require_admin():
@@ -35,17 +36,24 @@ def require_admin():
 
 
 def run_job(name: str, fn, *args, **kwargs) -> str:
-    job_id = uuid4().hex[:12]
-    jobs[job_id] = {"id": job_id, "name": name, "status": "running", "result": None, "error": None}
+    with job_lock:
+        for existing in reversed(list(jobs.values())):
+            if existing.get("name") == name and existing.get("status") == "running":
+                add_log("info", f"任务已在运行，复用: {name}", "job", existing["id"])
+                return existing["id"]
+        job_id = uuid4().hex[:12]
+        jobs[job_id] = {"id": job_id, "name": name, "status": "running", "result": None, "error": None}
 
     def target():
         try:
             add_log("info", f"任务开始: {name}", "job", job_id)
             result = fn(*args, job_id=job_id, **kwargs)
-            jobs[job_id].update({"status": "done", "result": result})
+            with job_lock:
+                jobs[job_id].update({"status": "done", "result": result})
             add_log("success", f"任务完成: {name}", "job", job_id)
         except Exception as exc:
-            jobs[job_id].update({"status": "failed", "error": str(exc)})
+            with job_lock:
+                jobs[job_id].update({"status": "failed", "error": str(exc)})
             traceback.print_exc()
             add_log("error", f"任务失败: {name}: {exc}", "job", job_id)
 
@@ -84,6 +92,7 @@ def config_status():
         "cpa_model": settings.cpa_video_model,
         "image_styles": settings.image_scene_styles,
         "image_style_labels": STYLE_LABELS,
+        "newtoken_timeout_seconds": settings.newtoken_timeout_seconds,
         "storage_mode": "upload_gateway" if settings.has_upload_gateway else "direct_r2",
     })
 
