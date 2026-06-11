@@ -602,13 +602,13 @@ async function storeDoubaoImage(id) {
 }
 
 async function batchDoubaoStoreImages() {
-  const rows = state.doubaoItems.filter((row) => hasDoubaoImage(row) && !isJobRunning(`doubao-store-image:${row.record_id}`));
-  const jobIds = [];
-  for (const row of rows) {
-    const data = await api(`/api/doubao-items/${row.record_id}/store-image`, { method: "POST", body: "{}" });
-    jobIds.push(data.job_id);
-  }
-  alert(`已启动豆包商品图入库：${jobIds.length} 个任务`);
+  if (isJobRunning("doubao-batch-store-images")) return;
+  const rows = state.doubaoItems.filter((row) => hasDoubaoImage(row) && !hasDoubaoStoredImage(row));
+  const data = await api("/api/doubao-items/batch-store-images", {
+    method: "POST",
+    body: JSON.stringify({ record_ids: rows.map((row) => row.record_id), limit: 50 }),
+  });
+  alert(`已启动豆包商品图批量入库：${data.job_id}`);
   await loadJobs();
 }
 

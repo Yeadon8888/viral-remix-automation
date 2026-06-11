@@ -176,6 +176,36 @@ def store_doubao_image(record_id):
     return jsonify({"success": True, "job_id": job_id})
 
 
+@app.route("/api/doubao-items/batch-store-images", methods=["POST"])
+def batch_store_doubao_images():
+    body = request.get_json(silent=True) or {}
+    record_ids = body.get("record_ids")
+    limit = int(body.get("limit", 50))
+    workflow = ViralRemixWorkflow(settings)
+
+    def runner(job_id=None):
+        ids = record_ids
+        if not ids:
+            rows = workflow.list_doubao_items(limit=200)
+            ids = [
+                row["record_id"]
+                for row in rows
+                if row.get("record_id")
+                and (row.get("商品图数量") or str(row.get("商品图链接") or "").startswith("http"))
+                and not str(row.get("商品图存储链接") or "").startswith("http")
+            ][:limit]
+        results = []
+        for rid in ids[:limit]:
+            try:
+                results.append(workflow.store_doubao_image(rid, job_id=job_id))
+            except Exception as exc:
+                results.append({"record_id": rid, "error": str(exc)})
+        return {"processed": len(results), "results": results}
+
+    job_id = run_job("doubao-batch-store-images", runner)
+    return jsonify({"success": True, "job_id": job_id})
+
+
 @app.route("/api/materials/<record_id>/prepare", methods=["POST"])
 def prepare_material(record_id):
     workflow = ViralRemixWorkflow(settings)
