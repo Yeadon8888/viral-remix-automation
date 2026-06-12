@@ -211,6 +211,39 @@ def create_material_tasks(record_id):
     return jsonify({"success": True, "job_id": job_id})
 
 
+@app.route("/api/materials/batch-step", methods=["POST"])
+def batch_material_step():
+    body = request.get_json(silent=True) or {}
+    record_ids = body.get("record_ids") or []
+    step = str(body.get("step") or "").strip()
+    limit = int(body.get("limit", 50))
+    workflow = ViralRemixWorkflow(settings)
+    handlers = {
+        "analyze-video": workflow.analyze_viral_video,
+        "store-image": workflow.store_product_image,
+        "generate-images": workflow.generate_product_images,
+        "create-tasks": workflow.create_video_tasks,
+    }
+    handler = handlers.get(step)
+    if not handler:
+        return jsonify({"success": False, "message": "unsupported material step"}), 400
+    if not isinstance(record_ids, list) or not record_ids:
+        return jsonify({"success": False, "message": "record_ids is required"}), 400
+
+    def runner(job_id=None):
+        results = []
+        for rid in [str(item) for item in record_ids if item][:limit]:
+            try:
+                results.append({"record_id": rid, "result": handler(rid, job_id=job_id)})
+            except Exception as exc:
+                results.append({"record_id": rid, "error": str(exc)})
+        failed = len([item for item in results if item.get("error")])
+        return {"processed": len(results), "failed": failed, "results": results}
+
+    job_id = run_job(f"batch-{step}", runner)
+    return jsonify({"success": True, "job_id": job_id})
+
+
 @app.route("/api/materials/batch-prepare", methods=["POST"])
 def batch_prepare():
     body = request.get_json(silent=True) or {}

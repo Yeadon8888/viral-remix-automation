@@ -42,6 +42,12 @@ class TikHubClient:
                     time.sleep(2)
         raise RuntimeError(f"TikHub request failed: {last_error}")
 
+    def _try_get(self, path: str) -> tuple[dict[str, Any] | None, str | None]:
+        try:
+            return self._get(path), None
+        except Exception as exc:
+            return None, str(exc)
+
     def _resolve_short_url(self, url: str) -> str:
         if "/t/" not in url:
             return url
@@ -78,31 +84,42 @@ class TikHubClient:
     def resolve_video_url(self, share_text_or_url: str) -> str:
         raw_url = self.extract_url(share_text_or_url) or share_text_or_url
         resolved = self._resolve_short_url(raw_url)
+        if "tiktok.com/@" in resolved and not re.search(r"/video/\d+", resolved):
+            raise RuntimeError("TikTok 链接不是单条视频链接，请填写包含 /video/ 的具体爆款视频链接")
         encoded = requests.utils.quote(resolved, safe="")
 
         video_url = None
-        result = self._get(f"/api/v1/hybrid/video_data?url={encoded}&minimal=true")
-        code = result.get("code") or (result.get("detail") or {}).get("code")
-        if code == 200:
-            data = ((result.get("data") or {}).get("video_data") or {})
-            video_url = self._extract_video_url(data)
+        errors = []
+        result, error = self._try_get(f"/api/v1/hybrid/video_data?url={encoded}&minimal=true")
+        if error:
+            errors.append(f"hybrid: {error}")
+        if result:
+            code = result.get("code") or (result.get("detail") or {}).get("code")
+            if code == 200:
+                data = ((result.get("data") or {}).get("video_data") or {})
+                video_url = self._extract_video_url(data)
 
         if not video_url:
             match = re.search(r"/video/(\d+)", resolved)
             if match:
-                result = self._get(f"/api/v1/tiktok/app/v3/fetch_one_video?aweme_id={match.group(1)}")
-                if result.get("code") == 200:
+                result, error = self._try_get(f"/api/v1/tiktok/app/v3/fetch_one_video?aweme_id={match.group(1)}")
+                if error:
+                    errors.append(f"aweme_id: {error}")
+                if result and result.get("code") == 200:
                     detail = ((result.get("data") or {}).get("aweme_detail") or {})
                     video_url = self._extract_video_url(detail)
 
         if not video_url:
-            result = self._get(f"/api/v1/tiktok/app/v3/fetch_one_video_by_share_url?share_url={encoded}")
-            if result.get("code") == 200:
+            result, error = self._try_get(f"/api/v1/tiktok/app/v3/fetch_one_video_by_share_url?share_url={encoded}")
+            if error:
+                errors.append(f"share_url: {error}")
+            if result and result.get("code") == 200:
                 detail = ((result.get("data") or {}).get("aweme_detail") or {})
                 video_url = self._extract_video_url(detail)
 
         if not video_url:
-            raise RuntimeError("TikHub returned no downloadable video URL")
+            suffix = f": {' | '.join(errors)}" if errors else ""
+            raise RuntimeError(f"TikHub returned no downloadable video URL{suffix}")
         return video_url
 
     def download_video_url(self, video_url: str) -> tuple[bytes, str]:

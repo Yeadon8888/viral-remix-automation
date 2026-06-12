@@ -633,13 +633,12 @@ async function runBatchMaterialStep(step) {
     "generate-images": "批量生成组图",
     "create-tasks": "批量创建任务",
   };
-  const jobIds = [];
-  for (const id of ids) {
-    if (isJobRunning(`${step}:${id}`)) continue;
-    const data = await api(`/api/materials/${id}/${step}`, { method: "POST", body: "{}" });
-    jobIds.push(data.job_id);
-  }
-  alert(`${labels[step] || step}已启动：${jobIds.length} 个任务，已跳过运行中的任务`);
+  if (isJobRunning(`batch-${step}`)) return;
+  const data = await api("/api/materials/batch-step", {
+    method: "POST",
+    body: JSON.stringify({ step, record_ids: ids, limit: ids.length }),
+  });
+  alert(`${labels[step] || step}已启动：${data.job_id}，将按顺序处理 ${ids.length} 条素材`);
   await loadJobs();
 }
 
