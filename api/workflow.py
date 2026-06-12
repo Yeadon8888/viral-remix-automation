@@ -597,12 +597,23 @@ class ViralRemixWorkflow:
         try:
             prompt_templates, prompt_versions = self._active_prompt_templates(region)
             first_frame_url = ""
+            effective_styles = selected_styles
+            first_frame_warning = ""
             if selected_styles == ("viral_first_frame",):
-                first_frame_url = self._ensure_viral_first_frame(record_id, fields, job_id)
+                try:
+                    first_frame_url = self._ensure_viral_first_frame(record_id, fields, job_id)
+                except Exception as exc:
+                    first_frame_warning = f"爆款首帧获取失败，已回退生活场景模板：{exc}"
+                    effective_styles = ("lifestyle",)
+                    add_log("error", first_frame_warning, "workflow", job_id)
+                if not first_frame_url and effective_styles == selected_styles:
+                    first_frame_warning = "爆款首帧为空，已回退生活场景模板"
+                    effective_styles = ("lifestyle",)
+                    add_log("error", first_frame_warning, "workflow", job_id)
             generated = self.image_client.generate_group_images(
                 product_image_url,
                 custom_prompt,
-                selected_styles,
+                effective_styles,
                 prompt_templates=prompt_templates,
                 override_template=prompt_override,
                 region=region,
@@ -627,8 +638,9 @@ class ViralRemixWorkflow:
             if prompt_override:
                 version_label = "商品组图:素材覆盖"
             else:
-                used_versions = [prompt_versions.get(f"image_{style}", f"image_{style}:default") for style in selected_styles]
+                used_versions = [prompt_versions.get(f"image_{style}", f"image_{style}:default") for style in effective_styles]
                 version_label = " / ".join(dict.fromkeys(used_versions))
+            warning_text = "；".join([item for item in [first_frame_warning, "部分组图失败：" + "；".join(failures) if failures else ""] if item])
             self.feishu.update_record(
                 self.settings.source_table_id,
                 record_id,
@@ -638,7 +650,7 @@ class ViralRemixWorkflow:
                     "商品组图实际提示词": image_prompt_snapshot(generated),
                     "Prompt配置版本": version_label,
                     "自动化状态": "组图已生成",
-                    "自动化错误": ("部分组图失败：" + "；".join(failures))[:1000] if failures else "",
+                    "自动化错误": warning_text[:1000],
                     "自动化处理时间": now_ms(),
                 },
             )
