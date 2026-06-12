@@ -81,7 +81,16 @@ def has_task_payload(fields: dict[str, Any]) -> bool:
     )
     if any(str(field_value(fields, name, "") or "").strip() for name in checks):
         return True
-    return bool(fields.get("关联复刻素材") or fields.get("首帧/参考图") or fields.get("生成视频"))
+    if linked_record_ids(fields.get("关联复刻素材")):
+        return True
+    for name in ("首帧/参考图", "生成视频"):
+        value = fields.get(name)
+        if isinstance(value, list):
+            if any(isinstance(item, dict) and (item.get("file_token") or item.get("url") or item.get("name")) for item in value):
+                return True
+        elif value:
+            return True
+    return False
 
 
 TASK_ANGLES = (
