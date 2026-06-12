@@ -153,6 +153,33 @@ function renderSelectionState() {
   $("selectAllMaterials").indeterminate = selectedCount > 0 && selectedCount < ids.length;
 }
 
+function rowNumber(row) {
+  const value = Number(row["行号"]);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function selectMaterialRange() {
+  const start = Number($("rangeStart").value);
+  const end = Number($("rangeEnd").value);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 1 || end < 1) {
+    alert("请输入有效的起始行和结束行");
+    return;
+  }
+  const from = Math.min(start, end);
+  const to = Math.max(start, end);
+  const selectedRows = state.materials.filter((row) => {
+    const line = rowNumber(row);
+    return line >= from && line <= to && row.record_id;
+  });
+  state.selectedMaterialIds = new Set(selectedRows.map((row) => row.record_id));
+  renderMaterials();
+}
+
+function clearMaterialSelection() {
+  state.selectedMaterialIds.clear();
+  renderMaterials();
+}
+
 function renderThumbs(urls) {
   const list = Array.isArray(urls) ? urls : [];
   if (!list.length) return `<span class="muted">未生成</span>`;
@@ -721,6 +748,13 @@ $("selectAllMaterials").onchange = () => {
   else ids.forEach((id) => state.selectedMaterialIds.delete(id));
   renderMaterials();
 };
+$("selectRange").onclick = selectMaterialRange;
+$("clearMaterialSelection").onclick = clearMaterialSelection;
+["rangeStart", "rangeEnd"].forEach((id) => {
+  $(id).addEventListener("keydown", (event) => {
+    if (event.key === "Enter") selectMaterialRange();
+  });
+});
 $("batchAnalyze").onclick = () => runBatchMaterialStep("analyze-video");
 $("batchStoreImage").onclick = () => runBatchMaterialStep("store-image");
 $("batchGenerateImages").onclick = () => runBatchMaterialStep("generate-images");

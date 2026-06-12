@@ -274,7 +274,7 @@ main {
 
 .batch-bar {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto minmax(360px, 1fr) auto auto;
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
@@ -313,6 +313,24 @@ main {
   height: 16px;
   margin: 0;
   padding: 0;
+}
+
+.range-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.range-picker input {
+  width: 88px;
+  min-height: 32px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .table-wrap {
@@ -766,6 +784,10 @@ code {
 
   .batch-bar > strong {
     text-align: left;
+  }
+
+  .range-picker {
+    flex-wrap: wrap;
   }
 }
 

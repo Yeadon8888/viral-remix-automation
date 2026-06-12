@@ -60,6 +60,14 @@
             <input id="selectAllMaterials" type="checkbox">
             <span>全选当前素材</span>
           </label>
+          <div class="range-picker" aria-label="按行号选择素材">
+            <span>从</span>
+            <input id="rangeStart" type="number" min="1" inputmode="numeric" placeholder="起始行">
+            <span>到</span>
+            <input id="rangeEnd" type="number" min="1" inputmode="numeric" placeholder="结束行">
+            <button id="selectRange" class="mini secondary" type="button">选择范围</button>
+            <button id="clearMaterialSelection" class="mini ghost" type="button">清空</button>
+          </div>
           <strong id="selectedMaterialCount">已选 0 条</strong>
           <div class="actions">
             <button id="batchAnalyze" class="secondary">批量生成Prompt</button>
