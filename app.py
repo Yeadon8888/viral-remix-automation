@@ -1,7 +1,4 @@
 import os
-import traceback
-from threading import Lock, Thread
-from uuid import uuid4
 
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
@@ -15,26 +12,13 @@ except ModuleNotFoundError:
 
 from api.config import settings
 from api.image_gen import STYLE_LABELS
-from api.logging_bus import add_log, recent_logs
+from api.jobs import get_job, list_jobs, run_job
+from api.logging_bus import recent_logs
 from api.workflow import ViralRemixWorkflow
 
 
 app = Flask(__name__, static_folder="public", static_url_path="")
 CORS(app)
-
-jobs: dict[str, dict] = {}
-job_lock = Lock()
-MAX_JOBS = 10
-
-
-def prune_jobs() -> None:
-    while len(jobs) > MAX_JOBS:
-        for job_id, job in list(jobs.items()):
-            if job.get("status") != "running":
-                jobs.pop(job_id, None)
-                break
-        else:
-            break
 
 
 def require_admin():
@@ -44,35 +28,6 @@ def require_admin():
     if token != settings.admin_token:
         return jsonify({"success": False, "message": "Unauthorized"}), 401
     return None
-
-
-def run_job(name: str, fn, *args, **kwargs) -> str:
-    with job_lock:
-        for existing in reversed(list(jobs.values())):
-            if existing.get("name") == name and existing.get("status") == "running":
-                add_log("info", f"任务已在运行，复用: {name}", "job", existing["id"])
-                return existing["id"]
-        job_id = uuid4().hex[:12]
-        jobs[job_id] = {"id": job_id, "name": name, "status": "running", "result": None, "error": None}
-        prune_jobs()
-
-    def target():
-        try:
-            add_log("info", f"任务开始: {name}", "job", job_id)
-            result = fn(*args, job_id=job_id, **kwargs)
-            with job_lock:
-                jobs[job_id].update({"status": "done", "result": result})
-                prune_jobs()
-            add_log("success", f"任务完成: {name}", "job", job_id)
-        except Exception as exc:
-            with job_lock:
-                jobs[job_id].update({"status": "failed", "error": str(exc)})
-                prune_jobs()
-            traceback.print_exc()
-            add_log("error", f"任务失败: {name}: {exc}", "job", job_id)
-
-    Thread(target=target, daemon=True).start()
-    return job_id
 
 
 @app.before_request
@@ -120,7 +75,7 @@ def logs():
 
 @app.route("/api/jobs/<job_id>")
 def job_status(job_id):
-    job = jobs.get(job_id)
+    job = get_job(job_id)
     if not job:
         return jsonify({"success": False, "message": "job not found"}), 404
     return jsonify({"success": True, "data": job})
@@ -128,7 +83,7 @@ def job_status(job_id):
 
 @app.route("/api/jobs")
 def job_list():
-    return jsonify({"success": True, "data": list(jobs.values())[-MAX_JOBS:]})
+    return jsonify({"success": True, "data": list_jobs()})
 
 
 @app.route("/api/materials")

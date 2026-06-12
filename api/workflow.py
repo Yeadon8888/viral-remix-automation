@@ -1,6 +1,5 @@
 from datetime import datetime
 from pathlib import Path
-import subprocess
 from tempfile import TemporaryDirectory
 from typing import Any
 
@@ -14,6 +13,7 @@ from .image_gen import NewTokenImageClient, normalize_styles
 from .logging_bus import add_log
 from .prompting import DEFAULT_IMAGE_PROMPTS, DEFAULT_VIDEO_ANALYSIS_TEMPLATE, STYLE_LABELS, image_prompt_snapshot
 from .r2 import R2Storage
+from .services import ViralVideoAssetService
 from .tikhub import TikHubClient
 
 MATERIAL_PROMPT_FIELD = "视频生成Prompt"
@@ -109,6 +109,7 @@ class ViralRemixWorkflow:
         self.gemini = GeminiClient(settings)
         self.image_client = NewTokenImageClient(settings)
         self.cpa = CpaVideoClient(settings)
+        self.video_assets = ViralVideoAssetService(settings, self.feishu, self.r2, self.tikhub)
 
     def list_prompt_configs(self) -> list[dict[str, Any]]:
         if not self.settings.prompt_table_id:
@@ -422,81 +423,6 @@ class ViralRemixWorkflow:
         stored = self.r2.upload_bytes(data, f"{style}{suffix}", mime)
         return stored["url"]
 
-    def _extract_first_frame(self, video_bytes: bytes, job_id: str | None = None) -> str:
-        with TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            video_path = tmp / "viral-video.mp4"
-            frame_path = tmp / "viral-first-frame.jpg"
-            video_path.write_bytes(video_bytes)
-            try:
-                subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-y",
-                        "-hide_banner",
-                        "-loglevel",
-                        "error",
-                        "-i",
-                        str(video_path),
-                        "-frames:v",
-                        "1",
-                        str(frame_path),
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                )
-            except FileNotFoundError as exc:
-                raise RuntimeError("ffmpeg 未安装，无法截取爆款视频首帧") from exc
-            except subprocess.CalledProcessError as exc:
-                detail = (exc.stderr or exc.stdout or "").strip()[:300]
-                raise RuntimeError(f"ffmpeg 截取爆款首帧失败: {detail}") from exc
-            if not frame_path.exists() or frame_path.stat().st_size == 0:
-                raise RuntimeError("ffmpeg 未生成爆款首帧")
-            stored = self.r2.upload_bytes(frame_path.read_bytes(), "viral-first-frame.jpg", "image/jpeg")
-            add_log("info", f"爆款视频首帧已入库: {stored['url']}", "workflow", job_id)
-            return stored["url"]
-
-    def _download_viral_video_cached(self, record_id: str, fields: dict[str, Any], job_id: str | None = None) -> tuple[bytes, str]:
-        viral_url = str(field_value(fields, "爆款视频链接", "") or "").strip()
-        cached_url = str(field_value(fields, "爆款视频直链", "") or "").strip()
-        if cached_url.startswith("http"):
-            try:
-                add_log("info", "使用缓存爆款视频直链下载视频", "workflow", job_id)
-                return self.tikhub.download_video_url(cached_url)
-            except Exception as exc:
-                add_log("error", f"缓存爆款视频直链已失效，将重新解析: {exc}", "workflow", job_id)
-
-        if not viral_url:
-            raise RuntimeError("爆款视频链接为空")
-        video_url = self.tikhub.resolve_video_url(viral_url)
-        video_bytes, video_mime = self.tikhub.download_video_url(video_url)
-        self.feishu.update_record(
-            self.settings.source_table_id,
-            record_id,
-            {
-                "爆款视频直链": url_cell(video_url),
-                "爆款视频直链解析时间": now_ms(),
-                "自动化处理时间": now_ms(),
-            },
-        )
-        add_log("info", "爆款视频直链已缓存到素材表", "workflow", job_id)
-        return video_bytes, video_mime
-
-    def _ensure_viral_first_frame(self, record_id: str, fields: dict[str, Any], job_id: str | None = None) -> str:
-        first_frame_url = str(field_value(fields, "爆款首帧链接", "") or "").strip()
-        if first_frame_url.startswith("http"):
-            return first_frame_url
-        video_bytes, _ = self._download_viral_video_cached(record_id, fields, job_id)
-        first_frame_url = self._extract_first_frame(video_bytes, job_id)
-        self.feishu.update_record(
-            self.settings.source_table_id,
-            record_id,
-            {"爆款首帧链接": url_cell(first_frame_url), "自动化处理时间": now_ms()},
-        )
-        return first_frame_url
-
     def analyze_viral_video(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         record = self.feishu.get_record(self.settings.source_table_id, record_id)
         fields = record.get("fields", {})
@@ -519,10 +445,10 @@ class ViralRemixWorkflow:
         add_log("info", f"开始拆解爆款视频: {product_name}", "workflow", job_id)
 
         try:
-            video_bytes, video_mime = self._download_viral_video_cached(record_id, fields, job_id)
+            video_bytes, video_mime = self.video_assets.download_cached(record_id, fields, job_id)
             first_frame_url = ""
             try:
-                first_frame_url = self._extract_first_frame(video_bytes, job_id)
+                first_frame_url = self.video_assets.extract_first_frame(video_bytes, job_id)
             except Exception as exc:
                 add_log("error", f"爆款视频首帧截取失败，将继续拆解视频: {exc}", "workflow", job_id)
             prompt_templates, prompt_versions = self._active_prompt_templates(region)
@@ -626,7 +552,7 @@ class ViralRemixWorkflow:
             first_frame_warning = ""
             if selected_styles == ("viral_first_frame",):
                 try:
-                    first_frame_url = self._ensure_viral_first_frame(record_id, fields, job_id)
+                    first_frame_url = self.video_assets.ensure_first_frame(record_id, fields, job_id)
                 except Exception as exc:
                     first_frame_warning = f"爆款首帧获取失败，已回退生活场景模板：{exc}"
                     effective_styles = ("lifestyle",)
