@@ -66,6 +66,24 @@ def first_style(styles: tuple[str, ...]) -> tuple[str, ...]:
     return (styles[0],) if styles else ()
 
 
+def has_task_payload(fields: dict[str, Any]) -> bool:
+    checks = (
+        "生成任务名称",
+        "视频生成Prompt",
+        "首帧/参考图链接",
+        "来源素材记录ID",
+        "生成状态",
+        "生成标题",
+        "生成文案",
+        "关键词",
+        "生成视频链接",
+        "CPA任务ID",
+    )
+    if any(str(field_value(fields, name, "") or "").strip() for name in checks):
+        return True
+    return bool(fields.get("关联复刻素材") or fields.get("首帧/参考图") or fields.get("生成视频"))
+
+
 TASK_ANGLES = (
     "开头钩子更偏生活痛点，第一秒直接出现商品和目标用户困扰。",
     "重点放在商品上手/上身/使用动作，用连续近景展示真实使用过程。",
@@ -254,10 +272,12 @@ class ViralRemixWorkflow:
         return {"record_id": record_id, "商品组图模板": labels, "商品组图模板值": list(selected_styles)}
 
     def list_tasks(self, limit: int = 100) -> list[dict[str, Any]]:
-        records = self.feishu.list_records(self.settings.task_table_id)[:limit]
+        records = self.feishu.list_records(self.settings.task_table_id)
         out = []
         for record in records:
             fields = record.get("fields", {})
+            if not has_task_payload(fields):
+                continue
             source_ids = linked_record_ids(fields.get("关联复刻素材"))
             source_text = str(field_value(fields, "来源素材记录ID", "") or "").strip()
             if source_text and source_text not in source_ids:
@@ -277,6 +297,8 @@ class ViralRemixWorkflow:
                 "首帧/参考图链接": field_value(fields, "首帧/参考图链接", ""),
                 "失败原因": field_value(fields, "失败原因", ""),
             })
+            if len(out) >= limit:
+                break
         return out
 
     def list_doubao_items(self, limit: int = 100) -> list[dict[str, Any]]:
