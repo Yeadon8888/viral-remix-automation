@@ -105,8 +105,7 @@ class TikHubClient:
             raise RuntimeError("TikHub returned no downloadable video URL")
         return video_url
 
-    def download_video(self, share_text_or_url: str) -> tuple[bytes, str]:
-        video_url = self.resolve_video_url(share_text_or_url)
+    def download_video_url(self, video_url: str) -> tuple[bytes, str]:
         headers = {
             "Accept": "video/mp4,video/*;q=0.9,*/*;q=0.8",
             "Referer": "https://www.tiktok.com/",
@@ -127,3 +126,7 @@ class TikHubClient:
                 if attempt < 2:
                     time.sleep(2 + attempt)
         raise RuntimeError(f"TikHub video download failed: {last_error}")
+
+    def download_video(self, share_text_or_url: str) -> tuple[bytes, str]:
+        video_url = self.resolve_video_url(share_text_or_url)
+        return self.download_video_url(video_url)

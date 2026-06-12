@@ -224,6 +224,8 @@ class ViralRemixWorkflow:
                 "商品组图数量": len(group_image_urls),
                 "商品主图存储链接": field_value(fields, "商品主图存储链接", ""),
                 "爆款首帧链接": field_value(fields, "爆款首帧链接", ""),
+                "爆款视频直链": field_value(fields, "爆款视频直链", ""),
+                "爆款视频直链解析时间": field_value(fields, "爆款视频直链解析时间", ""),
                 "商品组图模板": style_labels(template_styles),
                 "商品组图模板值": list(template_styles),
                 "视频拆解提示词模板": field_value(fields, "视频拆解提示词模板", ""),
@@ -456,14 +458,37 @@ class ViralRemixWorkflow:
             add_log("info", f"爆款视频首帧已入库: {stored['url']}", "workflow", job_id)
             return stored["url"]
 
+    def _download_viral_video_cached(self, record_id: str, fields: dict[str, Any], job_id: str | None = None) -> tuple[bytes, str]:
+        viral_url = str(field_value(fields, "爆款视频链接", "") or "").strip()
+        cached_url = str(field_value(fields, "爆款视频直链", "") or "").strip()
+        if cached_url.startswith("http"):
+            try:
+                add_log("info", "使用缓存爆款视频直链下载视频", "workflow", job_id)
+                return self.tikhub.download_video_url(cached_url)
+            except Exception as exc:
+                add_log("error", f"缓存爆款视频直链已失效，将重新解析: {exc}", "workflow", job_id)
+
+        if not viral_url:
+            raise RuntimeError("爆款视频链接为空")
+        video_url = self.tikhub.resolve_video_url(viral_url)
+        video_bytes, video_mime = self.tikhub.download_video_url(video_url)
+        self.feishu.update_record(
+            self.settings.source_table_id,
+            record_id,
+            {
+                "爆款视频直链": url_cell(video_url),
+                "爆款视频直链解析时间": now_ms(),
+                "自动化处理时间": now_ms(),
+            },
+        )
+        add_log("info", "爆款视频直链已缓存到素材表", "workflow", job_id)
+        return video_bytes, video_mime
+
     def _ensure_viral_first_frame(self, record_id: str, fields: dict[str, Any], job_id: str | None = None) -> str:
         first_frame_url = str(field_value(fields, "爆款首帧链接", "") or "").strip()
         if first_frame_url.startswith("http"):
             return first_frame_url
-        viral_url = str(field_value(fields, "爆款视频链接", "") or "").strip()
-        if not viral_url:
-            return ""
-        video_bytes, _ = self.tikhub.download_video(viral_url)
+        video_bytes, _ = self._download_viral_video_cached(record_id, fields, job_id)
         first_frame_url = self._extract_first_frame(video_bytes, job_id)
         self.feishu.update_record(
             self.settings.source_table_id,
@@ -494,7 +519,7 @@ class ViralRemixWorkflow:
         add_log("info", f"开始拆解爆款视频: {product_name}", "workflow", job_id)
 
         try:
-            video_bytes, video_mime = self.tikhub.download_video(viral_url)
+            video_bytes, video_mime = self._download_viral_video_cached(record_id, fields, job_id)
             first_frame_url = ""
             try:
                 first_frame_url = self._extract_first_frame(video_bytes, job_id)
