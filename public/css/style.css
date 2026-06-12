@@ -141,11 +141,36 @@ button {
 button:hover { filter: brightness(.95); }
 button.secondary { background: #2d3b34; }
 button.ghost { background: var(--accent-soft); color: var(--accent-ink); }
+button.is-pending {
+  background: var(--warm);
+  color: #fff;
+}
+
+button.is-pending::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border: 2px solid rgba(255, 255, 255, .45);
+  border-top-color: #fff;
+  border-radius: 999px;
+  animation: spin .7s linear infinite;
+}
+
 button:disabled {
   cursor: not-allowed;
   filter: none;
   background: #9aa6a0;
   color: #f8fafc;
+}
+
+button.is-pending:disabled {
+  background: var(--warm);
+  color: #fff;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 main {

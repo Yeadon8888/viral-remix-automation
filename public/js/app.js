@@ -5,6 +5,7 @@ const state = {
   doubaoItems: [],
   prompts: [],
   jobs: [],
+  pendingJobs: new Set(),
   editingPromptId: "",
   selectedMaterialId: localStorage.getItem("viral-remix-selected-material") || "",
   selectedMaterialIds: new Set(),
@@ -104,6 +105,15 @@ function tasksForSelected() {
 
 function isJobRunning(name) {
   return state.jobs.some((job) => job.name === name && job.status === "running");
+}
+
+function isJobBusy(name) {
+  return state.pendingJobs.has(name) || isJobRunning(name);
+}
+
+function setPendingJob(name, pending) {
+  if (pending) state.pendingJobs.add(name);
+  else state.pendingJobs.delete(name);
 }
 
 function renderConfig(data) {
@@ -220,8 +230,10 @@ function renderTemplateControl(row) {
 }
 
 function stepActionButton(action, id, label, extraClass = "") {
-  const running = isJobRunning(`${action}:${id}`);
-  return `<button class="mini ${extraClass}" data-step="${esc(action)}" data-id="${esc(id)}" ${running ? "disabled" : ""}>${running ? "进行中" : esc(label)}</button>`;
+  const name = `${action}:${id}`;
+  const pending = state.pendingJobs.has(name);
+  const busy = isJobBusy(name);
+  return `<button class="mini ${extraClass}${pending ? " is-pending" : ""}" data-step="${esc(action)}" data-id="${esc(id)}" ${busy ? "disabled" : ""}>${pending ? "提交中" : busy ? "进行中" : esc(label)}</button>`;
 }
 
 function renderPromptDetail(label, text) {
@@ -326,7 +338,7 @@ function renderMaterials() {
     });
   });
   document.querySelectorAll("[data-step]").forEach((button) => {
-    button.addEventListener("click", () => runMaterialStep(button.dataset.id, button.dataset.step));
+    button.addEventListener("click", () => runMaterialStep(button.dataset.id, button.dataset.step, button));
   });
   document.querySelectorAll("[data-action='save-templates']").forEach((button) => {
     button.addEventListener("click", () => saveTemplates(button.dataset.id, button));
@@ -370,11 +382,11 @@ function renderTasks() {
     </td>
     <td>${row["首帧/参考图链接"] ? renderThumbs([row["首帧/参考图链接"]]) : `<span class="muted">无</span>`}</td>
     <td>${row["生成视频链接"] ? `<a href="${esc(row["生成视频链接"])}" target="_blank">打开视频</a>` : esc(row["失败原因"] || "")}</td>
-    <td><button class="mini" data-action="video" data-id="${esc(row.record_id)}" ${isJobRunning(`generate-video:${row.record_id}`) ? "disabled" : ""}>${isJobRunning(`generate-video:${row.record_id}`) ? "进行中" : "生成视频"}</button></td>
+    <td><button class="mini${state.pendingJobs.has(`generate-video:${row.record_id}`) ? " is-pending" : ""}" data-action="video" data-id="${esc(row.record_id)}" ${isJobBusy(`generate-video:${row.record_id}`) ? "disabled" : ""}>${state.pendingJobs.has(`generate-video:${row.record_id}`) ? "提交中" : isJobBusy(`generate-video:${row.record_id}`) ? "进行中" : "生成视频"}</button></td>
   </tr>`).join("")}</tbody></table>`;
 
   document.querySelectorAll("[data-action='video']").forEach((button) => {
-    button.addEventListener("click", () => generateVideo(button.dataset.id));
+    button.addEventListener("click", () => generateVideo(button.dataset.id, button));
   });
 }
 
@@ -403,8 +415,12 @@ function renderDoubaoItems() {
     <th>商品</th><th>图片</th><th>对象存储</th><th>最终视频生成提示词</th><th>发布内容</th><th>视频链接</th><th>操作</th>
   </tr></thead><tbody>${state.doubaoItems.map((row) => {
     const prompt = String(row["最终视频生成提示词"] || "").trim();
-    const promptRunning = isJobRunning(`doubao-generate-prompt:${row.record_id}`);
-    const storeRunning = isJobRunning(`doubao-store-image:${row.record_id}`);
+    const promptName = `doubao-generate-prompt:${row.record_id}`;
+    const storeName = `doubao-store-image:${row.record_id}`;
+    const promptPending = state.pendingJobs.has(promptName);
+    const storePending = state.pendingJobs.has(storeName);
+    const promptRunning = isJobBusy(promptName);
+    const storeRunning = isJobBusy(storeName);
     return `<tr>
       <td>
         <strong>${esc(row["商品名称"] || "未填写商品名称")}</strong>
@@ -418,7 +434,7 @@ function renderDoubaoItems() {
       </td>
       <td>
         ${hasDoubaoStoredImage(row) ? `<a href="${esc(row["商品图存储链接"])}" target="_blank">对象存储</a>` : `<span class="muted">待入库</span>`}
-        <button class="mini ghost" data-action="doubao-store" data-id="${esc(row.record_id)}" ${storeRunning || !hasDoubaoImage(row) ? "disabled" : ""}>${storeRunning ? "入库中" : hasDoubaoStoredImage(row) ? "重新入库" : "图片入库"}</button>
+        <button class="mini ghost${storePending ? " is-pending" : ""}" data-action="doubao-store" data-id="${esc(row.record_id)}" ${storeRunning || !hasDoubaoImage(row) ? "disabled" : ""}>${storePending ? "提交中" : storeRunning ? "入库中" : hasDoubaoStoredImage(row) ? "重新入库" : "图片入库"}</button>
       </td>
       <td>${prompt ? renderPromptDetail("查看Prompt", prompt) : `<span class="muted">未生成</span>`}</td>
       <td class="publish-cell">
@@ -427,15 +443,15 @@ function renderDoubaoItems() {
         ${row["文案"] ? `<details class="prompt-preview"><summary>文案</summary><p>${esc(row["文案"])}</p></details>` : ""}
       </td>
       <td>${row["视频生成链接"] ? `<a href="${esc(row["视频生成链接"])}" target="_blank">打开视频</a>` : `<span class="muted">未填写</span>`}</td>
-      <td><button class="mini" data-action="doubao-generate" data-id="${esc(row.record_id)}" ${promptRunning || !hasDoubaoImage(row) ? "disabled" : ""}>${promptRunning ? "进行中" : prompt ? "重新生成" : "生成提示词"}</button></td>
+      <td><button class="mini${promptPending ? " is-pending" : ""}" data-action="doubao-generate" data-id="${esc(row.record_id)}" ${promptRunning || !hasDoubaoImage(row) ? "disabled" : ""}>${promptPending ? "提交中" : promptRunning ? "进行中" : prompt ? "重新生成" : "生成提示词"}</button></td>
     </tr>`;
   }).join("")}</tbody></table>`;
 
   document.querySelectorAll("[data-action='doubao-store']").forEach((button) => {
-    button.addEventListener("click", () => storeDoubaoImage(button.dataset.id));
+    button.addEventListener("click", () => storeDoubaoImage(button.dataset.id, button));
   });
   document.querySelectorAll("[data-action='doubao-generate']").forEach((button) => {
-    button.addEventListener("click", () => generateDoubaoPrompt(button.dataset.id));
+    button.addEventListener("click", () => generateDoubaoPrompt(button.dataset.id, button));
   });
 }
 
@@ -609,19 +625,39 @@ async function prepareMaterial(id) {
   await loadJobs();
 }
 
-async function runMaterialStep(id, step) {
+async function runMaterialStep(id, step, button = null) {
   const labels = {
     "analyze-video": "视频拆解",
     "store-image": "主图入库",
     "generate-images": "商品组图",
     "create-tasks": "创建任务",
   };
-  const data = await api(`/api/materials/${id}/${step}`, { method: "POST", body: "{}" });
-  alert(`已启动${labels[step] || step}：${data.job_id}`);
-  await loadJobs();
+  const name = `${step}:${id}`;
+  if (isJobBusy(name)) return;
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  renderMaterials();
+  try {
+    const data = await api(`/api/materials/${id}/${step}`, { method: "POST", body: "{}" });
+    alert(`已启动${labels[step] || step}：${data.job_id}`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+    renderMaterials();
+  }
 }
 
-async function runBatchMaterialStep(step) {
+async function runBatchMaterialStep(step, button = null) {
   const ids = [...state.selectedMaterialIds];
   if (!ids.length) {
     alert("请先勾选要处理的素材");
@@ -633,67 +669,202 @@ async function runBatchMaterialStep(step) {
     "generate-images": "批量生成组图",
     "create-tasks": "批量创建任务",
   };
-  if (isJobRunning(`batch-${step}`)) return;
-  const data = await api("/api/materials/batch-step", {
-    method: "POST",
-    body: JSON.stringify({ step, record_ids: ids, limit: ids.length }),
-  });
-  alert(`${labels[step] || step}已启动：${data.job_id}，将按顺序处理 ${ids.length} 条素材`);
-  await loadJobs();
-}
-
-async function generateVideo(id) {
-  const data = await api(`/api/tasks/${id}/generate-video`, { method: "POST", body: "{}" });
-  alert(`已启动视频生成：${data.job_id}`);
-  await loadJobs();
-  await loadTasks();
-}
-
-async function generateDoubaoPrompt(id) {
-  if (isJobRunning(`doubao-generate-prompt:${id}`)) return;
-  const data = await api(`/api/doubao-items/${id}/generate-prompt`, { method: "POST", body: "{}" });
-  alert(`已启动豆包视频提示词生成：${data.job_id}`);
-  await loadJobs();
-}
-
-async function storeDoubaoImage(id) {
-  if (isJobRunning(`doubao-store-image:${id}`)) return;
-  const data = await api(`/api/doubao-items/${id}/store-image`, { method: "POST", body: "{}" });
-  alert(`已启动豆包商品图入库：${data.job_id}`);
-  await loadJobs();
-}
-
-async function batchDoubaoStoreImages() {
-  if (isJobRunning("doubao-batch-store-images")) return;
-  const rows = state.doubaoItems.filter((row) => hasDoubaoImage(row) && !hasDoubaoStoredImage(row));
-  const data = await api("/api/doubao-items/batch-store-images", {
-    method: "POST",
-    body: JSON.stringify({ record_ids: rows.map((row) => row.record_id), limit: 50 }),
-  });
-  alert(`已启动豆包商品图批量入库：${data.job_id}`);
-  await loadJobs();
-}
-
-async function batchDoubaoPrompts() {
-  const rows = state.doubaoItems.filter((row) => hasDoubaoImage(row) && !isJobRunning(`doubao-generate-prompt:${row.record_id}`));
-  const jobIds = [];
-  for (const row of rows) {
-    const data = await api(`/api/doubao-items/${row.record_id}/generate-prompt`, { method: "POST", body: "{}" });
-    jobIds.push(data.job_id);
+  const name = `batch-${step}`;
+  if (isJobBusy(name)) return;
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
   }
-  alert(`已启动豆包视频提示词生成：${jobIds.length} 个任务`);
-  await loadJobs();
+  try {
+    const data = await api("/api/materials/batch-step", {
+      method: "POST",
+      body: JSON.stringify({ step, record_ids: ids, limit: ids.length }),
+    });
+    alert(`${labels[step] || step}已启动：${data.job_id}，将按顺序处理 ${ids.length} 条素材`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+  }
 }
 
-async function syncPublishTasks() {
-  if (isJobRunning("sync-publish-tasks")) return;
+async function generateVideo(id, button = null) {
+  const name = `generate-video:${id}`;
+  if (isJobBusy(name)) return;
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  renderTasks();
+  try {
+    const data = await api(`/api/tasks/${id}/generate-video`, { method: "POST", body: "{}" });
+    alert(`已启动视频生成：${data.job_id}`);
+    await loadJobs();
+    await loadTasks();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+    renderTasks();
+  }
+}
+
+async function generateDoubaoPrompt(id, button = null) {
+  const name = `doubao-generate-prompt:${id}`;
+  if (isJobBusy(name)) return;
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  renderDoubaoItems();
+  try {
+    const data = await api(`/api/doubao-items/${id}/generate-prompt`, { method: "POST", body: "{}" });
+    alert(`已启动豆包视频提示词生成：${data.job_id}`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+    renderDoubaoItems();
+  }
+}
+
+async function storeDoubaoImage(id, button = null) {
+  const name = `doubao-store-image:${id}`;
+  if (isJobBusy(name)) return;
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  renderDoubaoItems();
+  try {
+    const data = await api(`/api/doubao-items/${id}/store-image`, { method: "POST", body: "{}" });
+    alert(`已启动豆包商品图入库：${data.job_id}`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+    renderDoubaoItems();
+  }
+}
+
+async function batchDoubaoStoreImages(button = null) {
+  const name = "doubao-batch-store-images";
+  if (isJobBusy(name)) return;
+  const rows = state.doubaoItems.filter((row) => hasDoubaoImage(row) && !hasDoubaoStoredImage(row));
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  try {
+    const data = await api("/api/doubao-items/batch-store-images", {
+      method: "POST",
+      body: JSON.stringify({ record_ids: rows.map((row) => row.record_id), limit: 50 }),
+    });
+    alert(`已启动豆包商品图批量入库：${data.job_id}`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+  }
+}
+
+async function batchDoubaoPrompts(button = null) {
+  const name = "doubao-batch-prompts";
+  if (isJobBusy(name)) return;
+  const rows = state.doubaoItems.filter((row) => hasDoubaoImage(row) && !isJobBusy(`doubao-generate-prompt:${row.record_id}`));
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  try {
+    const jobIds = [];
+    for (const row of rows) {
+      const rowJobName = `doubao-generate-prompt:${row.record_id}`;
+      setPendingJob(rowJobName, true);
+      renderDoubaoItems();
+      try {
+        const data = await api(`/api/doubao-items/${row.record_id}/generate-prompt`, { method: "POST", body: "{}" });
+        jobIds.push(data.job_id);
+      } finally {
+        setPendingJob(rowJobName, false);
+      }
+    }
+    alert(`已启动豆包视频提示词生成：${jobIds.length} 个任务`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+    renderDoubaoItems();
+  }
+}
+
+async function syncPublishTasks(button = null) {
+  const name = "sync-publish-tasks";
+  if (isJobBusy(name)) return;
   const rows = tasksForSelected().filter((row) => String(row["生成视频链接"] || "").startsWith("http"));
   const body = state.selectedMaterialId
     ? { record_ids: rows.map((row) => row.record_id), limit: 100 }
     : { limit: 100 };
-  const data = await api("/api/tasks/sync-publish", { method: "POST", body: JSON.stringify(body) });
-  alert(`已启动发布表同步：${data.job_id}`);
-  await loadJobs();
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  try {
+    const data = await api("/api/tasks/sync-publish", { method: "POST", body: JSON.stringify(body) });
+    alert(`已启动发布表同步：${data.job_id}`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+  }
 }
 
 async function saveTemplates(id, button) {
@@ -728,7 +899,7 @@ $("saveToken").onclick = () => {
 $("refreshConfig").onclick = loadConfig;
 $("loadMaterials").onclick = loadMaterials;
 $("loadTasks").onclick = loadTasks;
-$("syncPublish").onclick = syncPublishTasks;
+$("syncPublish").onclick = () => syncPublishTasks($("syncPublish"));
 $("loadJobs").onclick = loadJobs;
 $("loadLogs").onclick = loadLogs;
 $("refreshMaterialsTable").onclick = () => refreshTable("refreshMaterialsTable", loadMaterials);
@@ -754,21 +925,36 @@ $("clearMaterialSelection").onclick = clearMaterialSelection;
     if (event.key === "Enter") selectMaterialRange();
   });
 });
-$("batchAnalyze").onclick = () => runBatchMaterialStep("analyze-video");
-$("batchStoreImage").onclick = () => runBatchMaterialStep("store-image");
-$("batchGenerateImages").onclick = () => runBatchMaterialStep("generate-images");
-$("batchCreateTasks").onclick = () => runBatchMaterialStep("create-tasks");
-$("batchDoubaoStoreImages").onclick = batchDoubaoStoreImages;
-$("batchDoubaoPrompts").onclick = batchDoubaoPrompts;
+$("batchAnalyze").onclick = () => runBatchMaterialStep("analyze-video", $("batchAnalyze"));
+$("batchStoreImage").onclick = () => runBatchMaterialStep("store-image", $("batchStoreImage"));
+$("batchGenerateImages").onclick = () => runBatchMaterialStep("generate-images", $("batchGenerateImages"));
+$("batchCreateTasks").onclick = () => runBatchMaterialStep("create-tasks", $("batchCreateTasks"));
+$("batchDoubaoStoreImages").onclick = () => batchDoubaoStoreImages($("batchDoubaoStoreImages"));
+$("batchDoubaoPrompts").onclick = () => batchDoubaoPrompts($("batchDoubaoPrompts"));
 
 $("batchVideos").onclick = async () => {
+  const name = "batch-generate-videos";
+  if (isJobBusy(name)) return;
+  const button = $("batchVideos");
+  const oldText = button.textContent;
   const rows = tasksForSelected().filter((row) => ["待生成视频", "内容已生成", ""].includes(row["生成状态"] || ""));
   const body = state.selectedMaterialId
     ? { record_ids: rows.map((row) => row.record_id), limit: 20 }
     : { limit: 3 };
-  const data = await api("/api/tasks/batch-generate-video", { method: "POST", body: JSON.stringify(body) });
-  alert(`已启动批量视频生成：${data.job_id}`);
-  await loadJobs();
+  setPendingJob(name, true);
+  button.disabled = true;
+  button.textContent = "提交中";
+  button.classList.add("is-pending");
+  try {
+    const data = await api("/api/tasks/batch-generate-video", { method: "POST", body: JSON.stringify(body) });
+    alert(`已启动批量视频生成：${data.job_id}`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    button.disabled = false;
+    button.textContent = oldText;
+    button.classList.remove("is-pending");
+  }
 };
 
 renderPage();
