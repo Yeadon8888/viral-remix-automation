@@ -24,6 +24,17 @@ CORS(app)
 
 jobs: dict[str, dict] = {}
 job_lock = Lock()
+MAX_JOBS = 10
+
+
+def prune_jobs() -> None:
+    while len(jobs) > MAX_JOBS:
+        for job_id, job in list(jobs.items()):
+            if job.get("status") != "running":
+                jobs.pop(job_id, None)
+                break
+        else:
+            break
 
 
 def require_admin():
@@ -43,6 +54,7 @@ def run_job(name: str, fn, *args, **kwargs) -> str:
                 return existing["id"]
         job_id = uuid4().hex[:12]
         jobs[job_id] = {"id": job_id, "name": name, "status": "running", "result": None, "error": None}
+        prune_jobs()
 
     def target():
         try:
@@ -50,10 +62,12 @@ def run_job(name: str, fn, *args, **kwargs) -> str:
             result = fn(*args, job_id=job_id, **kwargs)
             with job_lock:
                 jobs[job_id].update({"status": "done", "result": result})
+                prune_jobs()
             add_log("success", f"任务完成: {name}", "job", job_id)
         except Exception as exc:
             with job_lock:
                 jobs[job_id].update({"status": "failed", "error": str(exc)})
+                prune_jobs()
             traceback.print_exc()
             add_log("error", f"任务失败: {name}: {exc}", "job", job_id)
 
@@ -89,6 +103,7 @@ def config_status():
         "task_table_id": settings.task_table_id,
         "prompt_table_id": settings.prompt_table_id,
         "doubao_table_id": settings.doubao_table_id,
+        "publish_table_id": settings.publish_table_id,
         "gemini_model": settings.gemini_model,
         "cpa_model": settings.cpa_video_model,
         "image_styles": settings.image_scene_styles,
@@ -113,7 +128,7 @@ def job_status(job_id):
 
 @app.route("/api/jobs")
 def job_list():
-    return jsonify({"success": True, "data": list(jobs.values())[-50:]})
+    return jsonify({"success": True, "data": list(jobs.values())[-MAX_JOBS:]})
 
 
 @app.route("/api/materials")
@@ -301,6 +316,16 @@ def batch_generate_video():
         return {"processed": len(results), "results": results}
 
     job_id = run_job("batch-generate-videos", runner)
+    return jsonify({"success": True, "job_id": job_id})
+
+
+@app.route("/api/tasks/sync-publish", methods=["POST"])
+def sync_publish_tasks():
+    body = request.get_json(silent=True) or {}
+    record_ids = body.get("record_ids")
+    limit = int(body.get("limit", 100))
+    workflow = ViralRemixWorkflow(settings)
+    job_id = run_job("sync-publish-tasks", workflow.sync_publish_items, record_ids, limit)
     return jsonify({"success": True, "job_id": job_id})
 
 

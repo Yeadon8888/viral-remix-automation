@@ -298,6 +298,14 @@ table {
   text-align: center;
 }
 
+.row-no {
+  width: 54px;
+  min-width: 54px;
+  color: var(--muted);
+  text-align: center;
+  font-weight: 800;
+}
+
 th, td {
   border-bottom: 1px solid #e7ebf1;
   padding: 10px;
@@ -688,7 +696,7 @@ code {
 
 .jobs {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }

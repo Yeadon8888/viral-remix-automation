@@ -7,9 +7,10 @@
 1. 从素材输入表读取商品名称、爆款视频链接、商品图片、商品组图提示词、地区。
 2. 用 TikHub 解析 TikTok 分享链接并下载原视频。
 3. 用 yunwu 渠道 Gemini 模型理解爆款视频，只输出最终视频生成 Prompt；Prompt 中文为主，口播和视频内文案使用目标地区语言。
-4. 用 NewToken `gpt-image-2` 系列模型把商品图生成商品组图，并转存 R2。
-5. 在「爆款复刻视频生成任务」表创建视频任务：一张商品组图对应一条视频任务，写入视频生成 Prompt 和参考图链接。
+4. 默认截取爆款视频第一帧，和商品主图一起作为 NewToken `gpt-image-2` 系列模型的参考图，生成 1 张商品组图并转存 R2；也可以切换为其它单一模板。
+5. 在「爆款复刻视频生成任务」表创建 1 条视频任务，写入视频生成 Prompt 和参考图链接。
 6. 手动触发任务表视频生成时，调用 CPA `/v1/videos`，下载结果视频并转存 R2，再写回任务表。
+7. 可把已完成的视频任务同步到发布表「视频生成列表」。
 
 ## 本地运行
 
@@ -33,6 +34,7 @@ FEISHU_APP_SECRET=
 FEISHU_APP_TOKEN=H3RybjMFqabStts0zFUcWrz9nvb
 FEISHU_SOURCE_TABLE_ID=tblDEJZwbA7iEuL1
 FEISHU_TASK_TABLE_ID=tblJSkNvzYaku9Kg
+FEISHU_PUBLISH_TABLE_ID=tbl0D4WlwbkxtrZx
 TIKHUB_API_KEY=
 GEMINI_API_KEY=
 NEWTOKEN_IMAGE_API_KEY=
@@ -49,7 +51,7 @@ GEMINI_BASE_URL=https://yunwu.ai
 GEMINI_MODEL=gemini-3.1-flash-lite
 NEWTOKEN_IMAGE_BASE_URL=https://api.newtoken.club
 NEWTOKEN_IMAGE_MODEL=gpt-image-2-1K
-IMAGE_SCENE_STYLES=lifestyle,model,detail,flatlay,outdoor,studio
+IMAGE_SCENE_STYLES=viral_first_frame,lifestyle,model,detail,flatlay,outdoor,studio
 CPA_BASE_URL=https://cliproxyapi-production-2dde.up.railway.app
 CPA_VIDEO_MODEL=grok-imagine-video-1.5-preview
 CPA_SECONDS=16
@@ -75,5 +77,6 @@ R2_PREFIX=viral-remix-7d
 - `GET /api/tasks`：读取生成任务表。
 - `POST /api/tasks/<record_id>/generate-video`：单条生成视频。
 - `POST /api/tasks/batch-generate-video`：批量生成视频。
+- `POST /api/tasks/sync-publish`：把已完成任务的标题、文案、标签、商品标题和视频链接同步到发布表。
 
 如果设置了 `ADMIN_TOKEN`，所有 `/api/*` 请求都需要带 `X-Admin-Token` 请求头。

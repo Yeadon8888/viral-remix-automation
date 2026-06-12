@@ -9,8 +9,9 @@ const state = {
   selectedMaterialId: localStorage.getItem("viral-remix-selected-material") || "",
   selectedMaterialIds: new Set(),
   activePage: localStorage.getItem("viral-remix-active-page") || "materials",
-  imageStyles: ["lifestyle", "model", "detail", "flatlay", "outdoor", "studio"],
+  imageStyles: ["viral_first_frame", "lifestyle", "model", "detail", "flatlay", "outdoor", "studio"],
   imageStyleLabels: {
+    viral_first_frame: "爆款首帧",
     lifestyle: "生活场景",
     model: "模特展示",
     detail: "细节特写",
@@ -84,7 +85,7 @@ function renderConfig(data) {
   if (Array.isArray(data.image_styles) && data.image_styles.length) state.imageStyles = data.image_styles;
   if (data.image_style_labels && typeof data.image_style_labels === "object") state.imageStyleLabels = data.image_style_labels;
   $("configLine").textContent = ok
-    ? `已连接：素材表 ${data.source_table_id} / 任务表 ${data.task_table_id} / 豆包表 ${data.doubao_table_id || "-"} / Prompt表 ${data.prompt_table_id || "-"} / 视频理解 ${data.gemini_model || "-"} / 存储 ${data.storage_mode}`
+    ? `已连接：素材表 ${data.source_table_id} / 任务表 ${data.task_table_id} / 发布表 ${data.publish_table_id || "-"} / 豆包表 ${data.doubao_table_id || "-"} / Prompt表 ${data.prompt_table_id || "-"} / 视频理解 ${data.gemini_model || "-"} / 存储 ${data.storage_mode}`
     : `缺少配置：${data.missing.join(", ")}`;
 }
 
@@ -141,7 +142,8 @@ function renderMainImage(row) {
 
 function selectedTemplateValues(row) {
   const values = row["商品组图模板值"];
-  return Array.isArray(values) && values.length ? values : state.imageStyles;
+  if (Array.isArray(values) && values.length) return [values[0]];
+  return state.imageStyles.length ? [state.imageStyles[0]] : [];
 }
 
 function renderTemplateControl(row) {
@@ -155,7 +157,7 @@ function renderTemplateControl(row) {
         const label = state.imageStyleLabels[style] || style;
         const checked = values.includes(style) ? "checked" : "";
         return `<label class="template-option">
-          <input type="checkbox" value="${esc(style)}" ${checked}>
+          <input type="radio" name="template-${esc(row.record_id)}" value="${esc(style)}" ${checked}>
           <span>${esc(label)}</span>
         </label>`;
       }).join("")}
@@ -236,13 +238,14 @@ function renderMaterials() {
   }
 
   $("materials").innerHTML = `<table><thead><tr>
-    <th class="select-col"></th><th>爆款视频</th><th>1 视频Prompt</th><th>2 主图入库</th><th>3 商品组图</th><th>4 视频任务</th><th>状态</th>
+    <th class="select-col"></th><th class="row-no">行</th><th>爆款视频</th><th>1 视频Prompt</th><th>2 主图入库</th><th>3 商品组图</th><th>4 视频任务</th><th>状态</th>
   </tr></thead><tbody>${state.materials.map((row) => {
     const videoUrl = row["爆款视频链接"];
     const selected = row.record_id === state.selectedMaterialId ? " selected" : "";
     const checked = state.selectedMaterialIds.has(row.record_id) ? "checked" : "";
     return `<tr class="selectable${selected}" data-material-id="${esc(row.record_id)}">
       <td class="select-col"><input class="material-check" type="checkbox" data-select-id="${esc(row.record_id)}" ${checked}></td>
+      <td class="row-no">${esc(row["行号"] || "")}</td>
       <td class="video-cell">
         ${videoUrl ? `<a class="video-link" href="${esc(videoUrl)}" target="_blank">${esc(shortUrl(videoUrl))}</a>` : `<strong>${esc(shortUrl(videoUrl))}</strong>`}
         <div class="subline">${esc(row["商品名称"] || "未填写商品名称")}</div>
@@ -537,7 +540,10 @@ async function loadJobs() {
 
 async function loadLogs() {
   const data = await api("/api/logs?limit=200");
-  $("logs").textContent = data.data.map((l) => `[${l.timestamp}] [${l.level}] [${l.source}] ${l.message}`).join("\n");
+  const box = $("logs");
+  const shouldStick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  box.textContent = data.data.map((l) => `[${l.timestamp}] [${l.level}] [${l.source}] ${l.message}`).join("\n");
+  if (shouldStick) box.scrollTop = box.scrollHeight;
 }
 
 async function prepareMaterial(id) {
@@ -623,10 +629,22 @@ async function batchDoubaoPrompts() {
   await loadJobs();
 }
 
+async function syncPublishTasks() {
+  if (isJobRunning("sync-publish-tasks")) return;
+  const rows = tasksForSelected().filter((row) => String(row["生成视频链接"] || "").startsWith("http"));
+  const body = state.selectedMaterialId
+    ? { record_ids: rows.map((row) => row.record_id), limit: 100 }
+    : { limit: 100 };
+  const data = await api("/api/tasks/sync-publish", { method: "POST", body: JSON.stringify(body) });
+  alert(`已启动发布表同步：${data.job_id}`);
+  await loadJobs();
+}
+
 async function saveTemplates(id, button) {
   const menu = [...document.querySelectorAll("[data-template-id]")].find((item) => item.dataset.templateId === id);
   if (!menu) return;
-  const styles = [...menu.querySelectorAll("input[type='checkbox']:checked")].map((input) => input.value);
+  const checked = menu.querySelector("input[type='radio']:checked");
+  const styles = checked ? [checked.value] : [];
   const oldText = button.textContent;
   button.textContent = "保存中";
   button.disabled = true;
@@ -654,6 +672,7 @@ $("saveToken").onclick = () => {
 $("refreshConfig").onclick = loadConfig;
 $("loadMaterials").onclick = loadMaterials;
 $("loadTasks").onclick = loadTasks;
+$("syncPublish").onclick = syncPublishTasks;
 $("loadJobs").onclick = loadJobs;
 $("loadLogs").onclick = loadLogs;
 $("pageMaterials").onclick = () => { state.activePage = "materials"; renderPage(); };

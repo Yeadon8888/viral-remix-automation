@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import subprocess
 from tempfile import TemporaryDirectory
 from typing import Any
 
@@ -59,6 +60,10 @@ def linked_record_ids(value: Any) -> list[str]:
 
 def style_labels(styles: tuple[str, ...]) -> list[str]:
     return [STYLE_LABELS.get(style, style) for style in styles]
+
+
+def first_style(styles: tuple[str, ...]) -> tuple[str, ...]:
+    return (styles[0],) if styles else ()
 
 
 TASK_ANGLES = (
@@ -197,14 +202,15 @@ class ViralRemixWorkflow:
                 if status_value == "已完成":
                     bucket["done"] += 1
         out = []
-        for record in records:
+        for index, record in enumerate(records, start=1):
             fields = record.get("fields", {})
             record_id = record.get("record_id")
             group_image_urls = split_urls(field_value(fields, "商品组图链接", ""))
-            template_styles = normalize_styles(field_value(fields, "商品组图模板", []), self.settings.image_scene_styles)
+            template_styles = first_style(normalize_styles(field_value(fields, "商品组图模板", []), self.settings.image_scene_styles))
             counts = task_counts.get(str(record_id), {"total": 0, "done": 0})
             video_prompt = str(field_value(fields, MATERIAL_PROMPT_FIELD, "") or "").strip()
             out.append({
+                "行号": index,
                 "record_id": record_id,
                 "商品名称": field_value(fields, "商品名称"),
                 "爆款视频链接": field_value(fields, "爆款视频链接"),
@@ -217,6 +223,7 @@ class ViralRemixWorkflow:
                 "商品组图URLs": group_image_urls,
                 "商品组图数量": len(group_image_urls),
                 "商品主图存储链接": field_value(fields, "商品主图存储链接", ""),
+                "爆款首帧链接": field_value(fields, "爆款首帧链接", ""),
                 "商品组图模板": style_labels(template_styles),
                 "商品组图模板值": list(template_styles),
                 "视频拆解提示词模板": field_value(fields, "视频拆解提示词模板", ""),
@@ -233,12 +240,13 @@ class ViralRemixWorkflow:
         return out
 
     def update_material_templates(self, record_id: str, styles: list[str]) -> dict[str, Any]:
-        selected_styles = normalize_styles(styles, self.settings.image_scene_styles)
+        selected_styles = first_style(normalize_styles(styles, self.settings.image_scene_styles))
         labels = style_labels(selected_styles)
+        persisted_labels = [] if selected_styles == ("viral_first_frame",) else labels
         self.feishu.update_record(
             self.settings.source_table_id,
             record_id,
-            {"商品组图模板": labels},
+            {"商品组图模板": persisted_labels},
         )
         return {"record_id": record_id, "商品组图模板": labels, "商品组图模板值": list(selected_styles)}
 
@@ -412,6 +420,58 @@ class ViralRemixWorkflow:
         stored = self.r2.upload_bytes(data, f"{style}{suffix}", mime)
         return stored["url"]
 
+    def _extract_first_frame(self, video_bytes: bytes, job_id: str | None = None) -> str:
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            video_path = tmp / "viral-video.mp4"
+            frame_path = tmp / "viral-first-frame.jpg"
+            video_path.write_bytes(video_bytes)
+            try:
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-i",
+                        str(video_path),
+                        "-frames:v",
+                        "1",
+                        str(frame_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            except FileNotFoundError as exc:
+                raise RuntimeError("ffmpeg 未安装，无法截取爆款视频首帧") from exc
+            except subprocess.CalledProcessError as exc:
+                detail = (exc.stderr or exc.stdout or "").strip()[:300]
+                raise RuntimeError(f"ffmpeg 截取爆款首帧失败: {detail}") from exc
+            if not frame_path.exists() or frame_path.stat().st_size == 0:
+                raise RuntimeError("ffmpeg 未生成爆款首帧")
+            stored = self.r2.upload_bytes(frame_path.read_bytes(), "viral-first-frame.jpg", "image/jpeg")
+            add_log("info", f"爆款视频首帧已入库: {stored['url']}", "workflow", job_id)
+            return stored["url"]
+
+    def _ensure_viral_first_frame(self, record_id: str, fields: dict[str, Any], job_id: str | None = None) -> str:
+        first_frame_url = str(field_value(fields, "爆款首帧链接", "") or "").strip()
+        if first_frame_url.startswith("http"):
+            return first_frame_url
+        viral_url = str(field_value(fields, "爆款视频链接", "") or "").strip()
+        if not viral_url:
+            return ""
+        video_bytes, _ = self.tikhub.download_video(viral_url)
+        first_frame_url = self._extract_first_frame(video_bytes, job_id)
+        self.feishu.update_record(
+            self.settings.source_table_id,
+            record_id,
+            {"爆款首帧链接": url_cell(first_frame_url), "自动化处理时间": now_ms()},
+        )
+        return first_frame_url
+
     def analyze_viral_video(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         record = self.feishu.get_record(self.settings.source_table_id, record_id)
         fields = record.get("fields", {})
@@ -435,6 +495,11 @@ class ViralRemixWorkflow:
 
         try:
             video_bytes, video_mime = self.tikhub.download_video(viral_url)
+            first_frame_url = ""
+            try:
+                first_frame_url = self._extract_first_frame(video_bytes, job_id)
+            except Exception as exc:
+                add_log("error", f"爆款视频首帧截取失败，将继续拆解视频: {exc}", "workflow", job_id)
             prompt_templates, prompt_versions = self._active_prompt_templates(region)
             prompt_template = prompt_override or prompt_templates.get("video_analysis", DEFAULT_VIDEO_ANALYSIS_TEMPLATE)
             analysis = self.gemini.analyze_video(
@@ -456,6 +521,7 @@ class ViralRemixWorkflow:
                     "生成标题": analysis["publish_title"],
                     "生成文案": analysis["publish_caption"],
                     "关键词": analysis["keywords"],
+                    "爆款首帧链接": url_cell(first_frame_url) if first_frame_url else "",
                     "视频拆解实际提示词": analysis.get("analysis_prompt", ""),
                     "Prompt配置版本": version_label,
                     "自动化状态": "视频已拆解",
@@ -516,7 +582,7 @@ class ViralRemixWorkflow:
         custom_prompt = str(field_value(fields, "生图自定义提示词", "") or "").strip()
         region = str(field_value(fields, "地区", "墨西哥") or "墨西哥").strip()
         prompt_override = str(field_value(fields, "商品组图提示词模板", "") or "").strip()
-        selected_styles = normalize_styles(field_value(fields, "商品组图模板", []), self.settings.image_scene_styles)
+        selected_styles = first_style(normalize_styles(field_value(fields, "商品组图模板", []), self.settings.image_scene_styles))
 
         if not product_image_url.startswith("http"):
             raise RuntimeError("商品主图还没有入库，请先执行主图入库")
@@ -530,6 +596,9 @@ class ViralRemixWorkflow:
 
         try:
             prompt_templates, prompt_versions = self._active_prompt_templates(region)
+            first_frame_url = ""
+            if selected_styles == ("viral_first_frame",):
+                first_frame_url = self._ensure_viral_first_frame(record_id, fields, job_id)
             generated = self.image_client.generate_group_images(
                 product_image_url,
                 custom_prompt,
@@ -538,6 +607,7 @@ class ViralRemixWorkflow:
                 override_template=prompt_override,
                 region=region,
                 language=local_language(region),
+                reference_image_url=first_frame_url,
             )
             image_urls = []
             failures = []
@@ -564,7 +634,7 @@ class ViralRemixWorkflow:
                 record_id,
                 {
                     "商品组图链接": "\n".join(image_urls),
-                    "商品组图模板": style_labels(selected_styles),
+                    "商品组图模板": [] if selected_styles == ("viral_first_frame",) else style_labels(selected_styles),
                     "商品组图实际提示词": image_prompt_snapshot(generated),
                     "Prompt配置版本": version_label,
                     "自动化状态": "组图已生成",
@@ -588,12 +658,12 @@ class ViralRemixWorkflow:
         fields = record.get("fields", {})
         product_name = str(field_value(fields, "商品名称", "") or "").strip()
         region = str(field_value(fields, "地区", "墨西哥") or "墨西哥").strip()
-        image_urls = split_urls(field_value(fields, "商品组图链接", ""))
+        image_urls = split_urls(field_value(fields, "商品组图链接", ""))[:1]
         base_prompt = str(field_value(fields, MATERIAL_PROMPT_FIELD, "") or "").strip()
         publish_title = str(field_value(fields, "生成标题", "") or product_name).strip()
         publish_caption = str(field_value(fields, "生成文案", "") or "").strip()
         keywords = str(field_value(fields, "关键词", "") or "").strip()
-        selected_styles = normalize_styles(field_value(fields, "商品组图模板", []), self.settings.image_scene_styles)
+        selected_styles = first_style(normalize_styles(field_value(fields, "商品组图模板", []), self.settings.image_scene_styles))
 
         if not product_name:
             raise RuntimeError("商品名称为空")
@@ -763,3 +833,63 @@ class ViralRemixWorkflow:
             )
             add_log("error", f"视频生成失败: {exc}", "workflow", job_id)
             raise
+
+    def sync_publish_items(self, record_ids: list[str] | None = None, limit: int = 100, job_id: str | None = None) -> dict[str, Any]:
+        if not self.settings.publish_table_id:
+            raise RuntimeError("缺少 FEISHU_PUBLISH_TABLE_ID")
+
+        existing_by_video: dict[str, str] = {}
+        for record in self.feishu.list_records(self.settings.publish_table_id):
+            fields = record.get("fields", {})
+            video_url = str(field_value(fields, "视频链接", "") or "").strip()
+            if video_url.startswith("http"):
+                existing_by_video[video_url] = str(record.get("record_id") or "")
+
+        rows = self.list_tasks(limit=max(limit, 200))
+        if record_ids:
+            allowed = set(record_ids)
+            rows = [row for row in rows if row.get("record_id") in allowed]
+        rows = [row for row in rows if str(row.get("生成视频链接") or "").startswith("http")][:limit]
+
+        created = 0
+        updated = 0
+        skipped = 0
+        for row in rows:
+            video_url = str(row.get("生成视频链接") or "").strip()
+            task_name = str(row.get("生成任务名称") or "").strip()
+            product_title = task_name.rsplit(" - 视频任务 ", 1)[0] if " - 视频任务 " in task_name else task_name
+            source_ids = row.get("关联素材记录IDs") if isinstance(row.get("关联素材记录IDs"), list) else []
+            fields = {
+                "标题": str(row.get("生成标题") or product_title).strip(),
+                "文案": str(row.get("生成文案") or "").strip(),
+                "标签": str(row.get("关键词") or "").strip(),
+                "商品标题": product_title,
+                "视频链接": video_url,
+                "生成时间": now_ms(),
+                "发布状态": "待发布",
+            }
+            if source_ids:
+                fields["关联复刻素材"] = source_ids[:1]
+            try:
+                existing_id = existing_by_video.get(video_url)
+                if existing_id:
+                    try:
+                        self.feishu.update_record(self.settings.publish_table_id, existing_id, fields)
+                    except Exception:
+                        fields.pop("关联复刻素材", None)
+                        self.feishu.update_record(self.settings.publish_table_id, existing_id, fields)
+                    updated += 1
+                else:
+                    try:
+                        created_record = self.feishu.create_record(self.settings.publish_table_id, fields)
+                    except Exception:
+                        fields.pop("关联复刻素材", None)
+                        created_record = self.feishu.create_record(self.settings.publish_table_id, fields)
+                    existing_by_video[video_url] = str(created_record.get("record_id") or "")
+                    created += 1
+            except Exception as exc:
+                skipped += 1
+                add_log("error", f"发布表同步失败({row.get('record_id')}): {exc}", "workflow", job_id)
+
+        add_log("success", f"发布表同步完成: 新增 {created} / 更新 {updated} / 跳过 {skipped}", "workflow", job_id)
+        return {"created": created, "updated": updated, "skipped": skipped}

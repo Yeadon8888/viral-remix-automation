@@ -59,12 +59,13 @@ class NewTokenImageClient:
             or (data.get("data") or {}).get("url")
         )
 
-    def edit_image(self, image_url: str, prompt: str, aspect_ratio: str = "9:16") -> str:
+    def edit_image(self, image_url: str | list[str], prompt: str, aspect_ratio: str = "9:16") -> str:
+        image_urls = image_url if isinstance(image_url, list) else [image_url]
         body = {
             "model": self.settings.newtoken_model,
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
-            "image_urls": [image_url],
+            "image_urls": image_urls,
         }
         data = self._request("POST", "/v1/videos", json=body, timeout=60)
         status = str(data.get("status", "queued")).lower()
@@ -103,6 +104,7 @@ class NewTokenImageClient:
         override_template: str = "",
         region: str = "墨西哥",
         language: str = "",
+        reference_image_url: str = "",
     ) -> list[dict[str, str]]:
         results = []
         for style in styles:
@@ -124,8 +126,11 @@ class NewTokenImageClient:
             )
             if custom_prompt:
                 prompt += f"\n\n用户补充要求：{custom_prompt}"
+            image_urls = [source_image_url]
+            if style == "viral_first_frame" and reference_image_url:
+                image_urls.append(reference_image_url)
             try:
-                url = self.edit_image(source_image_url, prompt)
+                url = self.edit_image(image_urls, prompt)
                 results.append({"style": style, "url": url, "prompt": prompt})
             except Exception as exc:
                 results.append({"style": style, "url": "", "prompt": prompt, "error": str(exc)})
