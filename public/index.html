@@ -68,6 +68,10 @@
             <button id="batchCreateTasks">批量创建任务</button>
           </div>
         </div>
+        <div class="table-toolbar">
+          <span id="materialsRefreshState">等待读取飞书素材表</span>
+          <button id="refreshMaterialsTable" class="mini secondary" type="button">刷新表格</button>
+        </div>
         <div id="materials" class="table-wrap"></div>
       </div>
     </section>
@@ -86,6 +90,10 @@
           </div>
         </div>
         <div id="selectedMaterial" class="selected-box">未选择素材</div>
+        <div class="table-toolbar">
+          <span id="tasksRefreshState">等待读取飞书任务表</span>
+          <button id="refreshTasksTable" class="mini secondary" type="button">刷新表格</button>
+        </div>
         <div id="tasks" class="table-wrap"></div>
       </div>
     </section>
@@ -109,6 +117,10 @@
           <div><span id="metricDoubaoStored">0</span><small>已入库</small></div>
           <div><span id="metricDoubaoPrompts">0</span><small>已生成Prompt</small></div>
         </div>
+        <div class="table-toolbar">
+          <span id="doubaoRefreshState">等待读取豆包视频制作表</span>
+          <button id="refreshDoubaoTable" class="mini secondary" type="button">刷新表格</button>
+        </div>
         <div id="doubaoItems" class="table-wrap"></div>
       </div>
     </section>
@@ -129,6 +141,10 @@
           <span>先在配置表改模板版本并启用，再重跑单条素材；工具会把实际发送给模型的 Prompt 快照写回素材表。</span>
         </div>
         <div id="promptEditor" class="prompt-editor" hidden></div>
+        <div class="table-toolbar">
+          <span id="promptsRefreshState">等待读取 Prompt 配置表</span>
+          <button id="refreshPromptsTable" class="mini secondary" type="button">刷新表格</button>
+        </div>
         <div id="prompts" class="table-wrap"></div>
       </div>
     </section>

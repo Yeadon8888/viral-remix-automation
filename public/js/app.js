@@ -40,6 +40,32 @@ function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+function refreshTimeLabel() {
+  return new Date().toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function markTableLoaded(key, label, count) {
+  const target = $(`${key}RefreshState`);
+  if (target) target.textContent = `${label}已从飞书刷新 ${count} 条 · ${refreshTimeLabel()}`;
+}
+
+async function refreshTable(buttonId, loader) {
+  const button = $(buttonId);
+  const oldText = button ? button.textContent : "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "刷新中";
+  }
+  try {
+    await loader();
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+    }
+  }
+}
+
 function status(value) {
   const v = esc(value || "未处理");
   return `<span class="status ${v}">${v}</span>`;
@@ -472,18 +498,21 @@ async function loadMaterials() {
   state.selectedMaterialIds = new Set([...state.selectedMaterialIds].filter((id) => existingIds.has(id)));
   renderMaterials();
   renderTasks();
+  markTableLoaded("materials", "素材表", state.materials.length);
 }
 
 async function loadTasks() {
   const data = await api("/api/tasks?limit=200");
   state.tasks = data.data;
   renderTasks();
+  markTableLoaded("tasks", "任务表", state.tasks.length);
 }
 
 async function loadDoubaoItems() {
   const data = await api("/api/doubao-items?limit=200");
   state.doubaoItems = data.data;
   renderDoubaoItems();
+  markTableLoaded("doubao", "豆包表", state.doubaoItems.length);
 }
 
 async function loadPrompts() {
@@ -493,6 +522,7 @@ async function loadPrompts() {
     state.editingPromptId = "";
   }
   renderPrompts();
+  markTableLoaded("prompts", "Prompt表", state.prompts.length);
 }
 
 function closePromptEditor() {
@@ -675,6 +705,10 @@ $("loadTasks").onclick = loadTasks;
 $("syncPublish").onclick = syncPublishTasks;
 $("loadJobs").onclick = loadJobs;
 $("loadLogs").onclick = loadLogs;
+$("refreshMaterialsTable").onclick = () => refreshTable("refreshMaterialsTable", loadMaterials);
+$("refreshTasksTable").onclick = () => refreshTable("refreshTasksTable", loadTasks);
+$("refreshDoubaoTable").onclick = () => refreshTable("refreshDoubaoTable", loadDoubaoItems);
+$("refreshPromptsTable").onclick = () => refreshTable("refreshPromptsTable", loadPrompts);
 $("pageMaterials").onclick = () => { state.activePage = "materials"; renderPage(); };
 $("pageVideos").onclick = () => { state.activePage = "videos"; renderPage(); loadTasks().catch(() => {}); };
 $("pageDoubao").onclick = () => { state.activePage = "doubao"; renderPage(); loadDoubaoItems().catch(() => {}); };
