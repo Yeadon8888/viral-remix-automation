@@ -529,6 +529,7 @@ class ViralRemixWorkflow:
     def generate_product_images(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         record = self.feishu.get_record(self.settings.source_table_id, record_id)
         fields = record.get("fields", {})
+        product_name = str(field_value(fields, "商品名称", "") or "").strip()
         product_image_url = str(field_value(fields, "商品主图存储链接", "") or "").strip()
         custom_prompt = str(field_value(fields, "生图自定义提示词", "") or "").strip()
         region = str(field_value(fields, "地区", "墨西哥") or "墨西哥").strip()
@@ -569,6 +570,7 @@ class ViralRemixWorkflow:
                 override_template=prompt_override,
                 region=region,
                 language=local_language(region),
+                product_name=product_name,
                 reference_image_url=first_frame_url,
             )
             image_urls = []

@@ -104,6 +104,7 @@ class NewTokenImageClient:
         override_template: str = "",
         region: str = "墨西哥",
         language: str = "",
+        product_name: str = "",
         reference_image_url: str = "",
     ) -> list[dict[str, str]]:
         results = []
@@ -121,6 +122,7 @@ class NewTokenImageClient:
                     "lang": language,
                     "style": style,
                     "style_label": STYLE_LABELS.get(style, style),
+                    "product_name": product_name or "无",
                     "custom_prompt": custom_prompt or "无",
                 },
             )
