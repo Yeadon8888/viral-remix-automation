@@ -279,6 +279,20 @@ def generate_task_video(record_id):
     return jsonify({"success": True, "job_id": job_id})
 
 
+@app.route("/api/tasks/<record_id>/sync-reference-image", methods=["POST"])
+def sync_task_reference_image(record_id):
+    workflow = ViralRemixWorkflow(settings)
+    job_id = run_job(f"sync-reference-image:{record_id}", workflow.sync_task_reference_image, record_id)
+    return jsonify({"success": True, "job_id": job_id})
+
+
+@app.route("/api/tasks/<record_id>/store-manual-video", methods=["POST"])
+def store_manual_task_video(record_id):
+    workflow = ViralRemixWorkflow(settings)
+    job_id = run_job(f"store-manual-video:{record_id}", workflow.store_manual_task_video, record_id)
+    return jsonify({"success": True, "job_id": job_id})
+
+
 @app.route("/api/tasks/batch-generate-video", methods=["POST"])
 def batch_generate_video():
     body = request.get_json(silent=True) or {}
@@ -304,6 +318,70 @@ def batch_generate_video():
         return {"processed": len(results), "results": results}
 
     job_id = run_job("batch-generate-videos", runner)
+    return jsonify({"success": True, "job_id": job_id})
+
+
+@app.route("/api/tasks/batch-sync-reference-images", methods=["POST"])
+def batch_sync_reference_images():
+    body = request.get_json(silent=True) or {}
+    record_ids = body.get("record_ids")
+    limit = int(body.get("limit", 100))
+    workflow = ViralRemixWorkflow(settings)
+
+    def runner(job_id=None):
+        ids = record_ids
+        if not ids:
+            rows = workflow.list_tasks(limit=max(limit, 200))
+            ids = [
+                row["record_id"]
+                for row in rows
+                if row.get("record_id")
+                and str(row.get("首帧/参考图链接") or "").startswith("http")
+                and not int(row.get("首帧附件数") or 0)
+            ][:limit]
+        results = []
+        for rid in ids[:limit]:
+            try:
+                results.append(workflow.sync_task_reference_image(rid, job_id=job_id))
+            except Exception as exc:
+                results.append({"record_id": rid, "error": str(exc)})
+        failed = len([item for item in results if item.get("error")])
+        return {"processed": len(results), "failed": failed, "results": results}
+
+    job_id = run_job("batch-sync-reference-images", runner)
+    return jsonify({"success": True, "job_id": job_id})
+
+
+@app.route("/api/tasks/batch-store-manual-videos", methods=["POST"])
+def batch_store_manual_videos():
+    body = request.get_json(silent=True) or {}
+    record_ids = body.get("record_ids")
+    limit = int(body.get("limit", 100))
+    workflow = ViralRemixWorkflow(settings)
+
+    def runner(job_id=None):
+        ids = record_ids
+        if not ids:
+            rows = workflow.list_tasks(limit=max(limit, 200))
+            ids = [
+                row["record_id"]
+                for row in rows
+                if row.get("record_id")
+                and (
+                    int(row.get("生成视频附件数") or 0)
+                    or str(row.get("生成视频链接") or "").startswith("http")
+                )
+            ][:limit]
+        results = []
+        for rid in ids[:limit]:
+            try:
+                results.append(workflow.store_manual_task_video(rid, job_id=job_id))
+            except Exception as exc:
+                results.append({"record_id": rid, "error": str(exc)})
+        failed = len([item for item in results if item.get("error")])
+        return {"processed": len(results), "failed": failed, "results": results}
+
+    job_id = run_job("batch-store-manual-videos", runner)
     return jsonify({"success": True, "job_id": job_id})
 
 

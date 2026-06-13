@@ -408,6 +408,14 @@ function renderTasks() {
     <th class="select-col"></th><th class="row-no">行</th><th>任务</th><th>状态</th><th>进度</th><th>发布内容</th><th>参考图</th><th>视频</th><th>操作</th>
   </tr></thead><tbody>${rows.map((row) => {
     const checked = state.selectedTaskIds.has(row.record_id) ? "checked" : "";
+    const referenceCount = Number(row["首帧附件数"] || 0);
+    const videoAttachmentCount = Number(row["生成视频附件数"] || 0);
+    const referenceJob = `sync-reference-image:${row.record_id}`;
+    const manualVideoJob = `store-manual-video:${row.record_id}`;
+    const generateJob = `generate-video:${row.record_id}`;
+    const referenceBusy = isJobBusy(referenceJob);
+    const manualVideoBusy = isJobBusy(manualVideoJob);
+    const generateBusy = isJobBusy(generateJob);
     return `<tr>
     <td class="select-col"><input class="task-check" type="checkbox" data-task-select-id="${esc(row.record_id)}" ${checked}></td>
     <td class="row-no">${esc(row["行号"] || "")}</td>
@@ -422,9 +430,21 @@ function renderTasks() {
       <div class="muted">${esc(row["关键词"] || "")}</div>
       ${row["生成文案"] ? `<details class="prompt-preview"><summary>正文</summary><p>${esc(row["生成文案"])}</p></details>` : ""}
     </td>
-    <td>${row["首帧/参考图链接"] ? renderThumbs([row["首帧/参考图链接"]]) : `<span class="muted">无</span>`}</td>
-    <td>${row["生成视频链接"] ? `<a href="${esc(row["生成视频链接"])}" target="_blank">打开视频</a>` : esc(row["失败原因"] || "")}</td>
-    <td><button class="mini${state.pendingJobs.has(`generate-video:${row.record_id}`) ? " is-pending" : ""}" data-action="video" data-id="${esc(row.record_id)}" ${isJobBusy(`generate-video:${row.record_id}`) ? "disabled" : ""}>${state.pendingJobs.has(`generate-video:${row.record_id}`) ? "提交中" : isJobBusy(`generate-video:${row.record_id}`) ? "进行中" : "生成视频"}</button></td>
+    <td>
+      <div class="asset-cell">
+        ${row["首帧/参考图链接"] ? renderThumbs([row["首帧/参考图链接"]]) : `<span class="muted">无</span>`}
+        ${referenceCount ? status("已入表") : `<span class="muted">未入表</span>`}
+        <button class="mini ghost${state.pendingJobs.has(referenceJob) ? " is-pending" : ""}" data-action="sync-reference" data-id="${esc(row.record_id)}" ${referenceBusy || !row["首帧/参考图链接"] ? "disabled" : ""}>${state.pendingJobs.has(referenceJob) ? "提交中" : referenceBusy ? "入表中" : referenceCount ? "检查入表" : "参考图入表"}</button>
+      </div>
+    </td>
+    <td>
+      <div class="asset-cell">
+        ${row["生成视频链接"] ? `<a href="${esc(row["生成视频链接"])}" target="_blank">打开视频</a>` : `<span class="muted">${esc(row["失败原因"] || "待人工上传")}</span>`}
+        ${videoAttachmentCount ? status(`视频附件${videoAttachmentCount}`) : ""}
+        <button class="mini ghost${state.pendingJobs.has(manualVideoJob) ? " is-pending" : ""}" data-action="manual-video" data-id="${esc(row.record_id)}" ${manualVideoBusy || (!videoAttachmentCount && !row["生成视频链接"]) ? "disabled" : ""}>${state.pendingJobs.has(manualVideoJob) ? "提交中" : manualVideoBusy ? "入库中" : "视频入库"}</button>
+      </div>
+    </td>
+    <td><button class="mini${state.pendingJobs.has(generateJob) ? " is-pending" : ""}" data-action="video" data-id="${esc(row.record_id)}" ${generateBusy ? "disabled" : ""}>${state.pendingJobs.has(generateJob) ? "提交中" : generateBusy ? "进行中" : "生成视频"}</button></td>
   </tr>`;
   }).join("")}</tbody></table>`;
 
@@ -437,6 +457,12 @@ function renderTasks() {
   });
   document.querySelectorAll("[data-action='video']").forEach((button) => {
     button.addEventListener("click", () => generateVideo(button.dataset.id, button));
+  });
+  document.querySelectorAll("[data-action='sync-reference']").forEach((button) => {
+    button.addEventListener("click", () => syncReferenceImage(button.dataset.id, button));
+  });
+  document.querySelectorAll("[data-action='manual-video']").forEach((button) => {
+    button.addEventListener("click", () => storeManualVideo(button.dataset.id, button));
   });
   renderTaskSelectionState();
 }
@@ -776,6 +802,60 @@ async function generateVideo(id, button = null) {
   }
 }
 
+async function syncReferenceImage(id, button = null) {
+  const name = `sync-reference-image:${id}`;
+  if (isJobBusy(name)) return;
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  renderTasks();
+  try {
+    const data = await api(`/api/tasks/${id}/sync-reference-image`, { method: "POST", body: "{}" });
+    alert(`已启动参考图入表：${data.job_id}`);
+    await loadJobs();
+    await loadTasks();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+    renderTasks();
+  }
+}
+
+async function storeManualVideo(id, button = null) {
+  const name = `store-manual-video:${id}`;
+  if (isJobBusy(name)) return;
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  renderTasks();
+  try {
+    const data = await api(`/api/tasks/${id}/store-manual-video`, { method: "POST", body: "{}" });
+    alert(`已启动人工视频入库：${data.job_id}`);
+    await loadJobs();
+    await loadTasks();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+    renderTasks();
+  }
+}
+
 async function generateDoubaoPrompt(id, button = null) {
   const name = `doubao-generate-prompt:${id}`;
   if (isJobBusy(name)) return;
@@ -927,6 +1007,74 @@ async function syncPublishTasks(button = null) {
   }
 }
 
+async function batchSyncReferenceImages(button = null) {
+  const name = "batch-sync-reference-images";
+  if (isJobBusy(name)) return;
+  const selectedRows = selectedVisibleTaskRows();
+  const sourceRows = selectedRows.length ? selectedRows : tasksForSelected();
+  const rows = sourceRows.filter((row) => String(row["首帧/参考图链接"] || "").startsWith("http") && !Number(row["首帧附件数"] || 0));
+  if (!rows.length) {
+    alert("当前选择里没有需要入表的参考图");
+    return;
+  }
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  try {
+    const data = await api("/api/tasks/batch-sync-reference-images", {
+      method: "POST",
+      body: JSON.stringify({ record_ids: rows.map((row) => row.record_id), limit: rows.length }),
+    });
+    alert(`已启动批量参考图入表：${data.job_id}，将处理 ${rows.length} 条任务`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+  }
+}
+
+async function batchStoreManualVideos(button = null) {
+  const name = "batch-store-manual-videos";
+  if (isJobBusy(name)) return;
+  const selectedRows = selectedVisibleTaskRows();
+  const sourceRows = selectedRows.length ? selectedRows : tasksForSelected();
+  const rows = sourceRows.filter((row) => Number(row["生成视频附件数"] || 0) || String(row["生成视频链接"] || "").startsWith("http"));
+  if (!rows.length) {
+    alert("当前选择里没有可入库的视频附件或视频链接");
+    return;
+  }
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  try {
+    const data = await api("/api/tasks/batch-store-manual-videos", {
+      method: "POST",
+      body: JSON.stringify({ record_ids: rows.map((row) => row.record_id), limit: rows.length }),
+    });
+    alert(`已启动批量视频入库：${data.job_id}，将处理 ${rows.length} 条任务`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+  }
+}
+
 async function saveTemplates(id, button) {
   const menu = [...document.querySelectorAll("[data-template-id]")].find((item) => item.dataset.templateId === id);
   if (!menu) return;
@@ -960,6 +1108,8 @@ $("refreshConfig").onclick = loadConfig;
 $("loadMaterials").onclick = loadMaterials;
 $("loadTasks").onclick = loadTasks;
 $("syncPublish").onclick = () => syncPublishTasks($("syncPublish"));
+$("batchSyncReferenceImages").onclick = () => batchSyncReferenceImages($("batchSyncReferenceImages"));
+$("batchStoreManualVideos").onclick = () => batchStoreManualVideos($("batchStoreManualVideos"));
 $("loadJobs").onclick = loadJobs;
 $("loadLogs").onclick = loadLogs;
 $("refreshMaterialsTable").onclick = () => refreshTable("refreshMaterialsTable", loadMaterials);

@@ -7,7 +7,7 @@ import requests
 
 from .config import Settings
 from .cpa import CpaVideoClient
-from .feishu import FeishuClient, field_value, first_attachment
+from .feishu import FeishuClient, attachment_count, field_value, first_attachment
 from .gemini import GeminiClient, local_language
 from .image_gen import NewTokenImageClient, normalize_styles
 from .logging_bus import add_log
@@ -305,6 +305,8 @@ class ViralRemixWorkflow:
                 "来源素材记录ID": source_text,
                 "关联素材记录IDs": source_ids,
                 "首帧/参考图链接": field_value(fields, "首帧/参考图链接", ""),
+                "首帧附件数": attachment_count(fields, "首帧/参考图"),
+                "生成视频附件数": attachment_count(fields, "生成视频"),
                 "失败原因": field_value(fields, "失败原因", ""),
             })
             if len(out) >= limit:
@@ -830,6 +832,94 @@ class ViralRemixWorkflow:
             )
             add_log("error", f"视频生成失败: {exc}", "workflow", job_id)
             raise
+
+    def _filename_for_download(self, url: str, content_type: str, fallback: str) -> str:
+        suffix = Path(str(url).split("?", 1)[0]).suffix
+        if not suffix:
+            if "png" in content_type:
+                suffix = ".png"
+            elif "webp" in content_type:
+                suffix = ".webp"
+            elif "jpeg" in content_type or "jpg" in content_type:
+                suffix = ".jpg"
+            elif "mp4" in content_type:
+                suffix = ".mp4"
+            else:
+                suffix = ".bin"
+        return f"{fallback}{suffix}"
+
+    def sync_task_reference_image(self, task_record_id: str, job_id: str | None = None) -> dict[str, Any]:
+        record = self.feishu.get_record(self.settings.task_table_id, task_record_id)
+        fields = record.get("fields", {})
+        task_name = str(field_value(fields, "生成任务名称", task_record_id) or task_record_id)
+        image_url = str(field_value(fields, "首帧/参考图链接", "") or "").strip()
+
+        if attachment_count(fields, "首帧/参考图"):
+            add_log("info", f"参考图已在任务表附件中，跳过: {task_name}", "workflow", job_id)
+            return {"task_record_id": task_record_id, "skipped": True, "reason": "attachment_exists"}
+        if not image_url.startswith("http"):
+            raise RuntimeError("任务缺少首帧/参考图链接，无法渲染成飞书图片附件")
+
+        add_log("info", f"开始参考图入表: {task_name}", "workflow", job_id)
+        data, mime = self._download_url(image_url)
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / self._filename_for_download(image_url, mime, f"reference-{task_record_id}")
+            path.write_bytes(data)
+            uploaded = self.feishu.upload_base_attachment(
+                self.settings.task_table_id,
+                task_record_id,
+                "首帧/参考图",
+                path,
+                mime,
+            )
+        add_log("success", f"参考图入表完成: {task_name}", "workflow", job_id)
+        return {"task_record_id": task_record_id, "file_token": uploaded["file_token"]}
+
+    def _is_managed_storage_url(self, url: str) -> bool:
+        if not url.startswith("http"):
+            return False
+        public_base = self.settings.r2_public_url.rstrip("/")
+        if public_base and url.startswith(public_base):
+            return True
+        return "vidclaw-assets/viral-remix-7d/" in url or "viral-remix-7d/" in url
+
+    def store_manual_task_video(self, task_record_id: str, job_id: str | None = None) -> dict[str, Any]:
+        record = self.feishu.get_record(self.settings.task_table_id, task_record_id)
+        fields = record.get("fields", {})
+        task_name = str(field_value(fields, "生成任务名称", task_record_id) or task_record_id)
+        existing_url = str(field_value(fields, "生成视频链接", "") or "").strip()
+
+        if self._is_managed_storage_url(existing_url):
+            add_log("info", f"视频已是对象存储链接，跳过入库: {task_name}", "workflow", job_id)
+            return {"task_record_id": task_record_id, "video_url": existing_url, "skipped": True}
+
+        add_log("info", f"开始人工视频入库: {task_name}", "workflow", job_id)
+        attachment = first_attachment(fields, "生成视频")
+        if attachment and attachment.get("file_token"):
+            with TemporaryDirectory() as tmpdir:
+                filename = str(attachment.get("name") or f"manual-video-{task_record_id}.mp4")
+                path, mime = self.feishu.download_media(str(attachment["file_token"]), Path(tmpdir) / filename)
+                stored = self.r2.upload_file(path, mime if mime.startswith("video/") else "video/mp4")
+        elif existing_url.startswith("http"):
+            data, mime = self._download_url(existing_url)
+            filename = self._filename_for_download(existing_url, mime, f"manual-video-{task_record_id}")
+            stored = self.r2.upload_bytes(data, filename, mime if mime.startswith("video/") else "video/mp4")
+        else:
+            raise RuntimeError("没有可入库的视频：请先在任务表上传“生成视频”附件，或填写“生成视频链接”")
+
+        self.feishu.update_record(
+            self.settings.task_table_id,
+            task_record_id,
+            {
+                "生成状态": "已完成",
+                "生成进度": 1,
+                "生成视频链接": url_cell(stored["url"]),
+                "失败原因": "",
+                "生成时间": now_ms(),
+            },
+        )
+        add_log("success", f"人工视频入库完成: {stored['url']}", "workflow", job_id)
+        return {"task_record_id": task_record_id, "video_url": stored["url"]}
 
     def sync_publish_items(self, record_ids: list[str] | None = None, limit: int = 100, job_id: str | None = None) -> dict[str, Any]:
         if not self.settings.publish_table_id:

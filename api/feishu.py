@@ -1,4 +1,5 @@
 import time
+import mimetypes
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,50 @@ class FeishuClient:
         output_path.write_bytes(resp.content)
         return output_path, content_type
 
+    def upload_base_attachment(
+        self,
+        table_id: str,
+        record_id: str,
+        field_id_or_name: str,
+        file_path: Path,
+        content_type: str | None = None,
+    ) -> dict[str, Any]:
+        mime = content_type or mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        file_size = file_path.stat().st_size
+        with file_path.open("rb") as fh:
+            data = self._request(
+                "POST",
+                "/drive/v1/medias/upload_all",
+                headers={"Authorization": f"Bearer {self._tenant_token()}"},
+                data={
+                    "file_name": file_path.name,
+                    "parent_node": self.settings.feishu_app_token,
+                    "parent_type": "bitable_file",
+                    "size": str(file_size),
+                },
+                files={"file": (file_path.name, fh, mime)},
+                timeout=240,
+            )
+        file_token = (
+            data.get("file_token")
+            or data.get("token")
+            or (data.get("file") or {}).get("file_token")
+        )
+        if not file_token:
+            raise FeishuError(f"Feishu attachment upload returned no file_token: {data}")
+        append_data = self._request(
+            "POST",
+            f"/base/v3/bases/{self.settings.feishu_app_token}/tables/{table_id}/append_attachments",
+            json={
+                "attachments": {
+                    record_id: {
+                        field_id_or_name: [{"file_token": file_token}],
+                    }
+                }
+            },
+        )
+        return {"file_token": file_token, "append": append_data}
+
 
 def field_value(fields: dict[str, Any], name: str, default: Any = "") -> Any:
     value = fields.get(name, default)
@@ -134,3 +179,14 @@ def first_attachment(fields: dict[str, Any], name: str) -> dict[str, Any] | None
         if isinstance(first, dict):
             return first
     return None
+
+
+def attachment_count(fields: dict[str, Any], name: str) -> int:
+    value = fields.get(name)
+    if not isinstance(value, list):
+        return 0
+    return len([
+        item
+        for item in value
+        if isinstance(item, dict) and (item.get("file_token") or item.get("name") or item.get("url"))
+    ])
