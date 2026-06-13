@@ -98,6 +98,24 @@
           </div>
         </div>
         <div id="selectedMaterial" class="selected-box">未选择素材</div>
+        <div class="batch-bar task-batch-bar">
+          <label class="checkline">
+            <input id="selectAllTasks" type="checkbox">
+            <span>全选当前任务</span>
+          </label>
+          <div class="range-picker" aria-label="按行号选择视频任务">
+            <span>从</span>
+            <input id="taskRangeStart" type="number" min="1" inputmode="numeric" placeholder="起始行">
+            <span>到</span>
+            <input id="taskRangeEnd" type="number" min="1" inputmode="numeric" placeholder="结束行">
+            <button id="selectTaskRange" class="mini secondary" type="button">选择范围</button>
+            <button id="clearTaskSelection" class="mini ghost" type="button">清空</button>
+          </div>
+          <strong id="selectedTaskCount">已选 0 条</strong>
+          <div class="actions">
+            <span class="helper-text">按飞书任务表行号选择，空白行会自动跳过</span>
+          </div>
+        </div>
         <div class="table-toolbar">
           <span id="tasksRefreshState">等待读取飞书任务表</span>
           <button id="refreshTasksTable" class="mini secondary" type="button">刷新表格</button>

@@ -283,7 +283,7 @@ class ViralRemixWorkflow:
     def list_tasks(self, limit: int = 100) -> list[dict[str, Any]]:
         records = self.feishu.list_records(self.settings.task_table_id)
         out = []
-        for record in records:
+        for index, record in enumerate(records, start=1):
             fields = record.get("fields", {})
             if not has_task_payload(fields):
                 continue
@@ -292,6 +292,7 @@ class ViralRemixWorkflow:
             if source_text and source_text not in source_ids:
                 source_ids.append(source_text)
             out.append({
+                "行号": index,
                 "record_id": record.get("record_id"),
                 "生成任务名称": field_value(fields, "生成任务名称"),
                 "生成状态": field_value(fields, "生成状态", ""),

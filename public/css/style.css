@@ -333,11 +333,20 @@ main {
 }
 
 .checkline input,
-.material-check {
+.material-check,
+.task-check {
   width: 16px;
   height: 16px;
   margin: 0;
   padding: 0;
+}
+
+.helper-text {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
 .range-picker {

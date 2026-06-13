@@ -9,6 +9,7 @@ const state = {
   editingPromptId: "",
   selectedMaterialId: localStorage.getItem("viral-remix-selected-material") || "",
   selectedMaterialIds: new Set(),
+  selectedTaskIds: new Set(),
   activePage: localStorage.getItem("viral-remix-active-page") || "materials",
   imageStyles: ["viral_first_frame", "lifestyle", "model", "detail", "flatlay", "outdoor", "studio"],
   imageStyleLabels: {
@@ -103,6 +104,11 @@ function tasksForSelected() {
   return state.tasks.filter((task) => sourceIdsOfTask(task).includes(state.selectedMaterialId));
 }
 
+function selectedVisibleTaskRows() {
+  const visibleIds = new Set(tasksForSelected().map((row) => row.record_id));
+  return state.tasks.filter((row) => visibleIds.has(row.record_id) && state.selectedTaskIds.has(row.record_id));
+}
+
 function isJobRunning(name) {
   return state.jobs.some((job) => job.name === name && job.status === "running");
 }
@@ -188,6 +194,37 @@ function selectMaterialRange() {
 function clearMaterialSelection() {
   state.selectedMaterialIds.clear();
   renderMaterials();
+}
+
+function renderTaskSelectionState() {
+  const rows = tasksForSelected();
+  const ids = rows.map((row) => row.record_id).filter(Boolean);
+  const selectedCount = ids.filter((id) => state.selectedTaskIds.has(id)).length;
+  $("selectedTaskCount").textContent = `已选 ${selectedCount} 条`;
+  $("selectAllTasks").checked = ids.length > 0 && selectedCount === ids.length;
+  $("selectAllTasks").indeterminate = selectedCount > 0 && selectedCount < ids.length;
+}
+
+function selectTaskRange() {
+  const start = Number($("taskRangeStart").value);
+  const end = Number($("taskRangeEnd").value);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 1 || end < 1) {
+    alert("请输入有效的起始行和结束行");
+    return;
+  }
+  const from = Math.min(start, end);
+  const to = Math.max(start, end);
+  const selectedRows = tasksForSelected().filter((row) => {
+    const line = rowNumber(row);
+    return line >= from && line <= to && row.record_id;
+  });
+  state.selectedTaskIds = new Set(selectedRows.map((row) => row.record_id));
+  renderTasks();
+}
+
+function clearTaskSelection() {
+  state.selectedTaskIds.clear();
+  renderTasks();
 }
 
 function renderThumbs(urls) {
@@ -363,12 +400,17 @@ function renderTasks() {
   renderSelectedMaterial();
   if (!rows.length) {
     $("tasks").innerHTML = `<div class="selected-box">暂无视频生成任务</div>`;
+    renderTaskSelectionState();
     return;
   }
 
   $("tasks").innerHTML = `<table><thead><tr>
-    <th>任务</th><th>状态</th><th>进度</th><th>发布内容</th><th>参考图</th><th>视频</th><th>操作</th>
-  </tr></thead><tbody>${rows.map((row) => `<tr>
+    <th class="select-col"></th><th class="row-no">行</th><th>任务</th><th>状态</th><th>进度</th><th>发布内容</th><th>参考图</th><th>视频</th><th>操作</th>
+  </tr></thead><tbody>${rows.map((row) => {
+    const checked = state.selectedTaskIds.has(row.record_id) ? "checked" : "";
+    return `<tr>
+    <td class="select-col"><input class="task-check" type="checkbox" data-task-select-id="${esc(row.record_id)}" ${checked}></td>
+    <td class="row-no">${esc(row["行号"] || "")}</td>
     <td>
       <strong>${esc(row["生成任务名称"])}</strong>
       <div class="muted">#${esc(row["任务序号"] || "-")} · ${esc(row.record_id)}</div>
@@ -383,11 +425,20 @@ function renderTasks() {
     <td>${row["首帧/参考图链接"] ? renderThumbs([row["首帧/参考图链接"]]) : `<span class="muted">无</span>`}</td>
     <td>${row["生成视频链接"] ? `<a href="${esc(row["生成视频链接"])}" target="_blank">打开视频</a>` : esc(row["失败原因"] || "")}</td>
     <td><button class="mini${state.pendingJobs.has(`generate-video:${row.record_id}`) ? " is-pending" : ""}" data-action="video" data-id="${esc(row.record_id)}" ${isJobBusy(`generate-video:${row.record_id}`) ? "disabled" : ""}>${state.pendingJobs.has(`generate-video:${row.record_id}`) ? "提交中" : isJobBusy(`generate-video:${row.record_id}`) ? "进行中" : "生成视频"}</button></td>
-  </tr>`).join("")}</tbody></table>`;
+  </tr>`;
+  }).join("")}</tbody></table>`;
 
+  document.querySelectorAll("[data-task-select-id]").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) state.selectedTaskIds.add(checkbox.dataset.taskSelectId);
+      else state.selectedTaskIds.delete(checkbox.dataset.taskSelectId);
+      renderTaskSelectionState();
+    });
+  });
   document.querySelectorAll("[data-action='video']").forEach((button) => {
     button.addEventListener("click", () => generateVideo(button.dataset.id, button));
   });
+  renderTaskSelectionState();
 }
 
 function renderDoubaoMetrics() {
@@ -526,6 +577,7 @@ function renderPromptEditor() {
 
 function selectMaterial(id) {
   state.selectedMaterialId = id || "";
+  state.selectedTaskIds.clear();
   localStorage.setItem("viral-remix-selected-material", state.selectedMaterialId);
   renderMaterials();
   renderTasks();
@@ -547,6 +599,8 @@ async function loadMaterials() {
 async function loadTasks() {
   const data = await api("/api/tasks?limit=200");
   state.tasks = data.data;
+  const existingIds = new Set(state.tasks.map((row) => row.record_id));
+  state.selectedTaskIds = new Set([...state.selectedTaskIds].filter((id) => existingIds.has(id)));
   renderTasks();
   markTableLoaded("tasks", "任务表", state.tasks.length);
 }
@@ -842,8 +896,14 @@ async function batchDoubaoPrompts(button = null) {
 async function syncPublishTasks(button = null) {
   const name = "sync-publish-tasks";
   if (isJobBusy(name)) return;
-  const rows = tasksForSelected().filter((row) => String(row["生成视频链接"] || "").startsWith("http"));
-  const body = state.selectedMaterialId
+  const selectedRows = selectedVisibleTaskRows();
+  const sourceRows = selectedRows.length ? selectedRows : tasksForSelected();
+  const rows = sourceRows.filter((row) => String(row["生成视频链接"] || "").startsWith("http"));
+  if ((selectedRows.length || state.selectedMaterialId) && !rows.length) {
+    alert("当前选择里没有可同步的视频链接");
+    return;
+  }
+  const body = selectedRows.length || state.selectedMaterialId
     ? { record_ids: rows.map((row) => row.record_id), limit: 100 }
     : { limit: 100 };
   const oldText = button ? button.textContent : "";
@@ -925,6 +985,19 @@ $("clearMaterialSelection").onclick = clearMaterialSelection;
     if (event.key === "Enter") selectMaterialRange();
   });
 });
+$("selectAllTasks").onchange = () => {
+  const ids = tasksForSelected().map((row) => row.record_id).filter(Boolean);
+  if ($("selectAllTasks").checked) ids.forEach((id) => state.selectedTaskIds.add(id));
+  else ids.forEach((id) => state.selectedTaskIds.delete(id));
+  renderTasks();
+};
+$("selectTaskRange").onclick = selectTaskRange;
+$("clearTaskSelection").onclick = clearTaskSelection;
+["taskRangeStart", "taskRangeEnd"].forEach((id) => {
+  $(id).addEventListener("keydown", (event) => {
+    if (event.key === "Enter") selectTaskRange();
+  });
+});
 $("batchAnalyze").onclick = () => runBatchMaterialStep("analyze-video", $("batchAnalyze"));
 $("batchStoreImage").onclick = () => runBatchMaterialStep("store-image", $("batchStoreImage"));
 $("batchGenerateImages").onclick = () => runBatchMaterialStep("generate-images", $("batchGenerateImages"));
@@ -937,10 +1010,18 @@ $("batchVideos").onclick = async () => {
   if (isJobBusy(name)) return;
   const button = $("batchVideos");
   const oldText = button.textContent;
-  const rows = tasksForSelected().filter((row) => ["待生成视频", "内容已生成", ""].includes(row["生成状态"] || ""));
-  const body = state.selectedMaterialId
-    ? { record_ids: rows.map((row) => row.record_id), limit: 20 }
-    : { limit: 3 };
+  const selectedRows = selectedVisibleTaskRows();
+  const sourceRows = selectedRows.length ? selectedRows : tasksForSelected();
+  const rows = sourceRows.filter((row) => ["待生成视频", "内容已生成", ""].includes(row["生成状态"] || ""));
+  if (!rows.length) {
+    alert("当前选择里没有可生成的视频任务");
+    return;
+  }
+  const body = selectedRows.length
+    ? { record_ids: rows.map((row) => row.record_id), limit: rows.length }
+    : state.selectedMaterialId
+      ? { record_ids: rows.map((row) => row.record_id), limit: 20 }
+      : { limit: 3 };
   setPendingJob(name, true);
   button.disabled = true;
   button.textContent = "提交中";
