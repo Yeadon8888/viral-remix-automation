@@ -21,6 +21,14 @@ app = Flask(__name__, static_folder="public", static_url_path="")
 CORS(app)
 
 
+def request_limit(default: int = 500, maximum: int = 1000) -> int:
+    try:
+        value = int(request.args.get("limit", default))
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, maximum))
+
+
 def require_admin():
     if not settings.admin_token:
         return None
@@ -89,7 +97,7 @@ def job_list():
 @app.route("/api/materials")
 def list_materials():
     workflow = ViralRemixWorkflow(settings)
-    data = workflow.list_materials(limit=int(request.args.get("limit", 100)))
+    data = workflow.list_materials(limit=request_limit())
     return jsonify({"success": True, "data": data})
 
 
@@ -121,14 +129,14 @@ def update_material_templates(record_id):
 @app.route("/api/tasks")
 def list_tasks():
     workflow = ViralRemixWorkflow(settings)
-    data = workflow.list_tasks(limit=int(request.args.get("limit", 100)))
+    data = workflow.list_tasks(limit=request_limit())
     return jsonify({"success": True, "data": data})
 
 
 @app.route("/api/doubao-items")
 def list_doubao_items():
     workflow = ViralRemixWorkflow(settings)
-    data = workflow.list_doubao_items(limit=int(request.args.get("limit", 100)))
+    data = workflow.list_doubao_items(limit=request_limit())
     return jsonify({"success": True, "data": data})
 
 
@@ -254,7 +262,7 @@ def batch_prepare():
     def runner(job_id=None):
         ids = record_ids
         if not ids:
-            rows = workflow.list_materials(limit=100)
+            rows = workflow.list_materials(limit=500)
             ids = [
                 row["record_id"]
                 for row in rows

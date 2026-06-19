@@ -610,7 +610,7 @@ function selectMaterial(id) {
 }
 
 async function loadMaterials() {
-  const data = await api("/api/materials?limit=100");
+  const data = await api("/api/materials?limit=500");
   state.materials = data.data;
   if (state.selectedMaterialId && !state.materials.some((row) => row.record_id === state.selectedMaterialId)) {
     state.selectedMaterialId = "";
@@ -623,7 +623,7 @@ async function loadMaterials() {
 }
 
 async function loadTasks() {
-  const data = await api("/api/tasks?limit=200");
+  const data = await api("/api/tasks?limit=500");
   state.tasks = data.data;
   const existingIds = new Set(state.tasks.map((row) => row.record_id));
   state.selectedTaskIds = new Set([...state.selectedTaskIds].filter((id) => existingIds.has(id)));
@@ -632,7 +632,7 @@ async function loadTasks() {
 }
 
 async function loadDoubaoItems() {
-  const data = await api("/api/doubao-items?limit=200");
+  const data = await api("/api/doubao-items?limit=500");
   state.doubaoItems = data.data;
   renderDoubaoItems();
   markTableLoaded("doubao", "豆包表", state.doubaoItems.length);

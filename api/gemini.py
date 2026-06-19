@@ -1,12 +1,19 @@
 import base64
 import json
 import re
+import time
+from threading import Lock
 from typing import Any
 
 import requests
 
 from .config import Settings
 from .prompting import DEFAULT_VIDEO_ANALYSIS_TEMPLATE, render_template
+
+GEMINI_MAX_RETRIES = 4
+GEMINI_MIN_INTERVAL_SECONDS = 2.0
+_gemini_lock = Lock()
+_last_gemini_request_at = 0.0
 
 
 REGION_LANGUAGE = {
@@ -85,6 +92,42 @@ class GeminiClient:
     def __init__(self, settings: Settings):
         self.settings = settings
 
+    def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
+        global _last_gemini_request_at
+
+        last_error = ""
+        for attempt in range(GEMINI_MAX_RETRIES + 1):
+            with _gemini_lock:
+                wait = GEMINI_MIN_INTERVAL_SECONDS - (time.time() - _last_gemini_request_at)
+                if wait > 0:
+                    time.sleep(wait)
+                resp = requests.post(
+                    f"{self.settings.gemini_base_url}/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.settings.gemini_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=300,
+                )
+                _last_gemini_request_at = time.time()
+
+            if resp.status_code < 400:
+                return resp.json()
+
+            last_error = resp.text[:500]
+            if resp.status_code != 429 or attempt >= GEMINI_MAX_RETRIES:
+                raise RuntimeError(f"Gemini HTTP {resp.status_code}: {last_error}")
+
+            retry_after = resp.headers.get("Retry-After", "")
+            try:
+                delay = float(retry_after)
+            except ValueError:
+                delay = min(60.0, 5.0 * (attempt + 1))
+            time.sleep(delay)
+
+        raise RuntimeError(f"Gemini request failed after retries: {last_error}")
+
     def analyze_video(
         self,
         *,
@@ -113,22 +156,13 @@ class GeminiClient:
             content.append({"type": "image_url", "image_url": {"url": _data_url(image_mime, image_bytes)}})
         content.append({"type": "image_url", "image_url": {"url": _data_url(video_mime, video_bytes)}})
 
-        resp = requests.post(
-            f"{self.settings.gemini_base_url}/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.settings.gemini_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
+        data = self._post_chat(
+            {
                 "model": self.settings.gemini_model,
                 "messages": [{"role": "user", "content": content}],
                 "max_tokens": 8192,
-            },
-            timeout=300,
+            }
         )
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:500]}")
-        data = resp.json()
         text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
         if not text:
             raise RuntimeError("Gemini returned empty content")
@@ -176,22 +210,13 @@ class GeminiClient:
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": _data_url(image_mime, image_bytes)}},
         ]
-        resp = requests.post(
-            f"{self.settings.gemini_base_url}/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.settings.gemini_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
+        data = self._post_chat(
+            {
                 "model": self.settings.gemini_model,
                 "messages": [{"role": "user", "content": content}],
                 "max_tokens": 8192,
-            },
-            timeout=300,
+            }
         )
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:500]}")
-        data = resp.json()
         text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
         if not text:
             raise RuntimeError("Gemini returned empty content")
