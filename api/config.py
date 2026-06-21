@@ -48,7 +48,7 @@ class Settings:
     cpa_base_url: str = env("CPA_BASE_URL", "https://cliproxyapi-production-2dde.up.railway.app").rstrip("/")
     cpa_api_key: str = env("CPA_API_KEY")
     cpa_video_model: str = env("CPA_VIDEO_MODEL", "grok-imagine-video-1.5-preview")
-    cpa_seconds: int = env_int("CPA_SECONDS", 16)
+    cpa_seconds: int = env_int("CPA_SECONDS", 10)
     cpa_size: str = env("CPA_SIZE", "720x1280")
     cpa_resolution: str = env("CPA_RESOLUTION", "720p")
     cpa_preset: str = env("CPA_PRESET", "normal")
