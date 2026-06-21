@@ -413,14 +413,21 @@ function renderProcessedMaterialGroups(rows) {
   }).join("");
 }
 
+function isProcessedMaterial(row) {
+  const automationStatus = String(row["自动化状态"] || "");
+  const taskTotal = Number(row["任务数量"] || 0);
+  const runningStatuses = new Set(["视频拆解中", "主图入库中", "组图生成中", "任务创建中"]);
+  return !runningStatuses.has(automationStatus) && (automationStatus === "已创建任务" || taskTotal > 0);
+}
+
 function renderMaterials() {
   renderMetrics();
   if (!state.materials.length) {
     $("materials").innerHTML = `<div class="selected-box">暂无素材</div>`;
     return;
   }
-  const activeRows = state.materials.filter((row) => row["自动化状态"] !== "已创建任务");
-  const processedRows = state.materials.filter((row) => row["自动化状态"] === "已创建任务");
+  const activeRows = state.materials.filter((row) => !isProcessedMaterial(row));
+  const processedRows = state.materials.filter((row) => isProcessedMaterial(row));
   processedRows.forEach((row) => {
     const group = materialDateGroup(row);
     if (!state.seenMaterialDateGroups.has(group.key)) {
