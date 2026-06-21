@@ -39,7 +39,7 @@ def cached_list(key: str, loader, ttl_seconds: int = 20):
             return cached["data"]
     data = loader()
     with cache_lock:
-        list_cache[key] = {"time": now, "data": data}
+        list_cache[key] = {"time": time.time(), "data": data}
     return data
 
 
@@ -125,14 +125,14 @@ def job_list():
 def list_materials():
     workflow = get_workflow()
     limit = request_limit()
-    data = cached_list(f"materials:{limit}", lambda: workflow.list_materials(limit=limit))
+    data = cached_list(f"materials:{limit}", lambda: workflow.list_materials(limit=limit), ttl_seconds=120)
     return jsonify({"success": True, "data": data})
 
 
 @app.route("/api/prompts")
 def list_prompts():
     workflow = get_workflow()
-    data = cached_list("prompts", workflow.list_prompt_configs, ttl_seconds=30)
+    data = cached_list("prompts", workflow.list_prompt_configs, ttl_seconds=120)
     return jsonify({"success": True, "data": data})
 
 
@@ -169,7 +169,7 @@ def list_tasks():
 def list_doubao_items():
     workflow = get_workflow()
     limit = request_limit()
-    data = cached_list(f"doubao:{limit}", lambda: workflow.list_doubao_items(limit=limit), ttl_seconds=20)
+    data = cached_list(f"doubao:{limit}", lambda: workflow.list_doubao_items(limit=limit), ttl_seconds=120)
     return jsonify({"success": True, "data": data})
 
 
