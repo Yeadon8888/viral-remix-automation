@@ -271,6 +271,7 @@ class ViralRemixWorkflow:
                 "生成文案": field_value(fields, "生成文案", ""),
                 "关键词": field_value(fields, "关键词", ""),
                 "自动化状态": field_value(fields, "自动化状态", ""),
+                "自动化处理时间": field_value(fields, "自动化处理时间", ""),
                 "商品组图链接": field_value(fields, "商品组图链接", ""),
                 "商品组图URLs": group_image_urls,
                 "商品组图数量": len(group_image_urls),

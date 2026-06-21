@@ -6,6 +6,8 @@ const state = {
   prompts: [],
   jobs: [],
   pendingJobs: new Set(),
+  collapsedMaterialDateGroups: new Set(),
+  seenMaterialDateGroups: new Set(),
   collapsedTaskDateGroups: new Set(),
   seenTaskDateGroups: new Set(),
   editingPromptId: "",
@@ -100,8 +102,7 @@ function renderProgress(value) {
   </div>`;
 }
 
-function taskDateGroup(row) {
-  const raw = row["生成时间"];
+function dateGroupFromTimestamp(raw) {
   const time = Number(raw || 0);
   if (!time) return { key: "unknown", label: "未记录日期" };
   const date = new Date(time > 1e12 ? time : time * 1000);
@@ -114,10 +115,18 @@ function taskDateGroup(row) {
   return { key, label };
 }
 
-function groupCompletedTasks(rows) {
+function taskDateGroup(row) {
+  return dateGroupFromTimestamp(row["生成时间"]);
+}
+
+function materialDateGroup(row) {
+  return dateGroupFromTimestamp(row["自动化处理时间"]);
+}
+
+function groupRowsByDate(rows, getGroup) {
   const groups = new Map();
   rows.forEach((row) => {
-    const group = taskDateGroup(row);
+    const group = getGroup(row);
     if (!groups.has(group.key)) groups.set(group.key, { ...group, rows: [] });
     groups.get(group.key).rows.push(row);
   });
@@ -369,35 +378,73 @@ function renderTaskStep(row) {
   </div>`;
 }
 
+function renderMaterialRow(row, extraClass = "", hidden = false) {
+  const videoUrl = row["爆款视频链接"];
+  const selected = row.record_id === state.selectedMaterialId ? " selected" : "";
+  const checked = state.selectedMaterialIds.has(row.record_id) ? "checked" : "";
+  return `<tr class="selectable${selected} ${esc(extraClass)}" data-material-id="${esc(row.record_id)}" ${hidden ? "hidden" : ""}>
+    <td class="select-col"><input class="material-check" type="checkbox" data-select-id="${esc(row.record_id)}" ${checked}></td>
+    <td class="row-no">${esc(row["行号"] || "")}</td>
+    <td class="video-cell">
+      ${videoUrl ? `<a class="video-link" href="${esc(videoUrl)}" target="_blank">${esc(shortUrl(videoUrl))}</a>` : `<strong>${esc(shortUrl(videoUrl))}</strong>`}
+      <div class="subline">${esc(row["商品名称"] || "未填写商品名称")}</div>
+      <div class="muted">${esc(row.record_id)}</div>
+    </td>
+    <td>${renderScriptStep(row)}</td>
+    <td>${renderImageStep(row)}</td>
+    <td>${renderGroupStep(row)}</td>
+    <td>${renderTaskStep(row)}</td>
+    <td>${renderMaterialStatus(row)}</td>
+  </tr>`;
+}
+
+function renderProcessedMaterialGroups(rows) {
+  return groupRowsByDate(rows, materialDateGroup).map((group) => {
+    const collapsed = state.collapsedMaterialDateGroups.has(group.key);
+    return `<tr class="task-date-row">
+      <td colspan="8">
+        <button class="date-toggle" type="button" data-material-date-toggle="${esc(group.key)}">
+          <span>${esc(group.label)}</span>
+          <strong>${group.rows.length} 条已处理</strong>
+          <em>${collapsed ? "展开" : "收起"}</em>
+        </button>
+      </td>
+    </tr>${group.rows.map((row) => renderMaterialRow(row, "task-history-row", collapsed)).join("")}`;
+  }).join("");
+}
+
 function renderMaterials() {
   renderMetrics();
   if (!state.materials.length) {
     $("materials").innerHTML = `<div class="selected-box">暂无素材</div>`;
     return;
   }
+  const activeRows = state.materials.filter((row) => row["自动化状态"] !== "已创建任务");
+  const processedRows = state.materials.filter((row) => row["自动化状态"] === "已创建任务");
+  processedRows.forEach((row) => {
+    const group = materialDateGroup(row);
+    if (!state.seenMaterialDateGroups.has(group.key)) {
+      state.seenMaterialDateGroups.add(group.key);
+      state.collapsedMaterialDateGroups.add(group.key);
+    }
+  });
+  const body = [
+    ...activeRows.map((row) => renderMaterialRow(row)),
+    renderProcessedMaterialGroups(processedRows),
+  ].join("");
 
   $("materials").innerHTML = `<table><thead><tr>
     <th class="select-col"></th><th class="row-no">行</th><th>爆款视频</th><th>1 视频Prompt</th><th>2 主图入库</th><th>3 商品组图</th><th>4 视频任务</th><th>状态</th>
-  </tr></thead><tbody>${state.materials.map((row) => {
-    const videoUrl = row["爆款视频链接"];
-    const selected = row.record_id === state.selectedMaterialId ? " selected" : "";
-    const checked = state.selectedMaterialIds.has(row.record_id) ? "checked" : "";
-    return `<tr class="selectable${selected}" data-material-id="${esc(row.record_id)}">
-      <td class="select-col"><input class="material-check" type="checkbox" data-select-id="${esc(row.record_id)}" ${checked}></td>
-      <td class="row-no">${esc(row["行号"] || "")}</td>
-      <td class="video-cell">
-        ${videoUrl ? `<a class="video-link" href="${esc(videoUrl)}" target="_blank">${esc(shortUrl(videoUrl))}</a>` : `<strong>${esc(shortUrl(videoUrl))}</strong>`}
-        <div class="subline">${esc(row["商品名称"] || "未填写商品名称")}</div>
-        <div class="muted">${esc(row.record_id)}</div>
-      </td>
-      <td>${renderScriptStep(row)}</td>
-      <td>${renderImageStep(row)}</td>
-      <td>${renderGroupStep(row)}</td>
-      <td>${renderTaskStep(row)}</td>
-      <td>${renderMaterialStatus(row)}</td>
-    </tr>`;
-  }).join("")}</tbody></table>`;
+  </tr></thead><tbody>${body}</tbody></table>`;
 
+  document.querySelectorAll("[data-material-date-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.materialDateToggle;
+      if (state.collapsedMaterialDateGroups.has(key)) state.collapsedMaterialDateGroups.delete(key);
+      else state.collapsedMaterialDateGroups.add(key);
+      renderMaterials();
+    });
+  });
   document.querySelectorAll("[data-material-id]").forEach((row) => {
     row.addEventListener("click", (event) => {
       if (event.target.closest("button, a, input, label, summary, .template-menu")) return;
@@ -478,7 +525,7 @@ function renderTaskRow(row, extraClass = "", hidden = false) {
 }
 
 function renderCompletedTaskGroups(rows) {
-  return groupCompletedTasks(rows).map((group) => {
+  return groupRowsByDate(rows, taskDateGroup).map((group) => {
     const collapsed = state.collapsedTaskDateGroups.has(group.key);
     return `<tr class="task-date-row">
       <td colspan="9">
