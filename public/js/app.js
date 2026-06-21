@@ -73,6 +73,17 @@ function status(value) {
   return `<span class="status ${v}">${v}</span>`;
 }
 
+function renderMaterialStatus(row) {
+  const value = String(row["自动化状态"] || "未处理");
+  const name = `retry-failed-step:${row.record_id}`;
+  const pending = state.pendingJobs.has(name);
+  const busy = isJobBusy(name);
+  const retry = value === "失败"
+    ? `<button class="mini retry-mini${pending ? " is-pending" : ""}" data-action="retry-failed-material" data-id="${esc(row.record_id)}" ${busy ? "disabled" : ""}>${pending ? "提交中" : busy ? "重试中" : "重试"}</button>`
+    : "";
+  return `<div class="status-cell">${status(value)}${retry}</div>`;
+}
+
 function percentValue(value) {
   const n = Number(value || 0);
   if (!Number.isFinite(n)) return 0;
@@ -357,7 +368,7 @@ function renderMaterials() {
       <td>${renderImageStep(row)}</td>
       <td>${renderGroupStep(row)}</td>
       <td>${renderTaskStep(row)}</td>
-      <td>${status(row["自动化状态"])}</td>
+      <td>${renderMaterialStatus(row)}</td>
     </tr>`;
   }).join("")}</tbody></table>`;
 
@@ -376,6 +387,9 @@ function renderMaterials() {
   });
   document.querySelectorAll("[data-step]").forEach((button) => {
     button.addEventListener("click", () => runMaterialStep(button.dataset.id, button.dataset.step, button));
+  });
+  document.querySelectorAll("[data-action='retry-failed-material']").forEach((button) => {
+    button.addEventListener("click", () => retryFailedMaterial(button.dataset.id, button));
   });
   document.querySelectorAll("[data-action='save-templates']").forEach((button) => {
     button.addEventListener("click", () => saveTemplates(button.dataset.id, button));
@@ -725,6 +739,32 @@ async function runMaterialStep(id, step, button = null) {
   try {
     const data = await api(`/api/materials/${id}/${step}`, { method: "POST", body: "{}" });
     alert(`已启动${labels[step] || step}：${data.job_id}`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+    renderMaterials();
+  }
+}
+
+async function retryFailedMaterial(id, button = null) {
+  const name = `retry-failed-step:${id}`;
+  if (isJobBusy(name)) return;
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  renderMaterials();
+  try {
+    const data = await api(`/api/materials/${id}/retry-failed-step`, { method: "POST", body: "{}" });
+    alert(`已启动失败步骤重试：${data.job_id}`);
     await loadJobs();
   } finally {
     setPendingJob(name, false);

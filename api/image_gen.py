@@ -51,10 +51,14 @@ class NewTokenImageClient:
 
     @staticmethod
     def _extract_url(data: dict[str, Any]) -> str | None:
+        metadata_urls = (data.get("metadata") or {}).get("result_urls")
         return (
-            data.get("video_url")
+            data.get("image_url")
+            or ((metadata_urls or [None])[0] if isinstance(metadata_urls, list) else None)
+            or data.get("video_url")
             or data.get("url")
             or (data.get("data") or {}).get("output")
+            or (data.get("data") or {}).get("image_url")
             or (data.get("data") or {}).get("video_url")
             or (data.get("data") or {}).get("url")
         )
@@ -65,6 +69,7 @@ class NewTokenImageClient:
             "model": self.settings.newtoken_model,
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
+            "seconds": 4,
             "image_urls": image_urls,
         }
         data = self._request("POST", "/v1/videos", json=body, timeout=60)

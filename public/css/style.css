@@ -755,6 +755,19 @@ code {
   color: var(--accent-ink);
 }
 
+.status-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.retry-mini {
+  border-color: #ffd7df;
+  background: #fff5f7;
+  color: var(--danger);
+}
+
 .mini {
   min-height: 30px;
   padding: 6px 10px;

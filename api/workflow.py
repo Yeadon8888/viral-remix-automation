@@ -66,6 +66,30 @@ def first_style(styles: tuple[str, ...]) -> tuple[str, ...]:
     return (styles[0],) if styles else ()
 
 
+def infer_material_retry_step(fields: dict[str, Any], has_tasks: bool) -> str:
+    prompt = str(field_value(fields, MATERIAL_PROMPT_FIELD, "") or "").strip()
+    main_image = str(field_value(fields, "商品主图存储链接", "") or "").strip()
+    group_images = split_urls(field_value(fields, "商品组图链接", ""))
+    error_text = str(field_value(fields, "自动化错误", "") or "")
+    if not prompt:
+        return "analyze-video"
+    if not main_image.startswith("http"):
+        return "store-image"
+    if not group_images:
+        return "generate-images"
+    if not has_tasks:
+        return "create-tasks"
+    if any(key in error_text for key in ("任务创建", "视频生成任务", "URLFieldConvFail")):
+        return "create-tasks"
+    if any(key in error_text for key in ("商品组图", "组图", "NewToken")):
+        return "generate-images"
+    if "主图" in error_text:
+        return "store-image"
+    if any(key in error_text for key in ("视频拆解", "Gemini", "爆款视频")):
+        return "analyze-video"
+    return "create-tasks"
+
+
 def has_task_payload(fields: dict[str, Any]) -> bool:
     checks = (
         "生成任务名称",
@@ -279,6 +303,30 @@ class ViralRemixWorkflow:
             {"商品组图模板": persisted_labels},
         )
         return {"record_id": record_id, "商品组图模板": labels, "商品组图模板值": list(selected_styles)}
+
+    def _material_has_tasks(self, record_id: str) -> bool:
+        for task in self.feishu.list_records(self.settings.task_table_id):
+            fields = task.get("fields", {})
+            source_ids = linked_record_ids(fields.get("关联复刻素材"))
+            source_text = str(field_value(fields, "来源素材记录ID", "") or "").strip()
+            if source_text and source_text not in source_ids:
+                source_ids.append(source_text)
+            if record_id in source_ids and has_task_payload(fields):
+                return True
+        return False
+
+    def retry_failed_material_step(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
+        record = self.feishu.get_record(self.settings.source_table_id, record_id)
+        fields = record.get("fields", {})
+        step = infer_material_retry_step(fields, self._material_has_tasks(record_id))
+        handlers = {
+            "analyze-video": self.analyze_viral_video,
+            "store-image": self.store_product_image,
+            "generate-images": self.generate_product_images,
+            "create-tasks": self.create_video_tasks,
+        }
+        add_log("info", f"重试失败素材步骤: {record_id} -> {step}", "workflow", job_id)
+        return {"record_id": record_id, "step": step, "result": handlers[step](record_id, job_id=job_id)}
 
     def list_tasks(self, limit: int = 100) -> list[dict[str, Any]]:
         records = self.feishu.list_records(self.settings.task_table_id)

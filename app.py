@@ -219,6 +219,13 @@ def create_material_tasks(record_id):
     return jsonify({"success": True, "job_id": job_id})
 
 
+@app.route("/api/materials/<record_id>/retry-failed-step", methods=["POST"])
+def retry_failed_material_step(record_id):
+    workflow = ViralRemixWorkflow(settings)
+    job_id = run_job(f"retry-failed-step:{record_id}", workflow.retry_failed_material_step, record_id)
+    return jsonify({"success": True, "job_id": job_id})
+
+
 @app.route("/api/materials/batch-step", methods=["POST"])
 def batch_material_step():
     body = request.get_json(silent=True) or {}
