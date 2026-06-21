@@ -69,7 +69,7 @@ class NewTokenImageClient:
             "model": self.settings.newtoken_model,
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
-            "seconds": 4,
+            "seconds": "4",
             "image_urls": image_urls,
         }
         data = self._request("POST", "/v1/videos", json=body, timeout=60)
