@@ -239,7 +239,7 @@ class ViralRemixWorkflow:
         return templates.get(key, fallback), versions.get(key, f"{key}:default")
 
     def list_materials(self, limit: int = 100) -> list[dict[str, Any]]:
-        records = self.feishu.list_records(self.settings.source_table_id)[:limit]
+        records = self.feishu.list_records(self.settings.source_table_id, max_records=limit)
         task_counts: dict[str, dict[str, int]] = {}
         for task in self.feishu.list_records(self.settings.task_table_id):
             fields = task.get("fields", {})
@@ -364,7 +364,7 @@ class ViralRemixWorkflow:
         return out
 
     def list_doubao_items(self, limit: int = 100) -> list[dict[str, Any]]:
-        records = self.feishu.list_records(self.settings.doubao_table_id)[:limit]
+        records = self.feishu.list_records(self.settings.doubao_table_id, max_records=limit)
         out = []
         for record in records:
             fields = record.get("fields", {})

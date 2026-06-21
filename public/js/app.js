@@ -15,6 +15,11 @@ const state = {
   selectedMaterialIds: new Set(),
   selectedTaskIds: new Set(),
   activePage: localStorage.getItem("viral-remix-active-page") || "materials",
+  loadedPages: new Set(),
+  lastActiveJobNames: "",
+  pollTick: 0,
+  promptDetails: new Map(),
+  promptDetailSeq: 0,
   imageStyles: ["viral_first_frame", "lifestyle", "model", "detail", "flatlay", "outdoor", "studio"],
   imageStyleLabels: {
     viral_first_frame: "爆款首帧",
@@ -42,8 +47,25 @@ async function api(path, options = {}) {
   return data;
 }
 
+function tablePath(path, { force = false } = {}) {
+  const joiner = path.includes("?") ? "&" : "?";
+  return force ? `${path}${joiner}force=1` : path;
+}
+
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function activePageLoaded(page = state.activePage) {
+  return state.loadedPages.has(page);
+}
+
+function markPageLoaded(page = state.activePage) {
+  state.loadedPages.add(page);
+}
+
+function hasRunningJobs() {
+  return state.jobs.some((job) => job.status === "running") || state.pendingJobs.size > 0;
 }
 
 function refreshTimeLabel() {
@@ -322,7 +344,26 @@ function stepActionButton(action, id, label, extraClass = "") {
 function renderPromptDetail(label, text) {
   const body = String(text || "").trim();
   if (!body) return "";
-  return `<details class="prompt-preview wide"><summary>${esc(label)}</summary><p>${esc(body)}</p></details>`;
+  const id = `p${++state.promptDetailSeq}`;
+  state.promptDetails.set(id, body);
+  return `<details class="prompt-preview wide" data-prompt-detail="${id}"><summary>${esc(label)}</summary><p class="muted">展开后加载内容</p></details>`;
+}
+
+function bindPromptDetails(root = document) {
+  root.querySelectorAll("[data-prompt-detail]").forEach((detail) => {
+    if (detail.dataset.bound === "1") return;
+    detail.dataset.bound = "1";
+    detail.addEventListener("toggle", () => {
+      if (!detail.open || detail.dataset.loaded === "1") return;
+      const text = state.promptDetails.get(detail.dataset.promptDetail) || "";
+      const target = detail.querySelector("p");
+      if (target) {
+        target.classList.remove("muted");
+        target.textContent = text;
+      }
+      detail.dataset.loaded = "1";
+    });
+  });
 }
 
 function renderScriptStep(row) {
@@ -335,12 +376,7 @@ function renderScriptStep(row) {
   return `<div class="step-cell">
     ${prompt ? status("已生成Prompt") : status("未生成")}
     ${title ? `<div class="publish-chip">${esc(title)}</div>` : ""}
-    ${prompt ? `<details class="prompt-preview wide"><summary>视频生成Prompt/发布内容</summary>
-      ${title ? `<strong>${esc(title)}</strong>` : ""}
-      ${caption ? `<p>${esc(caption)}</p>` : ""}
-      ${keywords ? `<p class="muted">${esc(keywords)}</p>` : ""}
-      <p>${esc(prompt)}</p>
-    </details>` : ""}
+    ${renderPromptDetail("视频生成Prompt/发布内容", [title, caption, keywords, prompt].filter(Boolean).join("\n\n"))}
     ${renderPromptDetail("视频拆解覆盖模板", analysisTemplate)}
     ${renderPromptDetail("视频拆解实际提示词", analysisPrompt)}
     ${stepActionButton("analyze-video", row.record_id, prompt ? "重新生成" : "生成Prompt")}
@@ -474,6 +510,7 @@ function renderMaterials() {
   document.querySelectorAll("[data-action='save-templates']").forEach((button) => {
     button.addEventListener("click", () => saveTemplates(button.dataset.id, button));
   });
+  bindPromptDetails($("materials"));
   renderSelectionState();
 }
 
@@ -596,6 +633,7 @@ function renderTasks() {
   document.querySelectorAll("[data-action='manual-video']").forEach((button) => {
     button.addEventListener("click", () => storeManualVideo(button.dataset.id, button));
   });
+  bindPromptDetails($("tasks"));
   renderTaskSelectionState();
 }
 
@@ -662,6 +700,7 @@ function renderDoubaoItems() {
   document.querySelectorAll("[data-action='doubao-generate']").forEach((button) => {
     button.addEventListener("click", () => generateDoubaoPrompt(button.dataset.id, button));
   });
+  bindPromptDetails($("doubaoItems"));
 }
 
 function renderPrompts() {
@@ -693,6 +732,7 @@ function renderPrompts() {
       $("promptEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
     });
   });
+  bindPromptDetails($("prompts"));
 }
 
 function renderPromptEditor() {
@@ -741,8 +781,8 @@ function selectMaterial(id) {
   renderTasks();
 }
 
-async function loadMaterials() {
-  const data = await api("/api/materials?limit=500");
+async function loadMaterials(options = {}) {
+  const data = await api(tablePath("/api/materials?limit=500", options));
   state.materials = data.data;
   if (state.selectedMaterialId && !state.materials.some((row) => row.record_id === state.selectedMaterialId)) {
     state.selectedMaterialId = "";
@@ -752,32 +792,36 @@ async function loadMaterials() {
   renderMaterials();
   renderTasks();
   markTableLoaded("materials", "素材表", state.materials.length);
+  markPageLoaded("materials");
 }
 
-async function loadTasks() {
-  const data = await api("/api/tasks?limit=500");
+async function loadTasks(options = {}) {
+  const data = await api(tablePath("/api/tasks?limit=500", options));
   state.tasks = data.data;
   const existingIds = new Set(state.tasks.map((row) => row.record_id));
   state.selectedTaskIds = new Set([...state.selectedTaskIds].filter((id) => existingIds.has(id)));
   renderTasks();
   markTableLoaded("tasks", "任务表", state.tasks.length);
+  markPageLoaded("videos");
 }
 
-async function loadDoubaoItems() {
-  const data = await api("/api/doubao-items?limit=500");
+async function loadDoubaoItems(options = {}) {
+  const data = await api(tablePath("/api/doubao-items?limit=500", options));
   state.doubaoItems = data.data;
   renderDoubaoItems();
   markTableLoaded("doubao", "豆包表", state.doubaoItems.length);
+  markPageLoaded("doubao");
 }
 
-async function loadPrompts() {
-  const data = await api("/api/prompts");
+async function loadPrompts(options = {}) {
+  const data = await api(tablePath("/api/prompts", options));
   state.prompts = data.data;
   if (state.editingPromptId && !state.prompts.some((row) => row.record_id === state.editingPromptId)) {
     state.editingPromptId = "";
   }
   renderPrompts();
   markTableLoaded("prompts", "Prompt表", state.prompts.length);
+  markPageLoaded("prompts");
 }
 
 function closePromptEditor() {
@@ -813,14 +857,21 @@ async function savePromptEdit() {
 
 async function loadJobs() {
   const data = await api("/api/jobs");
+  const nextActiveNames = data.data
+    .filter((job) => job.status === "running")
+    .map((job) => `${job.name}:${job.id}`)
+    .join("|");
+  const activeChanged = nextActiveNames !== state.lastActiveJobNames;
   state.jobs = data.data;
+  state.lastActiveJobNames = nextActiveNames;
   $("jobs").innerHTML = data.data.slice().reverse().map((job) => `<div class="job">
     <div><strong>${esc(job.name)}</strong><div class="muted">${esc(job.id)}</div></div>
     <div>${status(job.status)}</div>
   </div>`).join("");
-  renderMaterials();
-  renderTasks();
-  renderDoubaoItems();
+  if (!activeChanged) return;
+  if (state.activePage === "materials" && activePageLoaded("materials")) renderMaterials();
+  if (state.activePage === "videos" && activePageLoaded("videos")) renderTasks();
+  if (state.activePage === "doubao" && activePageLoaded("doubao")) renderDoubaoItems();
 }
 
 async function loadLogs() {
@@ -1258,28 +1309,41 @@ $("saveToken").onclick = () => {
   state.token = $("adminToken").value.trim();
   localStorage.setItem("viral-remix-admin-token", state.token);
   loadConfig();
-  loadMaterials().catch(() => {});
-  loadTasks().catch(() => {});
+  loadActivePage({ force: true }).catch(() => {});
 };
 
 $("refreshConfig").onclick = loadConfig;
-$("loadMaterials").onclick = loadMaterials;
-$("loadTasks").onclick = loadTasks;
+$("loadMaterials").onclick = () => loadMaterials({ force: true });
+$("loadTasks").onclick = () => loadTasks({ force: true });
 $("syncPublish").onclick = () => syncPublishTasks($("syncPublish"));
 $("batchSyncReferenceImages").onclick = () => batchSyncReferenceImages($("batchSyncReferenceImages"));
 $("batchStoreManualVideos").onclick = () => batchStoreManualVideos($("batchStoreManualVideos"));
 $("loadJobs").onclick = loadJobs;
 $("loadLogs").onclick = loadLogs;
-$("refreshMaterialsTable").onclick = () => refreshTable("refreshMaterialsTable", loadMaterials);
-$("refreshTasksTable").onclick = () => refreshTable("refreshTasksTable", loadTasks);
-$("refreshDoubaoTable").onclick = () => refreshTable("refreshDoubaoTable", loadDoubaoItems);
-$("refreshPromptsTable").onclick = () => refreshTable("refreshPromptsTable", loadPrompts);
-$("pageMaterials").onclick = () => { state.activePage = "materials"; renderPage(); };
-$("pageVideos").onclick = () => { state.activePage = "videos"; renderPage(); loadTasks().catch(() => {}); };
-$("pageDoubao").onclick = () => { state.activePage = "doubao"; renderPage(); loadDoubaoItems().catch(() => {}); };
-$("pagePrompts").onclick = () => { state.activePage = "prompts"; renderPage(); loadPrompts().catch(() => {}); };
-$("loadDoubao").onclick = loadDoubaoItems;
-$("loadPrompts").onclick = loadPrompts;
+$("refreshMaterialsTable").onclick = () => refreshTable("refreshMaterialsTable", () => loadMaterials({ force: true }));
+$("refreshTasksTable").onclick = () => refreshTable("refreshTasksTable", () => loadTasks({ force: true }));
+$("refreshDoubaoTable").onclick = () => refreshTable("refreshDoubaoTable", () => loadDoubaoItems({ force: true }));
+$("refreshPromptsTable").onclick = () => refreshTable("refreshPromptsTable", () => loadPrompts({ force: true }));
+
+async function loadActivePage(options = {}) {
+  if (state.activePage === "materials") return loadMaterials(options);
+  if (state.activePage === "videos") return loadTasks(options);
+  if (state.activePage === "doubao") return loadDoubaoItems(options);
+  if (state.activePage === "prompts") return loadPrompts(options);
+}
+
+function switchPage(page) {
+  state.activePage = page;
+  renderPage();
+  if (!activePageLoaded(page)) loadActivePage().catch(() => {});
+}
+
+$("pageMaterials").onclick = () => switchPage("materials");
+$("pageVideos").onclick = () => switchPage("videos");
+$("pageDoubao").onclick = () => switchPage("doubao");
+$("pagePrompts").onclick = () => switchPage("prompts");
+$("loadDoubao").onclick = () => loadDoubaoItems({ force: true });
+$("loadPrompts").onclick = () => loadPrompts({ force: true });
 $("selectAllMaterials").onchange = () => {
   const ids = state.materials.map((row) => row.record_id).filter(Boolean);
   if ($("selectAllMaterials").checked) ids.forEach((id) => state.selectedMaterialIds.add(id));
@@ -1348,15 +1412,16 @@ $("batchVideos").onclick = async () => {
 
 renderPage();
 loadConfig();
-loadMaterials().catch(() => {});
-loadTasks().catch(() => {});
-loadDoubaoItems().catch(() => {});
-loadPrompts().catch(() => {});
+loadActivePage().catch(() => {});
 loadJobs().catch(() => {});
 loadLogs().catch(() => {});
 setInterval(() => {
+  state.pollTick += 1;
   loadJobs().catch(() => {});
   loadLogs().catch(() => {});
-  loadTasks().catch(() => {});
-  loadDoubaoItems().catch(() => {});
-}, 8000);
+  if (hasRunningJobs() && state.pollTick % 2 === 0) {
+    if (state.activePage === "materials" && activePageLoaded("materials")) loadMaterials().catch(() => {});
+    if (state.activePage === "videos" && activePageLoaded("videos")) loadTasks().catch(() => {});
+    if (state.activePage === "doubao" && activePageLoaded("doubao")) loadDoubaoItems().catch(() => {});
+  }
+}, 10000);

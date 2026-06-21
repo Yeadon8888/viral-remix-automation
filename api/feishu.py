@@ -1,6 +1,7 @@
 import time
 import mimetypes
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import requests
@@ -19,25 +20,28 @@ class FeishuClient:
         self.settings = settings
         self._token = ""
         self._token_expires_at = 0.0
+        self._token_lock = Lock()
+        self._session = requests.Session()
 
     def _tenant_token(self) -> str:
-        if self._token and time.time() < self._token_expires_at:
-            return self._token
+        with self._token_lock:
+            if self._token and time.time() < self._token_expires_at:
+                return self._token
 
-        resp = requests.post(
-            f"{self.base_url}/auth/v3/tenant_access_token/internal",
-            json={
-                "app_id": self.settings.feishu_app_id,
-                "app_secret": self.settings.feishu_app_secret,
-            },
-            timeout=30,
-        )
-        data = resp.json()
-        if resp.status_code != 200 or data.get("code") != 0:
-            raise FeishuError(f"Feishu auth failed: {data.get('msg') or resp.text[:300]}")
-        self._token = data["tenant_access_token"]
-        self._token_expires_at = time.time() + int(data.get("expire", 7200)) - 300
-        return self._token
+            resp = self._session.post(
+                f"{self.base_url}/auth/v3/tenant_access_token/internal",
+                json={
+                    "app_id": self.settings.feishu_app_id,
+                    "app_secret": self.settings.feishu_app_secret,
+                },
+                timeout=30,
+            )
+            data = resp.json()
+            if resp.status_code != 200 or data.get("code") != 0:
+                raise FeishuError(f"Feishu auth failed: {data.get('msg') or resp.text[:300]}")
+            self._token = data["tenant_access_token"]
+            self._token_expires_at = time.time() + int(data.get("expire", 7200)) - 300
+            return self._token
 
     def headers(self) -> dict[str, str]:
         return {
@@ -47,7 +51,7 @@ class FeishuClient:
 
     def _request(self, method: str, path: str, **kwargs) -> dict[str, Any]:
         headers = kwargs.pop("headers", self.headers())
-        resp = requests.request(
+        resp = self._session.request(
             method,
             f"{self.base_url}{path}",
             headers=headers,
@@ -62,7 +66,7 @@ class FeishuClient:
             raise FeishuError(data.get("msg") or str(data)[:500])
         return data.get("data", data)
 
-    def list_records(self, table_id: str, page_size: int = 100) -> list[dict[str, Any]]:
+    def list_records(self, table_id: str, page_size: int = 100, max_records: int | None = None) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         page_token = ""
         while True:
@@ -75,6 +79,8 @@ class FeishuClient:
                 params=params,
             )
             items.extend(data.get("items", []))
+            if max_records and len(items) >= max_records:
+                return items[:max_records]
             if not data.get("has_more"):
                 break
             page_token = data.get("page_token", "")

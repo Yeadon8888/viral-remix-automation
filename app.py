@@ -1,4 +1,6 @@
 import os
+import time
+from threading import Lock
 
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
@@ -19,6 +21,31 @@ from api.workflow import ViralRemixWorkflow
 
 app = Flask(__name__, static_folder="public", static_url_path="")
 CORS(app)
+workflow = ViralRemixWorkflow(settings)
+cache_lock = Lock()
+list_cache = {}
+
+
+def get_workflow() -> ViralRemixWorkflow:
+    return workflow
+
+
+def cached_list(key: str, loader, ttl_seconds: int = 20):
+    force = str(request.args.get("force") or "").lower() in ("1", "true", "yes")
+    now = time.time()
+    with cache_lock:
+        cached = list_cache.get(key)
+        if cached and not force and now - cached["time"] < ttl_seconds:
+            return cached["data"]
+    data = loader()
+    with cache_lock:
+        list_cache[key] = {"time": now, "data": data}
+    return data
+
+
+def clear_list_cache() -> None:
+    with cache_lock:
+        list_cache.clear()
 
 
 def request_limit(default: int = 500, maximum: int = 1000) -> int:
@@ -96,22 +123,25 @@ def job_list():
 
 @app.route("/api/materials")
 def list_materials():
-    workflow = ViralRemixWorkflow(settings)
-    data = workflow.list_materials(limit=request_limit())
+    workflow = get_workflow()
+    limit = request_limit()
+    data = cached_list(f"materials:{limit}", lambda: workflow.list_materials(limit=limit))
     return jsonify({"success": True, "data": data})
 
 
 @app.route("/api/prompts")
 def list_prompts():
-    workflow = ViralRemixWorkflow(settings)
-    return jsonify({"success": True, "data": workflow.list_prompt_configs()})
+    workflow = get_workflow()
+    data = cached_list("prompts", workflow.list_prompt_configs, ttl_seconds=30)
+    return jsonify({"success": True, "data": data})
 
 
 @app.route("/api/prompts/<record_id>", methods=["PATCH"])
 def update_prompt(record_id):
     body = request.get_json(silent=True) or {}
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     data = workflow.update_prompt_config(record_id, body)
+    clear_list_cache()
     return jsonify({"success": True, "data": data})
 
 
@@ -121,35 +151,38 @@ def update_material_templates(record_id):
     styles = body.get("styles") or body.get("templates") or []
     if not isinstance(styles, list):
         return jsonify({"success": False, "message": "styles must be an array"}), 400
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     data = workflow.update_material_templates(record_id, styles)
+    clear_list_cache()
     return jsonify({"success": True, "data": data})
 
 
 @app.route("/api/tasks")
 def list_tasks():
-    workflow = ViralRemixWorkflow(settings)
-    data = workflow.list_tasks(limit=request_limit())
+    workflow = get_workflow()
+    limit = request_limit()
+    data = cached_list(f"tasks:{limit}", lambda: workflow.list_tasks(limit=limit), ttl_seconds=10)
     return jsonify({"success": True, "data": data})
 
 
 @app.route("/api/doubao-items")
 def list_doubao_items():
-    workflow = ViralRemixWorkflow(settings)
-    data = workflow.list_doubao_items(limit=request_limit())
+    workflow = get_workflow()
+    limit = request_limit()
+    data = cached_list(f"doubao:{limit}", lambda: workflow.list_doubao_items(limit=limit), ttl_seconds=20)
     return jsonify({"success": True, "data": data})
 
 
 @app.route("/api/doubao-items/<record_id>/generate-prompt", methods=["POST"])
 def generate_doubao_prompt(record_id):
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     job_id = run_job(f"doubao-generate-prompt:{record_id}", workflow.generate_doubao_prompt, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/doubao-items/<record_id>/store-image", methods=["POST"])
 def store_doubao_image(record_id):
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     job_id = run_job(f"doubao-store-image:{record_id}", workflow.store_doubao_image, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
@@ -159,7 +192,7 @@ def batch_store_doubao_images():
     body = request.get_json(silent=True) or {}
     record_ids = body.get("record_ids")
     limit = int(body.get("limit", 50))
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
 
     def runner(job_id=None):
         ids = record_ids
@@ -186,42 +219,42 @@ def batch_store_doubao_images():
 
 @app.route("/api/materials/<record_id>/prepare", methods=["POST"])
 def prepare_material(record_id):
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     job_id = run_job(f"prepare-material:{record_id}", workflow.prepare_material, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/analyze-video", methods=["POST"])
 def analyze_material_video(record_id):
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     job_id = run_job(f"analyze-video:{record_id}", workflow.analyze_viral_video, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/store-image", methods=["POST"])
 def store_material_image(record_id):
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     job_id = run_job(f"store-image:{record_id}", workflow.store_product_image, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/generate-images", methods=["POST"])
 def generate_material_images(record_id):
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     job_id = run_job(f"generate-images:{record_id}", workflow.generate_product_images, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/create-tasks", methods=["POST"])
 def create_material_tasks(record_id):
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     job_id = run_job(f"create-tasks:{record_id}", workflow.create_video_tasks, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/retry-failed-step", methods=["POST"])
 def retry_failed_material_step(record_id):
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     job_id = run_job(f"retry-failed-step:{record_id}", workflow.retry_failed_material_step, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
@@ -232,7 +265,7 @@ def batch_material_step():
     record_ids = body.get("record_ids") or []
     step = str(body.get("step") or "").strip()
     limit = int(body.get("limit", 50))
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     handlers = {
         "analyze-video": workflow.analyze_viral_video,
         "store-image": workflow.store_product_image,
@@ -264,7 +297,7 @@ def batch_prepare():
     body = request.get_json(silent=True) or {}
     record_ids = body.get("record_ids")
     limit = int(body.get("limit", 5))
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
 
     def runner(job_id=None):
         ids = record_ids
@@ -289,21 +322,21 @@ def batch_prepare():
 
 @app.route("/api/tasks/<record_id>/generate-video", methods=["POST"])
 def generate_task_video(record_id):
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     job_id = run_job(f"generate-video:{record_id}", workflow.generate_task_video, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/tasks/<record_id>/sync-reference-image", methods=["POST"])
 def sync_task_reference_image(record_id):
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     job_id = run_job(f"sync-reference-image:{record_id}", workflow.sync_task_reference_image, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/tasks/<record_id>/store-manual-video", methods=["POST"])
 def store_manual_task_video(record_id):
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     job_id = run_job(f"store-manual-video:{record_id}", workflow.store_manual_task_video, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
@@ -313,7 +346,7 @@ def batch_generate_video():
     body = request.get_json(silent=True) or {}
     record_ids = body.get("record_ids")
     limit = int(body.get("limit", 3))
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
 
     def runner(job_id=None):
         ids = record_ids
@@ -341,7 +374,7 @@ def batch_sync_reference_images():
     body = request.get_json(silent=True) or {}
     record_ids = body.get("record_ids")
     limit = int(body.get("limit", 100))
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
 
     def runner(job_id=None):
         ids = record_ids
@@ -372,7 +405,7 @@ def batch_store_manual_videos():
     body = request.get_json(silent=True) or {}
     record_ids = body.get("record_ids")
     limit = int(body.get("limit", 100))
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
 
     def runner(job_id=None):
         ids = record_ids
@@ -405,7 +438,7 @@ def sync_publish_tasks():
     body = request.get_json(silent=True) or {}
     record_ids = body.get("record_ids")
     limit = int(body.get("limit", 100))
-    workflow = ViralRemixWorkflow(settings)
+    workflow = get_workflow()
     job_id = run_job("sync-publish-tasks", workflow.sync_publish_items, record_ids, limit)
     return jsonify({"success": True, "job_id": job_id})
 
