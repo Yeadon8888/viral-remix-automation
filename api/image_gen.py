@@ -52,19 +52,58 @@ class NewTokenImageClient:
     @staticmethod
     def _extract_url(data: dict[str, Any]) -> str | None:
         metadata_urls = (data.get("metadata") or {}).get("result_urls")
+        data_items = data.get("data")
+        first_item = data_items[0] if isinstance(data_items, list) and data_items else {}
         return (
             data.get("image_url")
             or ((metadata_urls or [None])[0] if isinstance(metadata_urls, list) else None)
             or data.get("video_url")
             or data.get("url")
+            or (first_item.get("url") if isinstance(first_item, dict) else None)
+            or (first_item.get("image_url") if isinstance(first_item, dict) else None)
             or (data.get("data") or {}).get("output")
             or (data.get("data") or {}).get("image_url")
             or (data.get("data") or {}).get("video_url")
             or (data.get("data") or {}).get("url")
         )
 
+    @staticmethod
+    def _image_size(aspect_ratio: str) -> str:
+        return {
+            "9:16": "1024x1792",
+            "16:9": "1792x1024",
+            "1:1": "1024x1024",
+            "3:4": "1024x1365",
+            "4:3": "1365x1024",
+        }.get(aspect_ratio, "1024x1792")
+
+    def _sync_model_name(self) -> str:
+        model = self.settings.newtoken_model.strip()
+        lower = model.lower()
+        if lower.endswith("_sync"):
+            return model
+        if lower == "gpt-image-2-1k":
+            return "gpt-image2-1k_sync"
+        return ""
+
+    def _edit_image_sync(self, image_urls: list[str], prompt: str, aspect_ratio: str) -> str:
+        body = {
+            "model": self._sync_model_name(),
+            "prompt": prompt,
+            "size": self._image_size(aspect_ratio),
+            "image_urls": image_urls,
+        }
+        data = self._request("POST", "/v1/images/generations", json=body, timeout=180)
+        url = self._extract_url(data)
+        if not url:
+            raise RuntimeError("NewToken sync image generation completed without image URL")
+        return url
+
     def edit_image(self, image_url: str | list[str], prompt: str, aspect_ratio: str = "9:16") -> str:
         image_urls = image_url if isinstance(image_url, list) else [image_url]
+        if self._sync_model_name():
+            return self._edit_image_sync(image_urls, prompt, aspect_ratio)
+
         body = {
             "model": self.settings.newtoken_model,
             "prompt": prompt,
