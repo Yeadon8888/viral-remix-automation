@@ -356,6 +356,7 @@ class ViralRemixWorkflow:
                 "首帧附件数": attachment_count(fields, "首帧/参考图"),
                 "生成视频附件数": attachment_count(fields, "生成视频"),
                 "失败原因": field_value(fields, "失败原因", ""),
+                "生成时间": field_value(fields, "生成时间", ""),
             })
             if len(out) >= limit:
                 break

@@ -6,6 +6,8 @@ const state = {
   prompts: [],
   jobs: [],
   pendingJobs: new Set(),
+  collapsedTaskDateGroups: new Set(),
+  seenTaskDateGroups: new Set(),
   editingPromptId: "",
   selectedMaterialId: localStorage.getItem("viral-remix-selected-material") || "",
   selectedMaterialIds: new Set(),
@@ -96,6 +98,30 @@ function renderProgress(value) {
     <div class="progress-track"><span style="width:${pct}%"></span></div>
     <strong>${pct}%</strong>
   </div>`;
+}
+
+function taskDateGroup(row) {
+  const raw = row["生成时间"];
+  const time = Number(raw || 0);
+  if (!time) return { key: "unknown", label: "未记录日期" };
+  const date = new Date(time > 1e12 ? time : time * 1000);
+  if (Number.isNaN(date.getTime())) return { key: "unknown", label: "未记录日期" };
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  const key = `${y}-${m}-${d}`;
+  const label = date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
+  return { key, label };
+}
+
+function groupCompletedTasks(rows) {
+  const groups = new Map();
+  rows.forEach((row) => {
+    const group = taskDateGroup(row);
+    if (!groups.has(group.key)) groups.set(group.key, { ...group, rows: [] });
+    groups.get(group.key).rows.push(row);
+  });
+  return [...groups.values()].sort((a, b) => b.key.localeCompare(a.key));
 }
 
 function shortUrl(url) {
@@ -409,28 +435,17 @@ function renderSelectedMaterial() {
   $("clearSelection").onclick = () => selectMaterial("");
 }
 
-function renderTasks() {
-  const rows = tasksForSelected();
-  renderSelectedMaterial();
-  if (!rows.length) {
-    $("tasks").innerHTML = `<div class="selected-box">暂无视频生成任务</div>`;
-    renderTaskSelectionState();
-    return;
-  }
-
-  $("tasks").innerHTML = `<table><thead><tr>
-    <th class="select-col"></th><th class="row-no">行</th><th>任务</th><th>状态</th><th>进度</th><th>发布内容</th><th>参考图</th><th>视频</th><th>操作</th>
-  </tr></thead><tbody>${rows.map((row) => {
-    const checked = state.selectedTaskIds.has(row.record_id) ? "checked" : "";
-    const referenceCount = Number(row["首帧附件数"] || 0);
-    const videoAttachmentCount = Number(row["生成视频附件数"] || 0);
-    const referenceJob = `sync-reference-image:${row.record_id}`;
-    const manualVideoJob = `store-manual-video:${row.record_id}`;
-    const generateJob = `generate-video:${row.record_id}`;
-    const referenceBusy = isJobBusy(referenceJob);
-    const manualVideoBusy = isJobBusy(manualVideoJob);
-    const generateBusy = isJobBusy(generateJob);
-    return `<tr>
+function renderTaskRow(row, extraClass = "", hidden = false) {
+  const checked = state.selectedTaskIds.has(row.record_id) ? "checked" : "";
+  const referenceCount = Number(row["首帧附件数"] || 0);
+  const videoAttachmentCount = Number(row["生成视频附件数"] || 0);
+  const referenceJob = `sync-reference-image:${row.record_id}`;
+  const manualVideoJob = `store-manual-video:${row.record_id}`;
+  const generateJob = `generate-video:${row.record_id}`;
+  const referenceBusy = isJobBusy(referenceJob);
+  const manualVideoBusy = isJobBusy(manualVideoJob);
+  const generateBusy = isJobBusy(generateJob);
+  return `<tr class="${esc(extraClass)}" ${hidden ? "hidden" : ""}>
     <td class="select-col"><input class="task-check" type="checkbox" data-task-select-id="${esc(row.record_id)}" ${checked}></td>
     <td class="row-no">${esc(row["行号"] || "")}</td>
     <td>
@@ -460,8 +475,57 @@ function renderTasks() {
     </td>
     <td><button class="mini${state.pendingJobs.has(generateJob) ? " is-pending" : ""}" data-action="video" data-id="${esc(row.record_id)}" ${generateBusy ? "disabled" : ""}>${state.pendingJobs.has(generateJob) ? "提交中" : generateBusy ? "进行中" : "生成视频"}</button></td>
   </tr>`;
-  }).join("")}</tbody></table>`;
+}
 
+function renderCompletedTaskGroups(rows) {
+  return groupCompletedTasks(rows).map((group) => {
+    const collapsed = state.collapsedTaskDateGroups.has(group.key);
+    return `<tr class="task-date-row">
+      <td colspan="9">
+        <button class="date-toggle" type="button" data-task-date-toggle="${esc(group.key)}">
+          <span>${esc(group.label)}</span>
+          <strong>${group.rows.length} 条已完成</strong>
+          <em>${collapsed ? "展开" : "收起"}</em>
+        </button>
+      </td>
+    </tr>${group.rows.map((row) => renderTaskRow(row, "task-history-row", collapsed)).join("")}`;
+  }).join("");
+}
+
+function renderTasks() {
+  const rows = tasksForSelected();
+  renderSelectedMaterial();
+  if (!rows.length) {
+    $("tasks").innerHTML = `<div class="selected-box">暂无视频生成任务</div>`;
+    renderTaskSelectionState();
+    return;
+  }
+  const activeRows = rows.filter((row) => row["生成状态"] !== "已完成");
+  const completedRows = rows.filter((row) => row["生成状态"] === "已完成");
+  completedRows.forEach((row) => {
+    const group = taskDateGroup(row);
+    if (!state.seenTaskDateGroups.has(group.key)) {
+      state.seenTaskDateGroups.add(group.key);
+      state.collapsedTaskDateGroups.add(group.key);
+    }
+  });
+  const body = [
+    ...activeRows.map((row) => renderTaskRow(row)),
+    renderCompletedTaskGroups(completedRows),
+  ].join("");
+
+  $("tasks").innerHTML = `<table><thead><tr>
+    <th class="select-col"></th><th class="row-no">行</th><th>任务</th><th>状态</th><th>进度</th><th>发布内容</th><th>参考图</th><th>视频</th><th>操作</th>
+  </tr></thead><tbody>${body}</tbody></table>`;
+
+  document.querySelectorAll("[data-task-date-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.taskDateToggle;
+      if (state.collapsedTaskDateGroups.has(key)) state.collapsedTaskDateGroups.delete(key);
+      else state.collapsedTaskDateGroups.add(key);
+      renderTasks();
+    });
+  });
   document.querySelectorAll("[data-task-select-id]").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) state.selectedTaskIds.add(checkbox.dataset.taskSelectId);

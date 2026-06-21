@@ -417,6 +417,44 @@ th {
   white-space: nowrap;
 }
 
+.task-date-row td {
+  padding: 8px 12px;
+  background: #f4faf6;
+}
+
+.date-toggle {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid #cfe0d6;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 12px;
+  text-align: left;
+  font: inherit;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.date-toggle strong {
+  color: var(--accent-ink);
+}
+
+.date-toggle em {
+  min-width: 42px;
+  color: var(--muted);
+  font-style: normal;
+  text-align: right;
+}
+
+.task-history-row {
+  background: #fbfdfb;
+}
+
 tr.selectable { cursor: pointer; }
 tr.selectable:hover { background: #f8fbf8; }
 tr.selected {
