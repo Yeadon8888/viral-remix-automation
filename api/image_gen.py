@@ -82,15 +82,11 @@ class NewTokenImageClient:
         lower = model.lower()
         if lower.endswith("_sync"):
             return model
-        if lower == "gpt-image-2-1k":
-            return "gpt-image2-1k_sync"
         return ""
 
     def _async_model_name(self) -> str:
         model = self.settings.newtoken_model.strip()
         lower = model.lower()
-        if lower in {"gpt-image-2-1k", "gpt-image2-1k", "gpt-image2-1k_sync"}:
-            return "gpt-image2-1k"
         if lower.endswith("_sync"):
             return model[:-5]
         return model
@@ -100,7 +96,7 @@ class NewTokenImageClient:
             "model": self._sync_model_name(),
             "prompt": prompt,
             "size": self._image_size(aspect_ratio),
-            "image_urls": image_urls,
+            "images": image_urls,
         }
         data = self._request("POST", "/v1/images/generations", json=body, timeout=180)
         url = self._extract_url(data)
@@ -114,7 +110,7 @@ class NewTokenImageClient:
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
             "seconds": "4",
-            "image_urls": image_urls,
+            "images": image_urls,
         }
         data = self._request("POST", "/v1/videos", json=body, timeout=60)
         status = str(data.get("status", "queued")).lower()
