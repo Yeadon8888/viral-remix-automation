@@ -22,11 +22,13 @@ def prune_jobs() -> None:
 
 
 def get_job(job_id: str) -> dict[str, Any] | None:
-    return jobs.get(job_id)
+    with job_lock:
+        return jobs.get(job_id)
 
 
 def list_jobs() -> list[dict[str, Any]]:
-    return list(jobs.values())[-MAX_JOBS:]
+    with job_lock:
+        return list(jobs.values())[-MAX_JOBS:]
 
 
 def run_job(name: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> str:

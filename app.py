@@ -48,9 +48,28 @@ def clear_list_cache() -> None:
         list_cache.clear()
 
 
+def run_workflow_job(name: str, fn, *args, **kwargs) -> str:
+    def runner(job_id=None):
+        clear_list_cache()
+        try:
+            return fn(*args, job_id=job_id, **kwargs)
+        finally:
+            clear_list_cache()
+
+    return run_job(name, runner)
+
+
 def request_limit(default: int = 500, maximum: int = 1000) -> int:
     try:
         value = int(request.args.get("limit", default))
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, maximum))
+
+
+def query_int(name: str, default: int, maximum: int) -> int:
+    try:
+        value = int(request.args.get(name, default))
     except (TypeError, ValueError):
         value = default
     return max(1, min(value, maximum))
@@ -105,7 +124,7 @@ def config_status():
 
 @app.route("/api/logs")
 def logs():
-    return jsonify({"success": True, "data": recent_logs(int(request.args.get("limit", 150)))})
+    return jsonify({"success": True, "data": recent_logs(query_int("limit", 120, 300))})
 
 
 @app.route("/api/jobs/<job_id>")
@@ -176,14 +195,14 @@ def list_doubao_items():
 @app.route("/api/doubao-items/<record_id>/generate-prompt", methods=["POST"])
 def generate_doubao_prompt(record_id):
     workflow = get_workflow()
-    job_id = run_job(f"doubao-generate-prompt:{record_id}", workflow.generate_doubao_prompt, record_id)
+    job_id = run_workflow_job(f"doubao-generate-prompt:{record_id}", workflow.generate_doubao_prompt, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/doubao-items/<record_id>/store-image", methods=["POST"])
 def store_doubao_image(record_id):
     workflow = get_workflow()
-    job_id = run_job(f"doubao-store-image:{record_id}", workflow.store_doubao_image, record_id)
+    job_id = run_workflow_job(f"doubao-store-image:{record_id}", workflow.store_doubao_image, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -213,49 +232,49 @@ def batch_store_doubao_images():
                 results.append({"record_id": rid, "error": str(exc)})
         return {"processed": len(results), "results": results}
 
-    job_id = run_job("doubao-batch-store-images", runner)
+    job_id = run_workflow_job("doubao-batch-store-images", runner)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/prepare", methods=["POST"])
 def prepare_material(record_id):
     workflow = get_workflow()
-    job_id = run_job(f"prepare-material:{record_id}", workflow.prepare_material, record_id)
+    job_id = run_workflow_job(f"prepare-material:{record_id}", workflow.prepare_material, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/analyze-video", methods=["POST"])
 def analyze_material_video(record_id):
     workflow = get_workflow()
-    job_id = run_job(f"analyze-video:{record_id}", workflow.analyze_viral_video, record_id)
+    job_id = run_workflow_job(f"analyze-video:{record_id}", workflow.analyze_viral_video, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/store-image", methods=["POST"])
 def store_material_image(record_id):
     workflow = get_workflow()
-    job_id = run_job(f"store-image:{record_id}", workflow.store_product_image, record_id)
+    job_id = run_workflow_job(f"store-image:{record_id}", workflow.store_product_image, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/generate-images", methods=["POST"])
 def generate_material_images(record_id):
     workflow = get_workflow()
-    job_id = run_job(f"generate-images:{record_id}", workflow.generate_product_images, record_id)
+    job_id = run_workflow_job(f"generate-images:{record_id}", workflow.generate_product_images, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/create-tasks", methods=["POST"])
 def create_material_tasks(record_id):
     workflow = get_workflow()
-    job_id = run_job(f"create-tasks:{record_id}", workflow.create_video_tasks, record_id)
+    job_id = run_workflow_job(f"create-tasks:{record_id}", workflow.create_video_tasks, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/retry-failed-step", methods=["POST"])
 def retry_failed_material_step(record_id):
     workflow = get_workflow()
-    job_id = run_job(f"retry-failed-step:{record_id}", workflow.retry_failed_material_step, record_id)
+    job_id = run_workflow_job(f"retry-failed-step:{record_id}", workflow.retry_failed_material_step, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -288,7 +307,7 @@ def batch_material_step():
         failed = len([item for item in results if item.get("error")])
         return {"processed": len(results), "failed": failed, "results": results}
 
-    job_id = run_job(f"batch-{step}", runner)
+    job_id = run_workflow_job(f"batch-{step}", runner)
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -316,28 +335,28 @@ def batch_prepare():
                 results.append({"record_id": rid, "error": str(exc)})
         return {"processed": len(results), "results": results}
 
-    job_id = run_job("batch-prepare-materials", runner)
+    job_id = run_workflow_job("batch-prepare-materials", runner)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/tasks/<record_id>/generate-video", methods=["POST"])
 def generate_task_video(record_id):
     workflow = get_workflow()
-    job_id = run_job(f"generate-video:{record_id}", workflow.generate_task_video, record_id)
+    job_id = run_workflow_job(f"generate-video:{record_id}", workflow.generate_task_video, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/tasks/<record_id>/sync-reference-image", methods=["POST"])
 def sync_task_reference_image(record_id):
     workflow = get_workflow()
-    job_id = run_job(f"sync-reference-image:{record_id}", workflow.sync_task_reference_image, record_id)
+    job_id = run_workflow_job(f"sync-reference-image:{record_id}", workflow.sync_task_reference_image, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/tasks/<record_id>/store-manual-video", methods=["POST"])
 def store_manual_task_video(record_id):
     workflow = get_workflow()
-    job_id = run_job(f"store-manual-video:{record_id}", workflow.store_manual_task_video, record_id)
+    job_id = run_workflow_job(f"store-manual-video:{record_id}", workflow.store_manual_task_video, record_id)
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -365,7 +384,7 @@ def batch_generate_video():
                 results.append({"record_id": rid, "error": str(exc)})
         return {"processed": len(results), "results": results}
 
-    job_id = run_job("batch-generate-videos", runner)
+    job_id = run_workflow_job("batch-generate-videos", runner)
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -396,7 +415,7 @@ def batch_sync_reference_images():
         failed = len([item for item in results if item.get("error")])
         return {"processed": len(results), "failed": failed, "results": results}
 
-    job_id = run_job("batch-sync-reference-images", runner)
+    job_id = run_workflow_job("batch-sync-reference-images", runner)
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -429,7 +448,7 @@ def batch_store_manual_videos():
         failed = len([item for item in results if item.get("error")])
         return {"processed": len(results), "failed": failed, "results": results}
 
-    job_id = run_job("batch-store-manual-videos", runner)
+    job_id = run_workflow_job("batch-store-manual-videos", runner)
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -439,7 +458,7 @@ def sync_publish_tasks():
     record_ids = body.get("record_ids")
     limit = int(body.get("limit", 100))
     workflow = get_workflow()
-    job_id = run_job("sync-publish-tasks", workflow.sync_publish_items, record_ids, limit)
+    job_id = run_workflow_job("sync-publish-tasks", workflow.sync_publish_items, record_ids, limit)
     return jsonify({"success": True, "job_id": job_id})
 
 

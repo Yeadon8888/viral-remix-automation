@@ -18,8 +18,10 @@ const state = {
   loadedPages: new Set(),
   lastActiveJobNames: "",
   pollTick: 0,
+  pollBusy: false,
+  lastJobsSnapshot: "",
+  lastLogsSnapshot: "",
   promptDetails: new Map(),
-  promptDetailSeq: 0,
   materialPage: 1,
   materialPageSize: 20,
   taskPage: 1,
@@ -60,6 +62,22 @@ function tablePath(path, { force = false } = {}) {
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function stableId(value) {
+  let hash = 5381;
+  const text = String(value || "");
+  for (let i = 0; i < text.length; i += 1) {
+    hash = ((hash << 5) + hash) ^ text.charCodeAt(i);
+  }
+  return `p${(hash >>> 0).toString(36)}`;
+}
+
+function rememberPromptDetail(id, body) {
+  state.promptDetails.set(id, body);
+  if (state.promptDetails.size > 500) {
+    state.promptDetails.delete(state.promptDetails.keys().next().value);
+  }
 }
 
 function activePageLoaded(page = state.activePage) {
@@ -420,8 +438,8 @@ function stepActionButton(action, id, label, extraClass = "") {
 function renderPromptDetail(label, text) {
   const body = String(text || "").trim();
   if (!body) return "";
-  const id = `p${++state.promptDetailSeq}`;
-  state.promptDetails.set(id, body);
+  const id = stableId(`${label}:${body}`);
+  rememberPromptDetail(id, body);
   return `<details class="prompt-preview wide" data-prompt-detail="${id}"><summary>${esc(label)}</summary><p class="muted">展开后加载内容</p></details>`;
 }
 
@@ -513,6 +531,7 @@ function renderMaterialRow(row, extraClass = "", hidden = false) {
 function renderProcessedMaterialGroups(rows) {
   return groupRowsByDate(rows, materialDateGroup).map((group) => {
     const collapsed = state.collapsedMaterialDateGroups.has(group.key);
+    const groupRows = collapsed ? "" : group.rows.map((row) => renderMaterialRow(row, "task-history-row")).join("");
     return `<tr class="task-date-row">
       <td colspan="8">
         <button class="date-toggle" type="button" data-material-date-toggle="${esc(group.key)}">
@@ -521,7 +540,7 @@ function renderProcessedMaterialGroups(rows) {
           <em>${collapsed ? "展开" : "收起"}</em>
         </button>
       </td>
-    </tr>${group.rows.map((row) => renderMaterialRow(row, "task-history-row", collapsed)).join("")}`;
+    </tr>${groupRows}`;
   }).join("");
 }
 
@@ -660,6 +679,7 @@ function renderTaskRow(row, extraClass = "", hidden = false) {
 function renderCompletedTaskGroups(rows) {
   return groupRowsByDate(rows, taskDateGroup).map((group) => {
     const collapsed = state.collapsedTaskDateGroups.has(group.key);
+    const groupRows = collapsed ? "" : group.rows.map((row) => renderTaskRow(row, "task-history-row")).join("");
     return `<tr class="task-date-row">
       <td colspan="9">
         <button class="date-toggle" type="button" data-task-date-toggle="${esc(group.key)}">
@@ -668,7 +688,7 @@ function renderCompletedTaskGroups(rows) {
           <em>${collapsed ? "展开" : "收起"}</em>
         </button>
       </td>
-    </tr>${group.rows.map((row) => renderTaskRow(row, "task-history-row", collapsed)).join("")}`;
+    </tr>${groupRows}`;
   }).join("");
 }
 
@@ -957,13 +977,17 @@ async function loadJobs() {
     .filter((job) => job.status === "running")
     .map((job) => `${job.name}:${job.id}`)
     .join("|");
+  const nextSnapshot = data.data.map((job) => `${job.id}:${job.name}:${job.status}:${job.error || ""}`).join("|");
   const activeChanged = nextActiveNames !== state.lastActiveJobNames;
   state.jobs = data.data;
   state.lastActiveJobNames = nextActiveNames;
-  $("jobs").innerHTML = data.data.slice().reverse().map((job) => `<div class="job">
-    <div><strong>${esc(job.name)}</strong><div class="muted">${esc(job.id)}</div></div>
-    <div>${status(job.status)}</div>
-  </div>`).join("");
+  if (nextSnapshot !== state.lastJobsSnapshot) {
+    state.lastJobsSnapshot = nextSnapshot;
+    $("jobs").innerHTML = data.data.slice().reverse().map((job) => `<div class="job">
+      <div><strong>${esc(job.name)}</strong><div class="muted">${esc(job.id)}</div></div>
+      <div>${status(job.status)}</div>
+    </div>`).join("");
+  }
   if (!activeChanged) return;
   if (state.activePage === "materials" && activePageLoaded("materials")) renderMaterials();
   if (state.activePage === "videos" && activePageLoaded("videos")) renderTasks();
@@ -971,10 +995,13 @@ async function loadJobs() {
 }
 
 async function loadLogs() {
-  const data = await api("/api/logs?limit=200");
+  const data = await api("/api/logs?limit=120");
   const box = $("logs");
+  const nextText = data.data.map((l) => `[${l.timestamp}] [${l.level}] [${l.source}] ${l.message}`).join("\n");
+  if (nextText === state.lastLogsSnapshot) return;
   const shouldStick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
-  box.textContent = data.data.map((l) => `[${l.timestamp}] [${l.level}] [${l.source}] ${l.message}`).join("\n");
+  state.lastLogsSnapshot = nextText;
+  box.textContent = nextText;
   if (shouldStick) box.scrollTop = box.scrollHeight;
 }
 
@@ -1511,13 +1538,29 @@ loadConfig();
 loadActivePage().catch(() => {});
 loadJobs().catch(() => {});
 loadLogs().catch(() => {});
-setInterval(() => {
-  state.pollTick += 1;
-  loadJobs().catch(() => {});
-  loadLogs().catch(() => {});
-  if (hasRunningJobs() && state.pollTick % 2 === 0) {
-    if (state.activePage === "materials" && activePageLoaded("materials")) loadMaterials().catch(() => {});
-    if (state.activePage === "videos" && activePageLoaded("videos")) loadTasks().catch(() => {});
-    if (state.activePage === "doubao" && activePageLoaded("doubao")) loadDoubaoItems().catch(() => {});
+async function pollRuntime() {
+  if (state.pollBusy || document.visibilityState === "hidden") return;
+  state.pollBusy = true;
+  try {
+    state.pollTick += 1;
+    await loadJobs();
+    if (hasRunningJobs() || state.pollTick % 3 === 0) await loadLogs();
+    if (hasRunningJobs() && state.pollTick % 2 === 0) {
+      if (state.activePage === "materials" && activePageLoaded("materials")) await loadMaterials();
+      if (state.activePage === "videos" && activePageLoaded("videos")) await loadTasks();
+      if (state.activePage === "doubao" && activePageLoaded("doubao")) await loadDoubaoItems();
+    }
+  } finally {
+    state.pollBusy = false;
   }
+}
+setInterval(() => {
+  pollRuntime().catch(() => {
+    state.pollBusy = false;
+  });
 }, 10000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") pollRuntime().catch(() => {
+    state.pollBusy = false;
+  });
+});
