@@ -1,5 +1,4 @@
 import mimetypes
-import re
 import time
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -27,25 +26,12 @@ class CpaVideoClient:
             "preset": self.settings.cpa_preset,
         }
 
-    def _json_size(self) -> str:
-        allowed = {"848x480", "1696x960", "1280x720", "1920x1080"}
-        if self.settings.cpa_size in allowed:
-            return self.settings.cpa_size
-        return "1280x720"
-
     def _video_json(self, prompt: str, image_url: str) -> dict:
-        width, _, height = self.settings.cpa_size.partition("x")
-        aspect_ratio = "9:16"
-        if width.isdigit() and height.isdigit() and int(width) >= int(height):
-            aspect_ratio = "16:9"
         return {
             "model": self.settings.cpa_video_model,
             "prompt": prompt,
-            "seconds": self.settings.cpa_seconds,
-            "size": self._json_size(),
-            "aspect_ratio": aspect_ratio,
-            "resolution_name": self.settings.cpa_resolution,
-            "preset": self.settings.cpa_preset,
+            "seconds": str(self.settings.cpa_seconds),
+            "size": self.settings.cpa_size,
             "input_reference": {"image_url": image_url},
         }
 
@@ -207,50 +193,6 @@ class CpaVideoClient:
                 last_error = f"{last_error}; status fallback failed: {exc}"
             time.sleep(8)
         raise RuntimeError(f"CPA content download failed: {last_error}")
-
-    def generate_via_chat_completions(self, prompt: str, image_url: str) -> dict:
-        resp = requests.post(
-            f"{self.settings.cpa_base_url}/v1/chat/completions",
-            headers={**self._headers(), "Content-Type": "application/json"},
-            json={
-                "model": self.settings.cpa_video_model,
-                "stream": False,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": image_url}},
-                        ],
-                    }
-                ],
-                "video_config": {
-                    "seconds": self.settings.cpa_seconds,
-                    "size": self.settings.cpa_size,
-                    "resolution_name": self.settings.cpa_resolution,
-                    "preset": self.settings.cpa_preset,
-                },
-            },
-            timeout=300,
-        )
-        if resp.status_code >= 400:
-            raise RuntimeError(f"CPA chat video failed: HTTP {resp.status_code}: {resp.text[:500]}")
-        data = resp.json()
-        content = str((data.get("choices") or [{}])[0].get("message", {}).get("content", "") or "")
-        match = re.search(r"https?://\S+", content)
-        if not match:
-            raise RuntimeError(f"CPA chat video did not return a video URL: {content[:300]}")
-        video_url = match.group(0).rstrip(").,，。]")
-        video_resp = requests.get(video_url, headers=self._headers(), timeout=180)
-        if video_resp.status_code >= 400:
-            video_resp = requests.get(video_url, timeout=180)
-        if video_resp.status_code >= 400:
-            raise RuntimeError(f"CPA chat video download failed: HTTP {video_resp.status_code}")
-        return {
-            "video_id": data.get("id") or "chat-completions-video",
-            "data": video_resp.content,
-            "mime_type": video_resp.headers.get("content-type", "video/mp4").split(";")[0],
-        }
 
     def generate(
         self,
