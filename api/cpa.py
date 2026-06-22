@@ -22,7 +22,7 @@ class CpaVideoClient:
             "prompt": prompt,
             "seconds": str(self.settings.cpa_seconds),
             "size": self.settings.cpa_size,
-            "resolution_name": self.settings.cpa_resolution,
+            "resolution": self.settings.cpa_resolution,
             "preset": self.settings.cpa_preset,
         }
 
@@ -32,6 +32,8 @@ class CpaVideoClient:
             "prompt": prompt,
             "seconds": str(self.settings.cpa_seconds),
             "size": self.settings.cpa_size,
+            "resolution": self.settings.cpa_resolution,
+            "preset": self.settings.cpa_preset,
             "input_reference": {"image_url": image_url},
         }
 
@@ -80,7 +82,7 @@ class CpaVideoClient:
         try:
             with image_path.open("rb") as f:
                 resp = requests.post(
-                    f"{self.settings.cpa_base_url}/v1/videos",
+                    f"{self.settings.cpa_base_url}/openai/v1/videos",
                     headers=self._headers(),
                     data=self._video_form(prompt),
                     files={"input_reference[]": (image_path.name, f, mime)},
@@ -97,7 +99,7 @@ class CpaVideoClient:
         data = self._video_form(prompt)
         data["input_reference[image_url]"] = image_url
         resp = requests.post(
-            f"{self.settings.cpa_base_url}/v1/videos",
+            f"{self.settings.cpa_base_url}/openai/v1/videos",
             headers=self._headers(),
             data=data,
             timeout=90,
@@ -106,7 +108,7 @@ class CpaVideoClient:
 
     def submit_video_json(self, prompt: str, image_url: str) -> str:
         resp = requests.post(
-            f"{self.settings.cpa_base_url}/v1/videos",
+            f"{self.settings.cpa_base_url}/openai/v1/videos",
             headers={**self._headers(), "Content-Type": "application/json"},
             json=self._video_json(prompt, image_url),
             timeout=90,
@@ -177,7 +179,7 @@ class CpaVideoClient:
         last_error = ""
         while time.time() - started < timeout_seconds:
             resp = requests.get(
-                f"{self.settings.cpa_base_url}/v1/videos/{video_id}/content",
+                f"{self.settings.cpa_base_url}/openai/v1/videos/{video_id}/content",
                 headers=self._headers(),
                 timeout=180,
             )
