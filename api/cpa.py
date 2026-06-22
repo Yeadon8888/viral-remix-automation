@@ -27,6 +27,28 @@ class CpaVideoClient:
             "preset": self.settings.cpa_preset,
         }
 
+    def _json_size(self) -> str:
+        allowed = {"848x480", "1696x960", "1280x720", "1920x1080"}
+        if self.settings.cpa_size in allowed:
+            return self.settings.cpa_size
+        return "1280x720"
+
+    def _video_json(self, prompt: str, image_url: str) -> dict:
+        width, _, height = self.settings.cpa_size.partition("x")
+        aspect_ratio = "9:16"
+        if width.isdigit() and height.isdigit() and int(width) >= int(height):
+            aspect_ratio = "16:9"
+        return {
+            "model": self.settings.cpa_video_model,
+            "prompt": prompt,
+            "seconds": self.settings.cpa_seconds,
+            "size": self._json_size(),
+            "aspect_ratio": aspect_ratio,
+            "resolution_name": self.settings.cpa_resolution,
+            "preset": self.settings.cpa_preset,
+            "input_reference": {"image_url": image_url},
+        }
+
     def _raise_submit_error(self, resp: requests.Response) -> None:
         if resp.status_code >= 400:
             raise RuntimeError(f"CPA submit failed: HTTP {resp.status_code}: {resp.text[:500]}")
@@ -34,7 +56,7 @@ class CpaVideoClient:
     def _extract_video_id(self, resp: requests.Response) -> str:
         self._raise_submit_error(resp)
         data = resp.json()
-        video_id = data.get("id")
+        video_id = data.get("id") or data.get("request_id") or data.get("video_id")
         if not video_id:
             raise RuntimeError(f"CPA did not return video id: {data}")
         return video_id
@@ -96,24 +118,23 @@ class CpaVideoClient:
         )
         return self._extract_video_id(resp)
 
+    def submit_video_json(self, prompt: str, image_url: str) -> str:
+        resp = requests.post(
+            f"{self.settings.cpa_base_url}/v1/videos",
+            headers={**self._headers(), "Content-Type": "application/json"},
+            json=self._video_json(prompt, image_url),
+            timeout=90,
+        )
+        return self._extract_video_id(resp)
+
     def submit_video(self, prompt: str, image_url: str) -> str:
         try:
-            return self.submit_video_with_upload(prompt, image_url)
+            return self.submit_video_json(prompt, image_url)
         except RuntimeError as exc:
             message = str(exc)
-            if "Text-to-video is not supported" not in message and "input reference" not in message:
+            if "body must be valid JSON" not in message and "input reference" not in message:
                 raise
-        return self.submit_video_with_image_url(prompt, image_url)
-
-    @staticmethod
-    def _should_fallback_to_chat(exc: Exception) -> bool:
-        message = str(exc)
-        return (
-            "Text-to-video is not supported" in message
-            or "body must be valid JSON" in message
-            or "valid JSON" in message
-            or "invalid_request_error" in message
-        )
+        return self.submit_video_with_upload(prompt, image_url)
 
     def wait_video(
         self,
@@ -238,18 +259,11 @@ class CpaVideoClient:
         progress_callback: Callable[[int, str], None] | None = None,
         submit_callback: Callable[[str], None] | None = None,
     ) -> dict:
-        try:
-            video_id = self.submit_video(prompt, image_url)
-            if submit_callback:
-                submit_callback(video_id)
-            if progress_callback:
-                progress_callback(1, "queued")
-            status_data = self.wait_video(video_id, progress_callback=progress_callback)
-            data, mime_type = self.download_video(video_id, status_data=status_data)
-            return {"video_id": video_id, "data": data, "mime_type": mime_type}
-        except RuntimeError as exc:
-            if not self._should_fallback_to_chat(exc):
-                raise
+        video_id = self.submit_video(prompt, image_url)
+        if submit_callback:
+            submit_callback(video_id)
         if progress_callback:
-            progress_callback(1, "fallback")
-        return self.generate_via_chat_completions(prompt, image_url)
+            progress_callback(1, "queued")
+        status_data = self.wait_video(video_id, progress_callback=progress_callback)
+        data, mime_type = self.download_video(video_id, status_data=status_data)
+        return {"video_id": video_id, "data": data, "mime_type": mime_type}
