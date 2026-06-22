@@ -86,6 +86,15 @@ class NewTokenImageClient:
             return "gpt-image2-1k_sync"
         return ""
 
+    def _async_model_name(self) -> str:
+        model = self.settings.newtoken_model.strip()
+        lower = model.lower()
+        if lower in {"gpt-image-2-1k", "gpt-image2-1k", "gpt-image2-1k_sync"}:
+            return "gpt-image2-1k"
+        if lower.endswith("_sync"):
+            return model[:-5]
+        return model
+
     def _edit_image_sync(self, image_urls: list[str], prompt: str, aspect_ratio: str) -> str:
         body = {
             "model": self._sync_model_name(),
@@ -99,13 +108,9 @@ class NewTokenImageClient:
             raise RuntimeError("NewToken sync image generation completed without image URL")
         return url
 
-    def edit_image(self, image_url: str | list[str], prompt: str, aspect_ratio: str = "9:16") -> str:
-        image_urls = image_url if isinstance(image_url, list) else [image_url]
-        if self._sync_model_name():
-            return self._edit_image_sync(image_urls, prompt, aspect_ratio)
-
+    def _edit_image_async(self, image_urls: list[str], prompt: str, aspect_ratio: str) -> str:
         body = {
-            "model": self.settings.newtoken_model,
+            "model": self._async_model_name(),
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
             "seconds": "4",
@@ -137,6 +142,26 @@ class NewTokenImageClient:
             if status in {"failed", "error", "cancelled"}:
                 raise RuntimeError((data.get("error") or {}).get("message") or "NewToken image generation failed")
         raise TimeoutError(f"NewToken image generation timeout: {task_id}")
+
+    @staticmethod
+    def _should_fallback_to_async(exc: Exception) -> bool:
+        message = str(exc)
+        return (
+            "No available channel" in message
+            or "HTTP 503" in message
+            or "gpt-image2-1k_sync" in message
+            or "under group" in message
+        )
+
+    def edit_image(self, image_url: str | list[str], prompt: str, aspect_ratio: str = "9:16") -> str:
+        image_urls = image_url if isinstance(image_url, list) else [image_url]
+        if self._sync_model_name():
+            try:
+                return self._edit_image_sync(image_urls, prompt, aspect_ratio)
+            except Exception as exc:
+                if not self._should_fallback_to_async(exc):
+                    raise
+        return self._edit_image_async(image_urls, prompt, aspect_ratio)
 
     def generate_group_images(
         self,

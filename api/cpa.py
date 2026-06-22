@@ -105,6 +105,16 @@ class CpaVideoClient:
                 raise
         return self.submit_video_with_image_url(prompt, image_url)
 
+    @staticmethod
+    def _should_fallback_to_chat(exc: Exception) -> bool:
+        message = str(exc)
+        return (
+            "Text-to-video is not supported" in message
+            or "body must be valid JSON" in message
+            or "valid JSON" in message
+            or "invalid_request_error" in message
+        )
+
     def wait_video(
         self,
         video_id: str,
@@ -238,7 +248,7 @@ class CpaVideoClient:
             data, mime_type = self.download_video(video_id, status_data=status_data)
             return {"video_id": video_id, "data": data, "mime_type": mime_type}
         except RuntimeError as exc:
-            if "Text-to-video is not supported" not in str(exc):
+            if not self._should_fallback_to_chat(exc):
                 raise
         if progress_callback:
             progress_callback(1, "fallback")
