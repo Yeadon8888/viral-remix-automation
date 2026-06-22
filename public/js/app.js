@@ -443,21 +443,41 @@ function renderPromptDetail(label, text) {
   return `<details class="prompt-preview wide" data-prompt-detail="${id}"><summary>${esc(label)}</summary><p class="muted">展开后加载内容</p></details>`;
 }
 
+function renderRemotePromptDetail(label, url, hasContent) {
+  if (!hasContent) return "";
+  const id = stableId(`${label}:${url}`);
+  return `<details class="prompt-preview wide" data-prompt-detail="${id}" data-prompt-url="${esc(url)}"><summary>${esc(label)}</summary><p class="muted">展开后加载内容</p></details>`;
+}
+
 function bindPromptDetails(root = document) {
   root.querySelectorAll("[data-prompt-detail]").forEach((detail) => {
     if (detail.dataset.bound === "1") return;
     detail.dataset.bound = "1";
-    detail.addEventListener("toggle", () => {
+    detail.addEventListener("toggle", async () => {
       if (!detail.open || detail.dataset.loaded === "1") return;
-      const text = state.promptDetails.get(detail.dataset.promptDetail) || "";
       const target = detail.querySelector("p");
-      if (target) {
-        target.classList.remove("muted");
-        target.textContent = text;
+      try {
+        const url = detail.dataset.promptUrl || "";
+        if (url && !state.promptDetails.has(detail.dataset.promptDetail)) {
+          if (target) target.textContent = "加载中...";
+          const data = await api(url);
+          rememberPromptDetail(detail.dataset.promptDetail, data.data?.text || "");
+        }
+        const text = state.promptDetails.get(detail.dataset.promptDetail) || "";
+        if (target) {
+          target.classList.remove("muted");
+          target.textContent = text || "暂无内容";
+        }
+        detail.dataset.loaded = "1";
+      } catch (err) {
+        if (target) target.textContent = String(err);
       }
-      detail.dataset.loaded = "1";
     });
   });
+}
+
+function materialDetailUrl(row, field) {
+  return `/api/materials/${encodeURIComponent(row.record_id)}/details?field=${encodeURIComponent(field)}`;
 }
 
 function renderScriptStep(row) {
@@ -467,13 +487,14 @@ function renderScriptStep(row) {
   const keywords = String(row["关键词"] || "").trim();
   const analysisTemplate = String(row["视频拆解提示词模板"] || "").trim();
   const analysisPrompt = String(row["视频拆解实际提示词"] || "").trim();
+  const hasPromptDetail = Boolean(prompt || row.has_publish_detail || row.has_prompt);
   return `<div class="step-cell">
-    ${prompt ? status("已生成Prompt") : status("未生成")}
+    ${hasPromptDetail ? status("已生成Prompt") : status("未生成")}
     ${title ? `<div class="publish-chip">${esc(title)}</div>` : ""}
-    ${renderPromptDetail("视频生成Prompt/发布内容", [title, caption, keywords, prompt].filter(Boolean).join("\n\n"))}
-    ${renderPromptDetail("视频拆解覆盖模板", analysisTemplate)}
-    ${renderPromptDetail("视频拆解实际提示词", analysisPrompt)}
-    ${stepActionButton("analyze-video", row.record_id, prompt ? "重新生成" : "生成Prompt")}
+    ${prompt ? renderPromptDetail("视频生成Prompt/发布内容", [title, caption, keywords, prompt].filter(Boolean).join("\n\n")) : renderRemotePromptDetail("视频生成Prompt/发布内容", materialDetailUrl(row, "publish"), hasPromptDetail)}
+    ${analysisTemplate ? renderPromptDetail("视频拆解覆盖模板", analysisTemplate) : renderRemotePromptDetail("视频拆解覆盖模板", materialDetailUrl(row, "video_template"), row.has_video_template_detail)}
+    ${analysisPrompt ? renderPromptDetail("视频拆解实际提示词", analysisPrompt) : renderRemotePromptDetail("视频拆解实际提示词", materialDetailUrl(row, "video_actual"), row.has_video_actual_detail)}
+    ${stepActionButton("analyze-video", row.record_id, hasPromptDetail ? "重新生成" : "生成Prompt")}
   </div>`;
 }
 
@@ -492,8 +513,8 @@ function renderGroupStep(row) {
   return `<div class="step-cell group-step">
     ${renderThumbs(row["商品组图URLs"])}
     ${renderTemplateControl(row)}
-    ${renderPromptDetail("商品组图覆盖模板", imageTemplate)}
-    ${renderPromptDetail("商品组图实际提示词", imagePrompt)}
+    ${imageTemplate ? renderPromptDetail("商品组图覆盖模板", imageTemplate) : renderRemotePromptDetail("商品组图覆盖模板", materialDetailUrl(row, "image_template"), row.has_image_template_detail)}
+    ${imagePrompt ? renderPromptDetail("商品组图实际提示词", imagePrompt) : renderRemotePromptDetail("商品组图实际提示词", materialDetailUrl(row, "image_actual"), row.has_image_actual_detail)}
     ${stepActionButton("generate-images", row.record_id, hasGroup ? "重新生成" : "生成组图")}
   </div>`;
 }

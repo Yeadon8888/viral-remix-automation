@@ -13,10 +13,11 @@ except ModuleNotFoundError:
     pass
 
 from api.config import settings
+from api.feishu import field_value
 from api.image_gen import STYLE_LABELS
 from api.jobs import get_job, list_jobs, run_job
 from api.logging_bus import recent_logs
-from api.workflow import ViralRemixWorkflow
+from api.workflow import MATERIAL_PROMPT_FIELD, ViralRemixWorkflow
 
 
 app = Flask(__name__, static_folder="public", static_url_path="")
@@ -67,12 +68,45 @@ def request_limit(default: int = 500, maximum: int = 1000) -> int:
     return max(1, min(value, maximum))
 
 
+def query_flag(name: str) -> bool:
+    return str(request.args.get(name) or "").lower() in ("1", "true", "yes")
+
+
 def query_int(name: str, default: int, maximum: int) -> int:
     try:
         value = int(request.args.get(name, default))
     except (TypeError, ValueError):
         value = default
     return max(1, min(value, maximum))
+
+
+def compact_material_rows(rows: list[dict]) -> list[dict]:
+    heavy_fields = (
+        "视频生成Prompt",
+        "生成文案",
+        "关键词",
+        "视频拆解提示词模板",
+        "视频拆解实际提示词",
+        "商品组图提示词模板",
+        "商品组图实际提示词",
+    )
+    compact_rows = []
+    for row in rows:
+        item = dict(row)
+        item["has_publish_detail"] = bool(
+            str(row.get("生成标题") or "").strip()
+            or str(row.get("生成文案") or "").strip()
+            or str(row.get("关键词") or "").strip()
+            or str(row.get("视频生成Prompt") or "").strip()
+        )
+        item["has_video_template_detail"] = bool(str(row.get("视频拆解提示词模板") or "").strip())
+        item["has_video_actual_detail"] = bool(str(row.get("视频拆解实际提示词") or "").strip())
+        item["has_image_template_detail"] = bool(str(row.get("商品组图提示词模板") or "").strip())
+        item["has_image_actual_detail"] = bool(str(row.get("商品组图实际提示词") or "").strip())
+        for field in heavy_fields:
+            item.pop(field, None)
+        compact_rows.append(item)
+    return compact_rows
 
 
 def require_admin():
@@ -145,7 +179,34 @@ def list_materials():
     workflow = get_workflow()
     limit = request_limit()
     data = cached_list(f"materials:{limit}", lambda: workflow.list_materials(limit=limit), ttl_seconds=120)
+    if not query_flag("details"):
+        data = compact_material_rows(data)
     return jsonify({"success": True, "data": data})
+
+
+@app.route("/api/materials/<record_id>/details")
+def material_details(record_id):
+    field = str(request.args.get("field") or "").strip()
+    workflow = get_workflow()
+    record = workflow.feishu.get_record(settings.source_table_id, record_id)
+    fields = record.get("fields", {})
+    title = str(field_value(fields, "生成标题", "") or "").strip()
+    caption = str(field_value(fields, "生成文案", "") or "").strip()
+    keywords = str(field_value(fields, "关键词", "") or "").strip()
+    values = {
+        "publish": "\n\n".join([
+            item
+            for item in (title, caption, keywords, str(field_value(fields, MATERIAL_PROMPT_FIELD, "") or "").strip())
+            if item
+        ]),
+        "video_template": str(field_value(fields, "视频拆解提示词模板", "") or "").strip(),
+        "video_actual": str(field_value(fields, "视频拆解实际提示词", "") or "").strip(),
+        "image_template": str(field_value(fields, "商品组图提示词模板", "") or "").strip(),
+        "image_actual": str(field_value(fields, "商品组图实际提示词", "") or "").strip(),
+    }
+    if field not in values:
+        return jsonify({"success": False, "message": "unsupported detail field"}), 400
+    return jsonify({"success": True, "data": {"text": values[field]}})
 
 
 @app.route("/api/prompts")
