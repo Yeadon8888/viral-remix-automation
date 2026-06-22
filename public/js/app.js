@@ -20,6 +20,12 @@ const state = {
   pollTick: 0,
   promptDetails: new Map(),
   promptDetailSeq: 0,
+  materialPage: 1,
+  materialPageSize: 20,
+  taskPage: 1,
+  taskPageSize: 20,
+  doubaoPage: 1,
+  doubaoPageSize: 20,
   imageStyles: ["viral_first_frame", "lifestyle", "model", "detail", "flatlay", "outdoor", "studio"],
   imageStyleLabels: {
     viral_first_frame: "爆款首帧",
@@ -114,6 +120,75 @@ function percentValue(value) {
   const n = Number(value || 0);
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(n <= 1 ? Math.round(n * 100) : Math.round(n), 100));
+}
+
+function clampPage(page, total, pageSize) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  return Math.max(1, Math.min(Number(page) || 1, totalPages));
+}
+
+function pageRows(rows, page, pageSize) {
+  const current = clampPage(page, rows.length, pageSize);
+  const start = (current - 1) * pageSize;
+  return rows.slice(start, start + pageSize);
+}
+
+function pagerState(key) {
+  if (key === "materials") return { pageKey: "materialPage", sizeKey: "materialPageSize" };
+  if (key === "tasks") return { pageKey: "taskPage", sizeKey: "taskPageSize" };
+  return { pageKey: "doubaoPage", sizeKey: "doubaoPageSize" };
+}
+
+function renderPagination(key, total) {
+  const { pageKey, sizeKey } = pagerState(key);
+  const size = Number(state[sizeKey] || 20);
+  const page = clampPage(state[pageKey], total, size);
+  state[pageKey] = page;
+  const totalPages = Math.max(1, Math.ceil(total / size));
+  const start = total ? (page - 1) * size + 1 : 0;
+  const end = Math.min(page * size, total);
+  const sizeOptions = [10, 20, 50].map((item) => (
+    `<button class="page-size${item === size ? " active" : ""}" type="button" data-page-size="${esc(key)}:${item}">${item}</button>`
+  )).join("");
+  const pageButtons = [];
+  const from = Math.max(1, page - 2);
+  const to = Math.min(totalPages, page + 2);
+  if (from > 1) pageButtons.push(`<button class="page-jump" type="button" data-page-to="${esc(key)}:1">1</button>`);
+  if (from > 2) pageButtons.push(`<span class="page-ellipsis">...</span>`);
+  for (let i = from; i <= to; i += 1) {
+    pageButtons.push(`<button class="page-jump${i === page ? " active" : ""}" type="button" data-page-to="${esc(key)}:${i}">${i}</button>`);
+  }
+  if (to < totalPages - 1) pageButtons.push(`<span class="page-ellipsis">...</span>`);
+  if (to < totalPages) pageButtons.push(`<button class="page-jump" type="button" data-page-to="${esc(key)}:${totalPages}">${totalPages}</button>`);
+  return `<div class="pagination-bar" data-pager="${esc(key)}">
+    <div class="page-meta">显示 ${start}-${end} / ${total} 条</div>
+    <div class="page-size-group" aria-label="每页条数">${sizeOptions}</div>
+    <div class="page-jumps" aria-label="页码">
+      <button class="page-jump" type="button" data-page-to="${esc(key)}:${page - 1}" ${page <= 1 ? "disabled" : ""}>上一页</button>
+      ${pageButtons.join("")}
+      <button class="page-jump" type="button" data-page-to="${esc(key)}:${page + 1}" ${page >= totalPages ? "disabled" : ""}>下一页</button>
+    </div>
+  </div>`;
+}
+
+function bindPagination(root, key, renderFn) {
+  root.querySelectorAll(`[data-page-size^="${key}:"]`).forEach((button) => {
+    button.addEventListener("click", () => {
+      const size = Number(button.dataset.pageSize.split(":")[1]);
+      const { pageKey, sizeKey } = pagerState(key);
+      state[sizeKey] = size;
+      state[pageKey] = 1;
+      renderFn();
+    });
+  });
+  root.querySelectorAll(`[data-page-to^="${key}:"]`).forEach((button) => {
+    button.addEventListener("click", () => {
+      const page = Number(button.dataset.pageTo.split(":")[1]);
+      const { pageKey } = pagerState(key);
+      state[pageKey] = page;
+      renderFn();
+    });
+  });
 }
 
 function renderProgress(value) {
@@ -230,11 +305,12 @@ function renderPage() {
 }
 
 function renderSelectionState() {
-  const ids = state.materials.map((row) => row.record_id).filter(Boolean);
-  const selectedCount = ids.filter((id) => state.selectedMaterialIds.has(id)).length;
+  const visibleIds = currentVisibleMaterialRows().map((row) => row.record_id).filter(Boolean);
+  const selectedCount = state.materials.filter((row) => state.selectedMaterialIds.has(row.record_id)).length;
+  const visibleSelectedCount = visibleIds.filter((id) => state.selectedMaterialIds.has(id)).length;
   $("selectedMaterialCount").textContent = `已选 ${selectedCount} 条`;
-  $("selectAllMaterials").checked = ids.length > 0 && selectedCount === ids.length;
-  $("selectAllMaterials").indeterminate = selectedCount > 0 && selectedCount < ids.length;
+  $("selectAllMaterials").checked = visibleIds.length > 0 && visibleSelectedCount === visibleIds.length;
+  $("selectAllMaterials").indeterminate = visibleSelectedCount > 0 && visibleSelectedCount < visibleIds.length;
 }
 
 function rowNumber(row) {
@@ -265,12 +341,12 @@ function clearMaterialSelection() {
 }
 
 function renderTaskSelectionState() {
-  const rows = tasksForSelected();
-  const ids = rows.map((row) => row.record_id).filter(Boolean);
-  const selectedCount = ids.filter((id) => state.selectedTaskIds.has(id)).length;
+  const visibleIds = currentVisibleTaskRows().map((row) => row.record_id).filter(Boolean);
+  const selectedCount = tasksForSelected().filter((row) => state.selectedTaskIds.has(row.record_id)).length;
+  const visibleSelectedCount = visibleIds.filter((id) => state.selectedTaskIds.has(id)).length;
   $("selectedTaskCount").textContent = `已选 ${selectedCount} 条`;
-  $("selectAllTasks").checked = ids.length > 0 && selectedCount === ids.length;
-  $("selectAllTasks").indeterminate = selectedCount > 0 && selectedCount < ids.length;
+  $("selectAllTasks").checked = visibleIds.length > 0 && visibleSelectedCount === visibleIds.length;
+  $("selectAllTasks").indeterminate = visibleSelectedCount > 0 && visibleSelectedCount < visibleIds.length;
 }
 
 function selectTaskRange() {
@@ -456,6 +532,16 @@ function isProcessedMaterial(row) {
   return !runningStatuses.has(automationStatus) && (automationStatus === "已创建任务" || taskTotal > 0);
 }
 
+function currentVisibleMaterialRows() {
+  const activeRows = state.materials.filter((row) => !isProcessedMaterial(row));
+  return pageRows(activeRows, state.materialPage, state.materialPageSize);
+}
+
+function currentVisibleTaskRows() {
+  const activeRows = tasksForSelected().filter((row) => row["生成状态"] !== "已完成");
+  return pageRows(activeRows, state.taskPage, state.taskPageSize);
+}
+
 function renderMaterials() {
   renderMetrics();
   if (!state.materials.length) {
@@ -464,6 +550,8 @@ function renderMaterials() {
   }
   const activeRows = state.materials.filter((row) => !isProcessedMaterial(row));
   const processedRows = state.materials.filter((row) => isProcessedMaterial(row));
+  state.materialPage = clampPage(state.materialPage, activeRows.length, state.materialPageSize);
+  const visibleActiveRows = pageRows(activeRows, state.materialPage, state.materialPageSize);
   processedRows.forEach((row) => {
     const group = materialDateGroup(row);
     if (!state.seenMaterialDateGroups.has(group.key)) {
@@ -472,11 +560,11 @@ function renderMaterials() {
     }
   });
   const body = [
-    ...activeRows.map((row) => renderMaterialRow(row)),
     renderProcessedMaterialGroups(processedRows),
+    ...visibleActiveRows.map((row) => renderMaterialRow(row)),
   ].join("");
 
-  $("materials").innerHTML = `<table><thead><tr>
+  $("materials").innerHTML = `${renderPagination("materials", activeRows.length)}<table><thead><tr>
     <th class="select-col"></th><th class="row-no">行</th><th>爆款视频</th><th>1 视频Prompt</th><th>2 主图入库</th><th>3 商品组图</th><th>4 视频任务</th><th>状态</th>
   </tr></thead><tbody>${body}</tbody></table>`;
 
@@ -510,6 +598,7 @@ function renderMaterials() {
   document.querySelectorAll("[data-action='save-templates']").forEach((button) => {
     button.addEventListener("click", () => saveTemplates(button.dataset.id, button));
   });
+  bindPagination($("materials"), "materials", renderMaterials);
   bindPromptDetails($("materials"));
   renderSelectionState();
 }
@@ -593,6 +682,8 @@ function renderTasks() {
   }
   const activeRows = rows.filter((row) => row["生成状态"] !== "已完成");
   const completedRows = rows.filter((row) => row["生成状态"] === "已完成");
+  state.taskPage = clampPage(state.taskPage, activeRows.length, state.taskPageSize);
+  const visibleActiveRows = pageRows(activeRows, state.taskPage, state.taskPageSize);
   completedRows.forEach((row) => {
     const group = taskDateGroup(row);
     if (!state.seenTaskDateGroups.has(group.key)) {
@@ -601,11 +692,11 @@ function renderTasks() {
     }
   });
   const body = [
-    ...activeRows.map((row) => renderTaskRow(row)),
     renderCompletedTaskGroups(completedRows),
+    ...visibleActiveRows.map((row) => renderTaskRow(row)),
   ].join("");
 
-  $("tasks").innerHTML = `<table><thead><tr>
+  $("tasks").innerHTML = `${renderPagination("tasks", activeRows.length)}<table><thead><tr>
     <th class="select-col"></th><th class="row-no">行</th><th>任务</th><th>状态</th><th>进度</th><th>发布内容</th><th>参考图</th><th>视频</th><th>操作</th>
   </tr></thead><tbody>${body}</tbody></table>`;
 
@@ -633,6 +724,7 @@ function renderTasks() {
   document.querySelectorAll("[data-action='manual-video']").forEach((button) => {
     button.addEventListener("click", () => storeManualVideo(button.dataset.id, button));
   });
+  bindPagination($("tasks"), "tasks", renderTasks);
   bindPromptDetails($("tasks"));
   renderTaskSelectionState();
 }
@@ -658,9 +750,11 @@ function renderDoubaoItems() {
     $("doubaoItems").innerHTML = `<div class="selected-box">暂无豆包视频制作记录</div>`;
     return;
   }
-  $("doubaoItems").innerHTML = `<table><thead><tr>
+  state.doubaoPage = clampPage(state.doubaoPage, state.doubaoItems.length, state.doubaoPageSize);
+  const visibleRows = pageRows(state.doubaoItems, state.doubaoPage, state.doubaoPageSize);
+  $("doubaoItems").innerHTML = `${renderPagination("doubao", state.doubaoItems.length)}<table><thead><tr>
     <th>商品</th><th>图片</th><th>对象存储</th><th>最终视频生成提示词</th><th>发布内容</th><th>视频链接</th><th>操作</th>
-  </tr></thead><tbody>${state.doubaoItems.map((row) => {
+  </tr></thead><tbody>${visibleRows.map((row) => {
     const prompt = String(row["最终视频生成提示词"] || "").trim();
     const promptName = `doubao-generate-prompt:${row.record_id}`;
     const storeName = `doubao-store-image:${row.record_id}`;
@@ -700,6 +794,7 @@ function renderDoubaoItems() {
   document.querySelectorAll("[data-action='doubao-generate']").forEach((button) => {
     button.addEventListener("click", () => generateDoubaoPrompt(button.dataset.id, button));
   });
+  bindPagination($("doubaoItems"), "doubao", renderDoubaoItems);
   bindPromptDetails($("doubaoItems"));
 }
 
@@ -775,6 +870,7 @@ function renderPromptEditor() {
 
 function selectMaterial(id) {
   state.selectedMaterialId = id || "";
+  state.taskPage = 1;
   state.selectedTaskIds.clear();
   localStorage.setItem("viral-remix-selected-material", state.selectedMaterialId);
   renderMaterials();
@@ -1345,7 +1441,7 @@ $("pagePrompts").onclick = () => switchPage("prompts");
 $("loadDoubao").onclick = () => loadDoubaoItems({ force: true });
 $("loadPrompts").onclick = () => loadPrompts({ force: true });
 $("selectAllMaterials").onchange = () => {
-  const ids = state.materials.map((row) => row.record_id).filter(Boolean);
+  const ids = currentVisibleMaterialRows().map((row) => row.record_id).filter(Boolean);
   if ($("selectAllMaterials").checked) ids.forEach((id) => state.selectedMaterialIds.add(id));
   else ids.forEach((id) => state.selectedMaterialIds.delete(id));
   renderMaterials();
@@ -1358,7 +1454,7 @@ $("clearMaterialSelection").onclick = clearMaterialSelection;
   });
 });
 $("selectAllTasks").onchange = () => {
-  const ids = tasksForSelected().map((row) => row.record_id).filter(Boolean);
+  const ids = currentVisibleTaskRows().map((row) => row.record_id).filter(Boolean);
   if ($("selectAllTasks").checked) ids.forEach((id) => state.selectedTaskIds.add(id));
   else ids.forEach((id) => state.selectedTaskIds.delete(id));
   renderTasks();
