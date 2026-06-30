@@ -19,6 +19,10 @@ from .tikhub import TikHubClient
 MATERIAL_PROMPT_FIELD = "视频生成Prompt"
 DOUBAO_PROMPT_KEY = "doubao_seedance_video_prompt"
 DOUBAO_FALLBACK_PROMPT = "你是 TikTok 墨西哥带货视频 AI 导演。根据商品图生成 10 秒、4 镜头、UGC 风格、痛点到解决逻辑的 Seedance 视频生成提示词；中文描述画面，口播和字幕使用墨西哥西班牙语，严格保持商品一致性。"
+DOLA_STATUS_FIELD = "Dola生成状态"
+DOLA_VIDEO_FIELD = "Dola视频链接"
+DOLA_ERROR_FIELD = "Dola错误信息"
+DOLA_LOCAL_STATUSES = {"待Dola生成", "准备中", "等待发送", "等待下载", "已完成", "失败"}
 
 
 def now_ms() -> int:
@@ -42,6 +46,82 @@ def split_urls(value: Any) -> list[str]:
 
 def url_cell(url: str) -> dict[str, str]:
     return {"text": url, "link": url}
+
+
+def first_available_field(fields: dict[str, Any], names: tuple[str, ...], default: Any = "") -> Any:
+    for name in names:
+        value = field_value(fields, name, "")
+        if str(value or "").strip():
+            return value
+    return default
+
+
+def build_dola_local_task(record: dict[str, Any], row_number: int | None = None) -> dict[str, Any]:
+    fields = record.get("fields", {})
+    stored_image_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
+    image_url = str(field_value(fields, "商品图链接", "") or "").strip()
+    prompt = str(field_value(fields, "最终视频生成提示词", "") or "").strip()
+    video_url = first_available_field(fields, (DOLA_VIDEO_FIELD, "视频生成链接", "视频链接"), "")
+    status = str(field_value(fields, DOLA_STATUS_FIELD, "") or "").strip()
+    if not status:
+        status = "已完成" if str(video_url or "").startswith("http") else "待Dola生成"
+
+    attachment = first_attachment(fields, "商品图")
+    reference_image_url = stored_image_url if stored_image_url.startswith("http") else image_url
+    return {
+        "行号": row_number,
+        "record_id": record.get("record_id"),
+        "商品名称": field_value(fields, "商品名称", ""),
+        "商品链接": field_value(fields, "商品链接", ""),
+        "参考图链接": reference_image_url,
+        "商品图存储链接": stored_image_url,
+        "商品图链接": image_url,
+        "商品图数量": len(fields.get("商品图") or []),
+        "商品图文件名": (attachment or {}).get("name", ""),
+        "最终视频生成提示词": prompt,
+        "标题": field_value(fields, "标题", ""),
+        "文案": field_value(fields, "文案", ""),
+        "标签": field_value(fields, "标签", ""),
+        DOLA_STATUS_FIELD: status,
+        DOLA_VIDEO_FIELD: video_url,
+        DOLA_ERROR_FIELD: field_value(fields, DOLA_ERROR_FIELD, ""),
+        "可准备": bool(prompt and reference_image_url.startswith("http") and not str(video_url or "").startswith("http")),
+    }
+
+
+def doubao_white_canvas_prompt(product_name: str) -> str:
+    name = product_name.strip() or "商品"
+    return (
+        "请基于这张商品图做图片编辑，不要重新生成或重新设计商品本身。\n"
+        f"商品名称仅供理解：{name}\n"
+        "要求：\n"
+        "1. 智能抠出原图中的主体商品；如果原图里有多个属于商品展示的一组主体，请保持它们原有相对位置与比例。\n"
+        "2. 生成 9:16 竖版画布，纯白背景；画布多出来的区域只保留白色留白。\n"
+        "3. 商品完整居中展示，按照原图商品自身比例等比缩放，严禁把商品拉长、压扁、变瘦或变宽。\n"
+        "4. 不改变商品本身的材质、颜色、结构、形状、品牌、Logo、包装文字、标签图案与真实边缘细节。\n"
+        "5. 只移除背景、场景杂物、非商品装饰和不属于商品的水印/营销文字；不要添加新文字、新标签、新图案、新道具或新品牌信息。\n"
+        "6. 输出适合电商展示的干净白底图，保留真实商品阴影可以很轻微，但不能改变商品外观。\n"
+        "关键限制：这是一张基于原图的编辑图，不是新商品渲染图；尽量保留原图主体像素观感。"
+    )
+
+
+def public_error_message(error: Any, limit: int = 180) -> str:
+    text = " ".join(str(error or "").split())
+    if not text:
+        return "未知错误"
+    lowered = text.lower()
+    if (
+        "chromium_headless_shell" in lowered
+        or "playwright install" in lowered
+        or "executable doesn't exist" in lowered
+        or "playwright_browsers_path" in lowered
+    ):
+        return "本地 Worker 缺少浏览器运行时，请换用最新版离线包后重启 Worker。"
+    if "自动化系统请求失败" in text and "500" in text:
+        return "自动化系统请求失败：500，请检查本地 Worker 是否已启动并使用最新版离线包。"
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}..."
 
 
 def linked_record_ids(value: Any) -> list[str]:
@@ -366,12 +446,17 @@ class ViralRemixWorkflow:
     def list_doubao_items(self, limit: int = 100) -> list[dict[str, Any]]:
         records = self.feishu.list_records(self.settings.doubao_table_id, max_records=limit)
         out = []
-        for record in records:
+        for index, record in enumerate(records, start=1):
             fields = record.get("fields", {})
             attachment = first_attachment(fields, "商品图")
             image_url = str(field_value(fields, "商品图链接", "") or "").strip()
             stored_image_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
+            video_url = first_available_field(fields, (DOLA_VIDEO_FIELD, "视频生成链接", "视频链接"), "")
+            dola_status = str(field_value(fields, DOLA_STATUS_FIELD, "") or "").strip()
+            if not dola_status:
+                dola_status = "已完成" if str(video_url or "").startswith("http") else "待Dola生成"
             out.append({
+                "行号": index,
                 "record_id": record.get("record_id"),
                 "商品名称": field_value(fields, "商品名称", ""),
                 "商品链接": field_value(fields, "商品链接", ""),
@@ -384,9 +469,81 @@ class ViralRemixWorkflow:
                 "标题": field_value(fields, "标题", ""),
                 "文案": field_value(fields, "文案", ""),
                 "标签": field_value(fields, "标签", ""),
-                "视频生成链接": field_value(fields, "视频生成链接", ""),
+                "视频生成链接": video_url,
+                DOLA_STATUS_FIELD: dola_status,
+                DOLA_VIDEO_FIELD: field_value(fields, DOLA_VIDEO_FIELD, ""),
+                DOLA_ERROR_FIELD: field_value(fields, DOLA_ERROR_FIELD, ""),
+                "更新时间": record.get("last_modified_time") or record.get("modified_time") or record.get("updated_time") or "",
+                "创建时间": record.get("created_time") or "",
             })
         return out
+
+    def list_dola_local_tasks(self, limit: int = 100, include_done: bool = False) -> list[dict[str, Any]]:
+        records = self.feishu.list_records(self.settings.doubao_table_id, max_records=limit)
+        tasks = [build_dola_local_task(record, index) for index, record in enumerate(records, start=1)]
+        if include_done:
+            return tasks
+        return [
+            task
+            for task in tasks
+            if task.get("可准备")
+            or str(task.get(DOLA_STATUS_FIELD) or "") in {"准备中", "等待发送", "等待下载", "失败"}
+        ]
+
+    def get_dola_local_task(self, record_id: str) -> dict[str, Any]:
+        record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
+        task = build_dola_local_task(record, self._doubao_row_number(record_id))
+        if not task.get("参考图链接", "").startswith("http"):
+            stored = self.store_doubao_image(record_id)
+            record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
+            task = build_dola_local_task(record, self._doubao_row_number(record_id))
+            if not task.get("参考图链接", "").startswith("http"):
+                task["参考图链接"] = str(stored.get("stored_image_url") or "")
+        if not str(task.get("最终视频生成提示词") or "").strip():
+            raise RuntimeError("缺少最终视频生成提示词，请先在豆包视频页生成提示词")
+        if not str(task.get("参考图链接") or "").startswith("http"):
+            raise RuntimeError("缺少可用参考图链接，请先完成图片入库")
+        return task
+
+    def _doubao_row_number(self, record_id: str) -> int | None:
+        records = self.feishu.list_records(self.settings.doubao_table_id, max_records=1000)
+        for index, record in enumerate(records, start=1):
+            if str(record.get("record_id") or "") == str(record_id):
+                return index
+        return None
+
+    def update_dola_local_status(self, record_id: str, status: str, error: str = "") -> dict[str, Any]:
+        status = str(status or "").strip()
+        if status not in DOLA_LOCAL_STATUSES:
+            raise RuntimeError(f"Dola 状态不支持：{status}")
+        patch: dict[str, Any] = {DOLA_STATUS_FIELD: status}
+        if error or status != "失败":
+            patch[DOLA_ERROR_FIELD] = public_error_message(error) if error else ""
+        else:
+            patch[DOLA_ERROR_FIELD] = "未填写失败原因"
+        return self.feishu.update_record(self.settings.doubao_table_id, record_id, patch)
+
+    def store_dola_local_video_file(
+        self,
+        record_id: str,
+        file_path: Path,
+        content_type: str = "video/mp4",
+    ) -> dict[str, Any]:
+        if not file_path.exists():
+            raise RuntimeError(f"视频文件不存在: {file_path}")
+        task = self.get_dola_local_task(record_id)
+        safe_name = str(task.get("商品名称") or record_id).strip() or record_id
+        stored = self.r2.upload_bytes(file_path.read_bytes(), f"dola-{record_id}-{safe_name}.mp4", content_type)
+        self.feishu.update_record(
+            self.settings.doubao_table_id,
+            record_id,
+            {
+                DOLA_STATUS_FIELD: "已完成",
+                DOLA_VIDEO_FIELD: url_cell(stored["url"]),
+                DOLA_ERROR_FIELD: "",
+            },
+        )
+        return {"record_id": record_id, "video_url": stored["url"]}
 
     def _resolve_doubao_image(self, fields: dict[str, Any], prefer_stored: bool = True) -> tuple[bytes, str, str]:
         stored_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
@@ -417,14 +574,21 @@ class ViralRemixWorkflow:
         product_name = str(field_value(fields, "商品名称", record_id) or record_id).strip()
         add_log("info", f"开始豆包商品图入库: {product_name}", "workflow", job_id)
         data, mime, filename = self._resolve_doubao_image(fields, prefer_stored=False)
-        stored = self.r2.upload_bytes(data, filename or "doubao-product-image", mime)
+        source_stored = self.r2.upload_bytes(data, filename or "doubao-product-source-image", mime)
+        add_log("info", "豆包商品图原图已入库，开始生成 9:16 白底图", "workflow", job_id)
+        generated_url = self.image_client.edit_image(
+            source_stored["url"],
+            doubao_white_canvas_prompt(product_name),
+            aspect_ratio="9:16",
+        )
+        stored_url = self._rehost_image(generated_url, "doubao-white-9x16")
         self.feishu.update_record(
             self.settings.doubao_table_id,
             record_id,
-            {"商品图存储链接": url_cell(stored["url"])},
+            {"商品图存储链接": url_cell(stored_url)},
         )
-        add_log("success", f"豆包商品图入库完成: {stored['url']}", "workflow", job_id)
-        return {"record_id": record_id, "stored_image_url": stored["url"]}
+        add_log("success", f"豆包商品图 9:16 白底图入库完成: {stored_url}", "workflow", job_id)
+        return {"record_id": record_id, "stored_image_url": stored_url, "source_image_url": source_stored["url"]}
 
     def generate_doubao_prompt(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
@@ -570,7 +734,7 @@ class ViralRemixWorkflow:
             self.feishu.update_record(
                 self.settings.source_table_id,
                 record_id,
-                {"自动化状态": "失败", "自动化错误": str(exc)[:1000], "自动化处理时间": now_ms()},
+                {"自动化状态": "失败", "自动化错误": public_error_message(exc), "自动化处理时间": now_ms()},
             )
             add_log("error", f"爆款视频拆解失败: {exc}", "workflow", job_id)
             raise
@@ -605,7 +769,7 @@ class ViralRemixWorkflow:
             self.feishu.update_record(
                 self.settings.source_table_id,
                 record_id,
-                {"自动化状态": "失败", "自动化错误": str(exc)[:1000], "自动化处理时间": now_ms()},
+                {"自动化状态": "失败", "自动化错误": public_error_message(exc), "自动化处理时间": now_ms()},
             )
             add_log("error", f"商品主图入库失败: {exc}", "workflow", job_id)
             raise
@@ -613,7 +777,6 @@ class ViralRemixWorkflow:
     def generate_product_images(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         record = self.feishu.get_record(self.settings.source_table_id, record_id)
         fields = record.get("fields", {})
-        product_name = str(field_value(fields, "商品名称", "") or "").strip()
         product_image_url = str(field_value(fields, "商品主图存储链接", "") or "").strip()
         custom_prompt = str(field_value(fields, "生图自定义提示词", "") or "").strip()
         region = str(field_value(fields, "地区", "墨西哥") or "墨西哥").strip()
@@ -654,7 +817,6 @@ class ViralRemixWorkflow:
                 override_template=prompt_override,
                 region=region,
                 language=local_language(region),
-                product_name=product_name,
                 reference_image_url=first_frame_url,
             )
             image_urls = []
@@ -697,7 +859,7 @@ class ViralRemixWorkflow:
             self.feishu.update_record(
                 self.settings.source_table_id,
                 record_id,
-                {"自动化状态": "失败", "自动化错误": str(exc)[:1000], "自动化处理时间": now_ms()},
+                {"自动化状态": "失败", "自动化错误": public_error_message(exc), "自动化处理时间": now_ms()},
             )
             add_log("error", f"商品组图生成失败: {exc}", "workflow", job_id)
             raise
@@ -800,7 +962,7 @@ class ViralRemixWorkflow:
             self.feishu.update_record(
                 self.settings.source_table_id,
                 record_id,
-                {"自动化状态": "失败", "自动化错误": str(exc)[:1000], "自动化处理时间": now_ms()},
+                {"自动化状态": "失败", "自动化错误": public_error_message(exc), "自动化处理时间": now_ms()},
             )
             add_log("error", f"视频生成任务创建失败: {exc}", "workflow", job_id)
             raise
@@ -878,7 +1040,7 @@ class ViralRemixWorkflow:
             self.feishu.update_record(
                 self.settings.task_table_id,
                 task_record_id,
-                {"生成状态": "失败", "失败原因": str(exc)[:1000]},
+                {"生成状态": "失败", "失败原因": public_error_message(exc)},
             )
             add_log("error", f"视频生成失败: {exc}", "workflow", job_id)
             raise

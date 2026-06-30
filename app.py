@@ -1,5 +1,7 @@
 import os
 import time
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Lock
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -156,6 +158,44 @@ def config_status():
     })
 
 
+@app.route("/api/worker/latest")
+def worker_latest():
+    default_release_base = "https://github.com/Yeadon8888/dola-local-worker-releases/releases/download/v1.2.3"
+    version = os.getenv("WORKER_UPDATE_VERSION", "1.2.3").strip() or "1.2.3"
+    release_base = os.getenv("WORKER_RELEASE_BASE_URL", default_release_base).strip().rstrip("/")
+    mac_url = os.getenv("WORKER_MAC_URL", "").strip()
+    windows_url = os.getenv("WORKER_WINDOWS_URL", "").strip()
+    if release_base:
+        mac_url = mac_url or f"{release_base}/Dola.Worker-mac.zip"
+        windows_url = windows_url or f"{release_base}/DolaLocalWorker-windows.zip"
+    return jsonify({
+        "success": True,
+        "data": {
+            "version": version,
+            "min_supported_version": os.getenv("WORKER_MIN_SUPPORTED_VERSION", "1.2.0").strip() or "1.2.0",
+            "published_at": os.getenv("WORKER_UPDATE_PUBLISHED_AT", "2026-06-30T11:22:18Z").strip(),
+            "notes": os.getenv(
+                "WORKER_UPDATE_NOTES",
+                "优化右下角运行状态面板，稳定批量创建环境，并支持云端触发本地 Worker 更新。",
+            ).strip(),
+            "mac": {
+                "url": mac_url,
+                "sha256": os.getenv(
+                    "WORKER_MAC_SHA256",
+                    "c74c8315435dba9b50d2e6b09c8c384cb785892f83c78a2e06f0e89dd6069d9d",
+                ).strip().lower(),
+            },
+            "windows": {
+                "url": windows_url,
+                "sha256": os.getenv(
+                    "WORKER_WINDOWS_SHA256",
+                    "6daf61dbd53e2245f57a38087e909ec4b972b5ade7fd22ac38bdc3425c57d39e",
+                ).strip().lower(),
+            },
+        },
+    })
+
+
 @app.route("/api/logs")
 def logs():
     return jsonify({"success": True, "data": recent_logs(query_int("limit", 120, 300))})
@@ -265,6 +305,58 @@ def store_doubao_image(record_id):
     workflow = get_workflow()
     job_id = run_workflow_job(f"doubao-store-image:{record_id}", workflow.store_doubao_image, record_id)
     return jsonify({"success": True, "job_id": job_id})
+
+
+@app.route("/api/dola-local/tasks")
+def list_dola_local_tasks():
+    workflow = get_workflow()
+    limit = request_limit(default=200, maximum=1000)
+    include_done = query_flag("include_done")
+    data = cached_list(
+        f"dola-local:{limit}:{include_done}",
+        lambda: workflow.list_dola_local_tasks(limit=limit, include_done=include_done),
+        ttl_seconds=20,
+    )
+    return jsonify({"success": True, "data": data})
+
+
+@app.route("/api/dola-local/tasks/<record_id>")
+def get_dola_local_task(record_id):
+    workflow = get_workflow()
+    data = workflow.get_dola_local_task(record_id)
+    return jsonify({"success": True, "data": data})
+
+
+@app.route("/api/dola-local/tasks/<record_id>/status", methods=["POST"])
+def update_dola_local_status(record_id):
+    body = request.get_json(silent=True) or {}
+    workflow = get_workflow()
+    data = workflow.update_dola_local_status(
+        record_id,
+        str(body.get("status") or ""),
+        str(body.get("error") or ""),
+    )
+    clear_list_cache()
+    return jsonify({"success": True, "data": data})
+
+
+@app.route("/api/dola-local/tasks/<record_id>/upload-video", methods=["POST"])
+def upload_dola_local_video(record_id):
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"success": False, "message": "file is required"}), 400
+    workflow = get_workflow()
+    with TemporaryDirectory() as tmpdir:
+        filename = file.filename or f"{record_id}.mp4"
+        target = Path(tmpdir) / filename
+        file.save(target)
+        data = workflow.store_dola_local_video_file(
+            record_id,
+            target,
+            file.mimetype or "video/mp4",
+        )
+    clear_list_cache()
+    return jsonify({"success": True, "data": data})
 
 
 @app.route("/api/doubao-items/batch-store-images", methods=["POST"])

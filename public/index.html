@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>爆款复刻工作台</title>
+  <meta name="theme-color" content="#101a17">
+  <title>短视频带货全链路自动化工作台</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -11,8 +13,8 @@
     <div class="brand">
       <div class="mark">VR</div>
       <div>
-        <h1>爆款复刻工作台</h1>
-        <p>视频拆解 -> 主图入库 -> 商品组图 -> 视频任务 -> 视频生成</p>
+        <h1>短视频带货全链路自动化工作台</h1>
+        <p>视频拆解 -> 主图入库 -> 商品组图 -> Dola本地Worker -> 视频回填</p>
       </div>
     </div>
     <div class="auth">
@@ -131,12 +133,23 @@
         <div class="panel-head">
           <div>
             <h2>豆包视频</h2>
-            <p>豆包视频制作：商品图分析 -> Seedance 视频 Prompt -> 标题文案标签</p>
+            <p>豆包视频制作：商品图分析 -> Seedance 视频 Prompt -> 本地Worker生成 -> 视频回填</p>
           </div>
           <div class="actions">
             <button id="loadDoubao" class="secondary">读取</button>
+            <button id="connectLocalWorker" class="worker-button" type="button">连接本地Worker</button>
             <button id="batchDoubaoStoreImages" class="secondary">批量图片入库</button>
             <button id="batchDoubaoPrompts">批量生成提示词</button>
+          </div>
+        </div>
+        <div class="worker-card">
+          <div>
+            <strong>本地Worker负责 Dola 视频生成</strong>
+            <span id="workerStatus">云端只读取飞书记录、生成提示词和接收回填；点击连接会打开本机 Worker。</span>
+          </div>
+          <div class="worker-card-actions">
+            <button id="updateLocalWorker" class="mini ghost" type="button">更新本地Worker</button>
+            <button id="openLocalWorker" class="mini ghost" type="button">打开 127.0.0.1:5177</button>
           </div>
         </div>
         <div class="metric-row compact">
@@ -144,6 +157,24 @@
           <div><span id="metricDoubaoImages">0</span><small>可用原图</small></div>
           <div><span id="metricDoubaoStored">0</span><small>已入库</small></div>
           <div><span id="metricDoubaoPrompts">0</span><small>已生成Prompt</small></div>
+        </div>
+        <div class="batch-bar">
+          <label class="checkline">
+            <input id="selectAllDoubao" type="checkbox">
+            <span>全选当前豆包记录</span>
+          </label>
+          <div class="range-picker" aria-label="按行号选择豆包记录">
+            <span>从</span>
+            <input id="doubaoRangeStart" type="number" min="1" inputmode="numeric" placeholder="起始行">
+            <span>到</span>
+            <input id="doubaoRangeEnd" type="number" min="1" inputmode="numeric" placeholder="结束行">
+            <button id="selectDoubaoRange" class="mini secondary" type="button">选择范围</button>
+            <button id="clearDoubaoSelection" class="mini ghost" type="button">清空</button>
+          </div>
+          <strong id="selectedDoubaoCount">已选 0 条</strong>
+          <div class="actions">
+            <span class="helper-text">批量图片入库和生成提示词只处理已勾选记录</span>
+          </div>
         </div>
         <div class="table-toolbar">
           <span id="doubaoRefreshState">等待读取豆包视频制作表</span>

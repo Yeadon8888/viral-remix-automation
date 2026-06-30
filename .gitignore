@@ -5,3 +5,5 @@ __pycache__/
 .railway/
 tmp/
 logs/
+.DS_Store
+docs/AI_API_USAGE_INTERNAL.md

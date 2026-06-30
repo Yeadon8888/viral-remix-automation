@@ -322,6 +322,47 @@ main {
   font-weight: 800;
 }
 
+.worker-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+  border: 1px solid #cfe0d6;
+  border-radius: 8px;
+  background: #f7fbf8;
+  padding: 12px;
+}
+
+.worker-card strong,
+.worker-card span {
+  display: block;
+}
+
+.worker-card strong {
+  margin-bottom: 4px;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.worker-card span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.worker-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.worker-button {
+  background: var(--green);
+}
+
 .checkline {
   display: inline-flex;
   align-items: center;
@@ -333,12 +374,18 @@ main {
 }
 
 .checkline input,
+input[type="checkbox"],
 .material-check,
-.task-check {
+.task-check,
+.doubao-check {
   width: 16px;
+  min-width: 16px;
+  max-width: 16px;
   height: 16px;
   margin: 0;
   padding: 0;
+  flex: 0 0 16px;
+  accent-color: var(--accent);
 }
 
 .helper-text {
@@ -435,15 +482,35 @@ table {
 .select-col {
   width: 42px;
   min-width: 42px;
+  max-width: 42px;
+  padding-left: 8px;
+  padding-right: 8px;
   text-align: center;
+  white-space: nowrap;
 }
 
 .row-no {
   width: 54px;
   min-width: 54px;
+  max-width: 54px;
   color: var(--muted);
   text-align: center;
   font-weight: 900;
+}
+
+#doubaoItems .select-col {
+  width: 44px;
+  min-width: 44px;
+  max-width: 44px;
+  padding-left: 8px;
+  padding-right: 8px;
+  text-align: center;
+}
+
+#doubaoItems .row-no {
+  width: 56px;
+  min-width: 56px;
+  max-width: 56px;
 }
 
 th, td {
@@ -605,6 +672,7 @@ tr.selected {
   display: grid;
   gap: 6px;
   min-width: 150px;
+  max-width: 260px;
 }
 
 .asset-cell a {
@@ -705,6 +773,36 @@ tr.selected {
 }
 
 .prompt-preview.wide p { max-height: 260px; }
+
+.inline-error {
+  display: grid;
+  gap: 6px;
+  max-width: 260px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.inline-error > span {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.prompt-preview.error-detail {
+  max-width: 260px;
+}
+
+.prompt-preview.error-detail p {
+  max-height: 120px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
 
 .prompt-note {
   display: grid;
@@ -943,5 +1041,6 @@ code {
   .actions { justify-content: flex-start; }
   .metric-row,
   .metric-row.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .worker-card { flex-direction: column; align-items: stretch; }
   .editor-grid { grid-template-columns: 1fr; }
 }
