@@ -89,22 +89,6 @@ def build_dola_local_task(record: dict[str, Any], row_number: int | None = None)
     }
 
 
-def doubao_white_canvas_prompt(product_name: str) -> str:
-    name = product_name.strip() or "商品"
-    return (
-        "请基于这张商品图做图片编辑，不要重新生成或重新设计商品本身。\n"
-        f"商品名称仅供理解：{name}\n"
-        "要求：\n"
-        "1. 智能抠出原图中的主体商品；如果原图里有多个属于商品展示的一组主体，请保持它们原有相对位置与比例。\n"
-        "2. 生成 9:16 竖版画布，纯白背景；画布多出来的区域只保留白色留白。\n"
-        "3. 商品完整居中展示，按照原图商品自身比例等比缩放，严禁把商品拉长、压扁、变瘦或变宽。\n"
-        "4. 不改变商品本身的材质、颜色、结构、形状、品牌、Logo、包装文字、标签图案与真实边缘细节。\n"
-        "5. 只移除背景、场景杂物、非商品装饰和不属于商品的水印/营销文字；不要添加新文字、新标签、新图案、新道具或新品牌信息。\n"
-        "6. 输出适合电商展示的干净白底图，保留真实商品阴影可以很轻微，但不能改变商品外观。\n"
-        "关键限制：这是一张基于原图的编辑图，不是新商品渲染图；尽量保留原图主体像素观感。"
-    )
-
-
 def public_error_message(error: Any, limit: int = 180) -> str:
     text = " ".join(str(error or "").split())
     if not text:
@@ -574,21 +558,14 @@ class ViralRemixWorkflow:
         product_name = str(field_value(fields, "商品名称", record_id) or record_id).strip()
         add_log("info", f"开始豆包商品图入库: {product_name}", "workflow", job_id)
         data, mime, filename = self._resolve_doubao_image(fields, prefer_stored=False)
-        source_stored = self.r2.upload_bytes(data, filename or "doubao-product-source-image", mime)
-        add_log("info", "豆包商品图原图已入库，开始生成 9:16 白底图", "workflow", job_id)
-        generated_url = self.image_client.edit_image(
-            source_stored["url"],
-            doubao_white_canvas_prompt(product_name),
-            aspect_ratio="9:16",
-        )
-        stored_url = self._rehost_image(generated_url, "doubao-white-9x16")
+        stored = self.r2.upload_bytes(data, filename or "doubao-product-image", mime)
         self.feishu.update_record(
             self.settings.doubao_table_id,
             record_id,
-            {"商品图存储链接": url_cell(stored_url)},
+            {"商品图存储链接": url_cell(stored["url"])},
         )
-        add_log("success", f"豆包商品图 9:16 白底图入库完成: {stored_url}", "workflow", job_id)
-        return {"record_id": record_id, "stored_image_url": stored_url, "source_image_url": source_stored["url"]}
+        add_log("success", f"豆包商品图入库完成: {stored['url']}", "workflow", job_id)
+        return {"record_id": record_id, "stored_image_url": stored["url"]}
 
     def generate_doubao_prompt(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
