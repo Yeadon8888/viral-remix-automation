@@ -190,21 +190,20 @@ class GeminiClient:
 【商品信息】
 - 商品名称：{product_name or "未填写"}
 - 商品链接：{product_link or "未填写"}
-- 目标市场：墨西哥
-- 口播语言：墨西哥西班牙语
+- 目标市场与口播语言：严格遵循上述导演规则
 
 请只输出 JSON，不要 Markdown，不要代码块：
 {{
-  "final_video_prompt": "[Video Prompt]\\n中文视频生成提示词，口播台词用墨西哥西班牙语",
-  "title": "可直接发布的墨西哥西班牙语标题",
-  "caption": "可直接发布的墨西哥西班牙语正文",
+  "final_video_prompt": "[Video Prompt]\\n中文视频生成提示词，口播和字幕使用导演规则指定的语言",
+  "title": "使用导演规则指定语言的发布标题",
+  "caption": "使用导演规则指定语言的发布正文",
   "tags": "#tag1 #tag2 #tag3"
 }}
 
 要求：
-1. final_video_prompt 必须用于 10 秒 4 镜头 TikTok 墨西哥带货视频，中文为主，口播/字幕文本用墨西哥西班牙语。
+1. final_video_prompt 的目标市场、语言、时长、镜头和风格必须严格遵循上述导演规则，不得自行改成其他国家或语言。
 2. 必须严格锁定图片中的商品外观、颜色、材质、结构和比例，不把海报文字、箭头、边框、光效当作商品本体。
-3. title、caption、tags 必须基于商品图片分析生成，适合 TikTok 墨西哥站直接发布。
+3. title、caption、tags 必须基于商品图片分析生成，并使用导演规则指定的目标市场语言。
 """.strip()
         content: list[dict[str, Any]] = [
             {"type": "text", "text": prompt},

@@ -18,7 +18,7 @@ from .tikhub import TikHubClient
 
 MATERIAL_PROMPT_FIELD = "视频生成Prompt"
 DOUBAO_PROMPT_KEY = "doubao_seedance_video_prompt"
-DOUBAO_FALLBACK_PROMPT = "你是 TikTok 墨西哥带货视频 AI 导演。根据商品图生成 10 秒、4 镜头、UGC 风格、痛点到解决逻辑的 Seedance 视频生成提示词；中文描述画面，口播和字幕使用墨西哥西班牙语，严格保持商品一致性。"
+DOUBAO_FALLBACK_PROMPT = "你是 TikTok 马来西亚带货视频 AI 导演。根据商品图生成适合马来西亚市场的 Seedance 视频生成提示词；中文描述画面，口播和字幕使用马来语，严格保持商品一致性。"
 DOLA_STATUS_FIELD = "Dola生成状态"
 DOLA_VIDEO_FIELD = "Dola视频链接"
 DOLA_ERROR_FIELD = "Dola错误信息"
@@ -597,7 +597,7 @@ class ViralRemixWorkflow:
         product_name = str(field_value(fields, "商品名称", "") or "").strip()
         product_link = str(field_value(fields, "商品链接", "") or "").strip()
         image_bytes, image_mime, filename = self._resolve_doubao_image(fields, prefer_stored=True)
-        prompt_rules, prompt_version = self._active_prompt_by_key(DOUBAO_PROMPT_KEY, "墨西哥", DOUBAO_FALLBACK_PROMPT)
+        prompt_rules, prompt_version = self._active_prompt_by_key(DOUBAO_PROMPT_KEY, "马来", DOUBAO_FALLBACK_PROMPT)
         add_log("info", f"开始生成豆包视频提示词: {product_name or filename}", "workflow", job_id)
         result = self.gemini.generate_doubao_video_prompt(
             product_name=product_name,
