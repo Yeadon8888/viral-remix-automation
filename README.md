@@ -11,7 +11,7 @@
 5. 在「爆款复刻视频生成任务」表创建 1 条视频任务，写入视频生成 Prompt 和参考图链接。
 6. 手动触发任务表视频生成时，调用 CPA `/v1/videos`，下载结果视频并转存 R2，再写回任务表。
 7. 可把已完成的视频任务同步到发布表「视频生成列表」。
-8. 豆包视频支持 MY / PH / TH 国家配置；按国家选择 Seedance Prompt，并把选中记录幂等同步到「数据表-兼职」。目标任务进入「接单中」或「已完成」后，系统不会覆盖兼职人员的工作数据。
+8. 豆包视频支持 MY（马来语）/ MY_EN（马来英语）/ PH / TH / ID（印尼语）国家语言配置；按国家与语言选择 Seedance Prompt，并把选中记录幂等同步到「数据表-兼职」。目标任务进入「接单中」或「已完成」后，系统不会覆盖兼职人员的工作数据。
 
 ## 本地运行
 
@@ -71,7 +71,7 @@ R2_PREFIX=viral-remix-7d
 ## API
 
 - `GET /api/health`：检查缺失环境变量。
-- `GET /api/countries`：读取豆包视频支持的国家注册表。
+- `GET /api/countries`：读取豆包视频支持的国家语言配置；`code` 是稳定配置码，例如 `MY`、`MY_EN`、`ID`。
 - `GET /api/materials`：读取素材输入表。
 - `POST /api/materials/<record_id>/analyze-video`：理解爆款视频并生成中文视频生成 Prompt。
 - `POST /api/materials/<record_id>/store-image`：商品主图转存对象存储。

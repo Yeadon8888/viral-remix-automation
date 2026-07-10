@@ -6,13 +6,50 @@ class Country:
     code: str
     name: str
     prompt_region: str
+    language_name: str
     language: str
+    legacy_default: bool = False
 
 
 COUNTRIES = (
-    Country(code="MY", name="马来西亚", prompt_region="马来", language="Bahasa Malaysia（马来语）"),
-    Country(code="PH", name="菲律宾", prompt_region="菲律宾", language="Filipino / Tagalog（菲律宾语）"),
-    Country(code="TH", name="泰国", prompt_region="泰国", language="ภาษาไทย（泰语）"),
+    Country(
+        code="MY",
+        name="马来西亚",
+        prompt_region="马来",
+        language_name="马来语",
+        language="Bahasa Malaysia（马来语）",
+        legacy_default=True,
+    ),
+    Country(
+        code="MY_EN",
+        name="马来西亚",
+        prompt_region="马来-英语",
+        language_name="英语",
+        language="English（英语）",
+    ),
+    Country(
+        code="PH",
+        name="菲律宾",
+        prompt_region="菲律宾",
+        language_name="菲律宾语",
+        language="Filipino / Tagalog（菲律宾语）",
+        legacy_default=True,
+    ),
+    Country(
+        code="TH",
+        name="泰国",
+        prompt_region="泰国",
+        language_name="泰语",
+        language="ภาษาไทย（泰语）",
+        legacy_default=True,
+    ),
+    Country(
+        code="ID",
+        name="印度尼西亚",
+        prompt_region="印度尼西亚",
+        language_name="印尼语",
+        language="Bahasa Indonesia（印度尼西亚语）",
+    ),
 )
 
 COUNTRY_BY_CODE = {country.code: country for country in COUNTRIES}
@@ -27,8 +64,12 @@ def get_country(country_code: str | None) -> Country:
     return country
 
 
-def list_countries() -> list[dict[str, str]]:
+def list_countries() -> list[dict[str, str | bool]]:
     return [asdict(country) for country in COUNTRIES]
+
+
+def prompt_regions() -> set[str]:
+    return {country.prompt_region for country in COUNTRIES}
 
 
 def doubao_fallback_prompt(country: Country) -> str:

@@ -12,14 +12,19 @@ class CountryRegistryTests(unittest.TestCase):
     def test_registry_exposes_initial_southeast_asia_markets(self):
         countries = {item["code"]: item for item in list_countries()}
 
-        self.assertEqual(set(countries), {"MY", "PH", "TH"})
+        self.assertEqual(set(countries), {"MY", "MY_EN", "PH", "TH", "ID"})
         self.assertEqual(countries["MY"]["prompt_region"], "马来")
+        self.assertEqual(countries["MY"]["language_name"], "马来语")
+        self.assertEqual(countries["MY_EN"]["prompt_region"], "马来-英语")
+        self.assertEqual(countries["MY_EN"]["language_name"], "英语")
         self.assertEqual(countries["PH"]["prompt_region"], "菲律宾")
         self.assertEqual(countries["TH"]["prompt_region"], "泰国")
+        self.assertEqual(countries["ID"]["prompt_region"], "印度尼西亚")
+        self.assertEqual(countries["ID"]["language_name"], "印尼语")
 
     def test_registry_rejects_unknown_country_code(self):
         with self.assertRaisesRegex(ValueError, "不支持的国家"):
-            get_country("ID")
+            get_country("ZZ")
 
 
 class CountryAwareDoubaoPromptTests(unittest.TestCase):
@@ -67,6 +72,7 @@ class CountryAwareDoubaoPromptTests(unittest.TestCase):
         self.assertEqual(captured["selection"][1], "泰国")
         self.assertEqual(captured["gemini_args"]["prompt_rules"], "泰国模板")
         self.assertEqual(captured["updated_fields"]["目标国家"], "泰国")
+        self.assertEqual(captured["updated_fields"]["目标语言"], "泰语")
         self.assertEqual(captured["updated_fields"]["Prompt配置版本"], "doubao_seedance_video_prompt:th-v1")
         self.assertEqual(captured["updated_fields"]["兼职同步状态"], "未同步")
         self.assertEqual(result["country_code"], "TH")
@@ -104,6 +110,7 @@ class PartTimeSyncServiceTests(unittest.TestCase):
             "商品图存储链接": "https://cdn.example/bag.jpg",
             "最终视频生成提示词": "Thai Seedance prompt",
             "目标国家": "泰国",
+            "目标语言": "泰语",
         })
 
         result = service.sync_record("source-1", "TH")
@@ -112,6 +119,8 @@ class PartTimeSyncServiceTests(unittest.TestCase):
         target_fields = calls["created"][0][1]
         self.assertEqual(target_fields["来源记录ID"], "source-1")
         self.assertEqual(target_fields["目标国家"], "泰国")
+        self.assertEqual(target_fields["目标语言"], "泰语")
+        self.assertEqual(target_fields["文本"], "豆包视频｜泰国｜泰语｜Travel bag")
         self.assertEqual(target_fields["提示词"], "Thai Seedance prompt")
         self.assertEqual(target_fields["图片地址"]["link"], "https://cdn.example/bag.jpg")
         self.assertEqual(target_fields["任务状态"], "待接单")
@@ -127,12 +136,14 @@ class PartTimeSyncServiceTests(unittest.TestCase):
                 "商品图链接": "https://cdn.example/bag.jpg",
                 "最终视频生成提示词": "updated prompt",
                 "目标国家": "泰国",
+                "目标语言": "泰语",
             },
             [{
                 "record_id": "target-existing",
                 "fields": {
                     "来源记录ID": "source-1",
                     "目标国家": "泰国",
+                    "目标语言": "泰语",
                     "任务状态": "待接单",
                 },
             }],
@@ -153,12 +164,14 @@ class PartTimeSyncServiceTests(unittest.TestCase):
                 "商品图链接": "https://cdn.example/bag.jpg",
                 "最终视频生成提示词": "new prompt",
                 "目标国家": "泰国",
+                "目标语言": "泰语",
             },
             [{
                 "record_id": "target-claimed",
                 "fields": {
                     "来源记录ID": "source-1",
                     "目标国家": "泰国",
+                    "目标语言": "泰语",
                     "任务状态": "接单中",
                 },
             }],
@@ -176,6 +189,7 @@ class PartTimeSyncServiceTests(unittest.TestCase):
             "商品名称": "Travel bag",
             "商品图链接": "https://cdn.example/bag.jpg",
             "目标国家": "泰国",
+            "目标语言": "泰语",
         })
 
         with self.assertRaisesRegex(RuntimeError, "缺少最终视频生成提示词"):
@@ -189,6 +203,7 @@ class PartTimeSyncServiceTests(unittest.TestCase):
             "商品图链接": "https://cdn.example/bag.jpg",
             "最终视频生成提示词": "prompt",
             "目标国家": "泰国",
+            "目标语言": "泰语",
         })
         shared_target_records = []
 
@@ -204,12 +219,88 @@ class PartTimeSyncServiceTests(unittest.TestCase):
             "商品图链接": "https://cdn.example/bag.jpg",
             "最终视频生成提示词": "Thai prompt",
             "目标国家": "泰国",
+            "目标语言": "泰语",
         })
 
         with self.assertRaisesRegex(RuntimeError, "提示词属于泰国"):
             service.sync_record("source-1", "PH")
 
         self.assertEqual(calls["listed"], 0)
+        self.assertEqual(calls["created"], [])
+
+    def test_malaysia_language_profiles_do_not_overwrite_each_other(self):
+        service, calls = self.make_service(
+            {
+                "商品名称": "Travel bag",
+                "商品图链接": "https://cdn.example/bag.jpg",
+                "最终视频生成提示词": "English prompt",
+                "目标国家": "马来西亚",
+                "目标语言": "英语",
+            },
+            [
+                {
+                    "record_id": "target-my-ms",
+                    "fields": {
+                        "来源记录ID": "source-1",
+                        "目标国家": "马来西亚",
+                        "目标语言": "马来语",
+                        "任务状态": "待接单",
+                    },
+                },
+                {
+                    "record_id": "target-my-en",
+                    "fields": {
+                        "来源记录ID": "source-1",
+                        "目标国家": "马来西亚",
+                        "目标语言": "英语",
+                        "任务状态": "待接单",
+                    },
+                },
+            ],
+        )
+
+        result = service.sync_record("source-1", "MY_EN")
+
+        self.assertEqual(result["target_record_id"], "target-my-en")
+        target_updates = [call for call in calls["updated"] if call[0] == "target-table"]
+        self.assertEqual(target_updates[0][1], "target-my-en")
+
+    def test_prompt_language_must_match_sync_language(self):
+        service, calls = self.make_service({
+            "商品名称": "Travel bag",
+            "商品图链接": "https://cdn.example/bag.jpg",
+            "最终视频生成提示词": "Malay prompt",
+            "目标国家": "马来西亚",
+            "目标语言": "马来语",
+        })
+
+        with self.assertRaisesRegex(RuntimeError, "提示词语言为马来语"):
+            service.sync_record("source-1", "MY_EN")
+
+        self.assertEqual(calls["listed"], 0)
+
+    def test_legacy_single_language_record_is_upgraded_without_duplication(self):
+        service, calls = self.make_service(
+            {
+                "商品名称": "Travel bag",
+                "商品图链接": "https://cdn.example/bag.jpg",
+                "最终视频生成提示词": "Thai prompt created before language tracking",
+                "目标国家": "泰国",
+            },
+            [{
+                "record_id": "target-legacy-th",
+                "fields": {
+                    "来源记录ID": "source-1",
+                    "目标国家": "泰国",
+                    "任务状态": "待接单",
+                },
+            }],
+        )
+
+        result = service.sync_record("source-1", "TH")
+
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual(result["target_record_id"], "target-legacy-th")
         self.assertEqual(calls["created"], [])
 
 
@@ -222,7 +313,10 @@ class CountryAwareApiTests(unittest.TestCase):
         response = self.client.get("/api/countries")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual([item["code"] for item in response.get_json()["data"]], ["MY", "PH", "TH"])
+        self.assertEqual(
+            [item["code"] for item in response.get_json()["data"]],
+            ["MY", "MY_EN", "PH", "TH", "ID"],
+        )
 
     def test_single_prompt_endpoint_passes_country_code_to_job(self):
         captured = {}
@@ -252,7 +346,7 @@ class CountryAwareApiTests(unittest.TestCase):
     def test_batch_prompt_endpoint_rejects_unknown_country(self):
         response = self.client.post(
             "/api/doubao-items/batch-generate-prompts",
-            json={"record_ids": ["source-1"], "country_code": "ID"},
+            json={"record_ids": ["source-1"], "country_code": "ZZ"},
         )
 
         self.assertEqual(response.status_code, 400)

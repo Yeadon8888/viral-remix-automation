@@ -372,9 +372,41 @@ function selectedCountryName() {
   return state.countries.find((country) => country.code === state.doubaoCountryCode)?.name || "马来西亚";
 }
 
+function selectedCountryLanguageName() {
+  return state.countries.find((country) => country.code === state.doubaoCountryCode)?.language_name || "马来语";
+}
+
 function promptCountryMatchesSelection(row) {
   const promptCountry = String(row["目标国家"] || "").trim() || "马来西亚";
-  return promptCountry === selectedCountryName();
+  const promptLanguage = String(row["目标语言"] || "").trim() || "马来语";
+  return promptCountry === selectedCountryName() && promptLanguage === selectedCountryLanguageName();
+}
+
+function promptRegionOptions() {
+  const options = [
+    { value: "", label: "全部地区" },
+    { value: "通用", label: "通用" },
+    { value: "墨西哥", label: "墨西哥" },
+  ];
+  state.countries.forEach((country) => {
+    if (!options.some((item) => item.value === country.prompt_region)) {
+      options.push({
+        value: country.prompt_region,
+        label: `${country.name} · ${country.language_name}`,
+      });
+    }
+  });
+  return options;
+}
+
+function renderPromptRegionFilter() {
+  const select = $("promptCountryFilter");
+  if (!select) return;
+  const options = promptRegionOptions();
+  if (!options.some((item) => item.value === state.promptCountryFilter)) state.promptCountryFilter = "";
+  select.innerHTML = options
+    .map((item) => `<option value="${esc(item.value)}" ${item.value === state.promptCountryFilter ? "selected" : ""}>${esc(item.label)}</option>`)
+    .join("");
 }
 
 async function loadCountries() {
@@ -383,6 +415,7 @@ async function loadCountries() {
     if (Array.isArray(data.data) && data.data.length) state.countries = data.data;
   } finally {
     renderCountrySelect();
+    renderPromptRegionFilter();
   }
 }
 
@@ -943,6 +976,7 @@ function renderDoubaoRow(row, extraClass = "") {
     </td>
     <td>
       ${status(row["目标国家"] || "未选择")}
+      <div class="muted">${esc(row["目标语言"] || "未记录语言")}</div>
       <div class="muted">${esc(row["Prompt配置版本"] || "未记录版本")}</div>
     </td>
     <td>
@@ -966,7 +1000,7 @@ function renderDoubaoRow(row, extraClass = "") {
     </td>
     <td><div class="step-cell">
       <button class="mini${promptPending ? " is-pending" : ""}" data-action="doubao-generate" data-id="${esc(row.record_id)}" ${promptRunning || !hasDoubaoImage(row) ? "disabled" : ""}>${promptPending ? "提交中" : promptRunning ? "进行中" : prompt ? "重新生成" : "生成提示词"}</button>
-      <button class="mini sync-button${syncPending ? " is-pending" : ""}" data-action="doubao-sync" data-id="${esc(row.record_id)}" title="${countryMatches ? "同步当前国家任务" : `请先按${esc(selectedCountryName())}重新生成提示词`}" ${syncRunning || !prompt || !countryMatches ? "disabled" : ""}>${syncPending ? "提交中" : syncRunning ? "同步中" : countryMatches ? "同步兼职表" : "先重生成"}</button>
+      <button class="mini sync-button${syncPending ? " is-pending" : ""}" data-action="doubao-sync" data-id="${esc(row.record_id)}" title="${countryMatches ? "同步当前国家语言任务" : `请先按${esc(selectedCountryName())}·${esc(selectedCountryLanguageName())}重新生成提示词`}" ${syncRunning || !prompt || !countryMatches ? "disabled" : ""}>${syncPending ? "提交中" : syncRunning ? "同步中" : countryMatches ? "同步兼职表" : "先重生成"}</button>
     </div></td>
   </tr>`;
 }
@@ -1010,7 +1044,7 @@ function renderDoubaoItems() {
     ...visibleActiveRows.map((row) => renderDoubaoRow(row)),
   ].join("");
   $("doubaoItems").innerHTML = `${renderPagination("doubao", activeRows.length)}<table><thead><tr>
-    <th class="select-col">选</th><th class="row-no">行</th><th>商品</th><th>目标国家 / 版本</th><th>图片</th><th>对象存储</th><th>最终视频生成提示词</th><th>发布内容</th><th>兼职同步</th><th>操作</th>
+    <th class="select-col">选</th><th class="row-no">行</th><th>商品</th><th>国家 / 语言 / 版本</th><th>图片</th><th>对象存储</th><th>最终视频生成提示词</th><th>发布内容</th><th>兼职同步</th><th>操作</th>
   </tr></thead><tbody>${body}</tbody></table>`;
 
   document.querySelectorAll("[data-doubao-date-toggle]").forEach((button) => {
@@ -1100,7 +1134,7 @@ function renderPromptEditor() {
       ${["启用", "停用"].map((item) => `<option value="${item}" ${row["是否启用"] === item ? "selected" : ""}>${item}</option>`).join("")}
     </select></label>
     <label>地区<select id="editPromptRegion">
-      ${["通用", "墨西哥", "马来", "菲律宾", "泰国"].map((item) => `<option value="${item}" ${row["目标地区"] === item ? "selected" : ""}>${item === "马来" ? "马来西亚" : item}</option>`).join("")}
+      ${promptRegionOptions().filter((item) => item.value).map((item) => `<option value="${esc(item.value)}" ${row["目标地区"] === item.value ? "selected" : ""}>${esc(item.label)}</option>`).join("")}
     </select></label>
   </div>
   <label class="editor-block">模板内容<textarea id="editPromptContent" rows="18">${esc(row["模板内容"] || "")}</textarea></label>
@@ -1603,7 +1637,7 @@ async function batchDoubaoSyncPartTime(button = null) {
   const rows = promptRows.filter(promptCountryMatchesSelection);
   if (!rows.length) {
     const message = promptRows.length
-      ? `所选提示词不属于${selectedCountryName()}，请先按当前国家重新生成`
+      ? `所选提示词不属于${selectedCountryName()}·${selectedCountryLanguageName()}，请先按当前国家语言重新生成`
       : "请先勾选已生成提示词的豆包记录";
     notify(message, "error");
     return;

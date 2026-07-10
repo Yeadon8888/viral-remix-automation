@@ -6,7 +6,7 @@ from typing import Any
 import requests
 
 from .config import Settings
-from .countries import doubao_fallback_prompt, get_country
+from .countries import doubao_fallback_prompt, get_country, prompt_regions
 from .cpa import CpaVideoClient
 from .feishu import FeishuClient, attachment_count, field_value, first_attachment
 from .gemini import GeminiClient, local_language
@@ -268,8 +268,9 @@ class ViralRemixWorkflow:
             raise RuntimeError("没有可更新的 Prompt 字段")
         if "是否启用" in fields and fields["是否启用"] not in {"启用", "停用"}:
             raise RuntimeError("是否启用只能是：启用 / 停用")
-        if "目标地区" in fields and fields["目标地区"] not in {"墨西哥", "马来", "马来西亚", "菲律宾", "泰国", "通用"}:
-            raise RuntimeError("目标地区只能是：墨西哥 / 马来 / 马来西亚 / 菲律宾 / 泰国 / 通用")
+        allowed_regions = {"墨西哥", "通用", *prompt_regions()}
+        if "目标地区" in fields and fields["目标地区"] not in allowed_regions:
+            raise RuntimeError(f"目标地区只能是：{' / '.join(sorted(allowed_regions))}")
         if "模板内容" in fields and not fields["模板内容"]:
             raise RuntimeError("模板内容不能为空")
         return self.feishu.update_record(self.settings.prompt_table_id, record_id, fields)
@@ -460,6 +461,7 @@ class ViralRemixWorkflow:
                 "标签": field_value(fields, "标签", ""),
                 "视频生成链接": video_url,
                 "目标国家": field_value(fields, "目标国家", ""),
+                "目标语言": field_value(fields, "目标语言", ""),
                 "Prompt配置版本": field_value(fields, "Prompt配置版本", ""),
                 "兼职同步记录ID": field_value(fields, "兼职同步记录ID", ""),
                 "兼职同步状态": field_value(fields, "兼职同步状态", ""),
@@ -633,6 +635,7 @@ class ViralRemixWorkflow:
                 "文案": result["caption"],
                 "标签": result["tags"],
                 "目标国家": country.name,
+                "目标语言": country.language_name,
                 "Prompt配置版本": prompt_version,
                 "兼职同步状态": "未同步",
                 "兼职同步错误": "",
@@ -669,6 +672,7 @@ class ViralRemixWorkflow:
                 record_id,
                 {
                     "目标国家": country.name,
+                    "目标语言": country.language_name,
                     "兼职同步状态": "同步失败",
                     "兼职同步时间": now_ms(),
                     "兼职同步错误": public_error_message(exc),

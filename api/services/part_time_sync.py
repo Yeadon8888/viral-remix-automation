@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 
 from ..config import Settings
-from ..countries import get_country
+from ..countries import Country, get_country
 from ..feishu import FeishuClient, field_value
 
 
@@ -25,23 +25,21 @@ class PartTimeSyncService:
     def _find_target(
         self,
         source_record_id: str,
-        country_name: str,
+        country: Country,
         target_records: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
-        source_matches = []
+        legacy_match = None
         for record in target_records:
             fields = record.get("fields", {})
             if str(field_value(fields, "来源记录ID", "") or "").strip() != source_record_id:
                 continue
             target_country = str(field_value(fields, "目标国家", "") or "").strip()
-            if target_country == country_name:
+            target_language = str(field_value(fields, "目标语言", "") or "").strip()
+            if target_country == country.name and target_language == country.language_name:
                 return record
-            source_matches.append(record)
-        if len(source_matches) == 1:
-            fields = source_matches[0].get("fields", {})
-            if not str(field_value(fields, "目标国家", "") or "").strip():
-                return source_matches[0]
-        return None
+            if country.legacy_default and target_country in ("", country.name) and not target_language:
+                legacy_match = record
+        return legacy_match
 
     def _track_source(self, record_id: str, fields: dict[str, Any]) -> None:
         self.feishu.update_record(self.settings.doubao_table_id, record_id, fields)
@@ -65,23 +63,29 @@ class PartTimeSyncService:
         if not image_url.startswith("http"):
             raise RuntimeError("缺少可同步的商品图片链接，请先完成图片入库")
         prompt_country = str(field_value(source_fields, "目标国家", "") or "").strip()
-        if not prompt_country and country.code != "MY":
+        if not prompt_country and not country.legacy_default:
             raise RuntimeError(f"历史提示词未标记国家，请先按{country.name}重新生成提示词")
         if prompt_country and prompt_country != country.name:
             raise RuntimeError(f"当前提示词属于{prompt_country}，请先按{country.name}重新生成提示词")
+        prompt_language = str(field_value(source_fields, "目标语言", "") or "").strip()
+        if not prompt_language and not country.legacy_default:
+            raise RuntimeError(f"历史提示词未标记语言，请先按{country.language_name}重新生成提示词")
+        if prompt_language and prompt_language != country.language_name:
+            raise RuntimeError(f"当前提示词语言为{prompt_language}，请先按{country.language_name}重新生成提示词")
 
         records = target_records
         if records is None:
             records = self.feishu.list_records(self.settings.part_time_table_id)
-        target = self._find_target(source_record_id, country.name, records)
+        target = self._find_target(source_record_id, country, records)
         target_fields = {
-            "文本": f"豆包视频｜{country.name}｜{product_name}",
+            "文本": f"豆包视频｜{country.name}｜{country.language_name}｜{product_name}",
             "图片地址": url_cell(image_url),
             "提示词": prompt,
             "任务状态": "待接单",
             "失败次数": 0,
             "来源记录ID": source_record_id,
             "目标国家": country.name,
+            "目标语言": country.language_name,
         }
         if target:
             target_record_id = str(target.get("record_id") or "")
@@ -90,6 +94,7 @@ class PartTimeSyncService:
                 message = f"目标兼职任务状态为{target_status}，已保护现有任务，未覆盖"
                 self._track_source(source_record_id, {
                     "目标国家": country.name,
+                    "目标语言": country.language_name,
                     "兼职同步记录ID": target_record_id,
                     "兼职同步状态": "同步冲突",
                     "兼职同步时间": now_ms(),
@@ -116,6 +121,7 @@ class PartTimeSyncService:
 
         self._track_source(source_record_id, {
             "目标国家": country.name,
+            "目标语言": country.language_name,
             "兼职同步记录ID": target_record_id,
             "兼职同步状态": "已同步",
             "兼职同步时间": now_ms(),
