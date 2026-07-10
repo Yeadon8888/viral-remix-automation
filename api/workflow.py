@@ -427,10 +427,13 @@ class ViralRemixWorkflow:
                 break
         return out
 
-    def list_doubao_items(self, limit: int = 100) -> list[dict[str, Any]]:
-        records = self.feishu.list_records(self.settings.doubao_table_id, max_records=limit)
+    def _doubao_items_from_records(
+        self,
+        records: list[dict[str, Any]],
+        start_index: int = 1,
+    ) -> list[dict[str, Any]]:
         out = []
-        for index, record in enumerate(records, start=1):
+        for index, record in enumerate(records, start=start_index):
             fields = record.get("fields", {})
             attachment = first_attachment(fields, "商品图")
             image_url = str(field_value(fields, "商品图链接", "") or "").strip()
@@ -461,6 +464,27 @@ class ViralRemixWorkflow:
                 "创建时间": record.get("created_time") or "",
             })
         return out
+
+    def list_doubao_items(self, limit: int = 100) -> list[dict[str, Any]]:
+        records = self.feishu.list_records(self.settings.doubao_table_id, max_records=limit)
+        return self._doubao_items_from_records(records)
+
+    def list_doubao_items_page(
+        self,
+        page_size: int = 100,
+        page_token: str = "",
+        start_index: int = 1,
+    ) -> dict[str, Any]:
+        page = self.feishu.list_records_page(
+            self.settings.doubao_table_id,
+            page_size=page_size,
+            page_token=page_token,
+        )
+        return {
+            "items": self._doubao_items_from_records(page["items"], start_index=start_index),
+            "has_more": page["has_more"],
+            "page_token": page["page_token"],
+        }
 
     def list_dola_local_tasks(self, limit: int = 100, include_done: bool = False) -> list[dict[str, Any]]:
         records = self.feishu.list_records(self.settings.doubao_table_id, max_records=limit)

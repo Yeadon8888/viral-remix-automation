@@ -66,24 +66,32 @@ class FeishuClient:
             raise FeishuError(data.get("msg") or str(data)[:500])
         return data.get("data", data)
 
+    def list_records_page(self, table_id: str, page_size: int = 100, page_token: str = "") -> dict[str, Any]:
+        params: dict[str, Any] = {"page_size": page_size}
+        if page_token:
+            params["page_token"] = page_token
+        data = self._request(
+            "GET",
+            f"/bitable/v1/apps/{self.settings.feishu_app_token}/tables/{table_id}/records",
+            params=params,
+        )
+        return {
+            "items": data.get("items", []),
+            "has_more": bool(data.get("has_more")),
+            "page_token": data.get("page_token", ""),
+        }
+
     def list_records(self, table_id: str, page_size: int = 100, max_records: int | None = None) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         page_token = ""
         while True:
-            params: dict[str, Any] = {"page_size": page_size}
-            if page_token:
-                params["page_token"] = page_token
-            data = self._request(
-                "GET",
-                f"/bitable/v1/apps/{self.settings.feishu_app_token}/tables/{table_id}/records",
-                params=params,
-            )
-            items.extend(data.get("items", []))
+            page = self.list_records_page(table_id, page_size=page_size, page_token=page_token)
+            items.extend(page["items"])
             if max_records and len(items) >= max_records:
                 return items[:max_records]
-            if not data.get("has_more"):
+            if not page["has_more"]:
                 break
-            page_token = data.get("page_token", "")
+            page_token = page["page_token"]
             if not page_token:
                 break
         return items

@@ -293,6 +293,32 @@ def list_doubao_items():
     return jsonify({"success": True, "data": data})
 
 
+@app.route("/api/doubao-items/page")
+def list_doubao_items_page():
+    workflow = get_workflow()
+    page_size = query_int("page_size", 100, 100)
+    page_token = str(request.args.get("page_token") or "").strip()
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
+    data = cached_list(
+        f"doubao-page:{page_size}:{page_token}:{offset}",
+        lambda: workflow.list_doubao_items_page(
+            page_size=page_size,
+            page_token=page_token,
+            start_index=offset + 1,
+        ),
+        ttl_seconds=120,
+    )
+    return jsonify({
+        "success": True,
+        "data": data["items"],
+        "has_more": data["has_more"],
+        "page_token": data["page_token"],
+    })
+
+
 @app.route("/api/doubao-items/<record_id>/generate-prompt", methods=["POST"])
 def generate_doubao_prompt(record_id):
     workflow = get_workflow()

@@ -1087,8 +1087,24 @@ async function loadTasks(options = {}) {
 }
 
 async function loadDoubaoItems(options = {}) {
-  const data = await api(tablePath("/api/doubao-items?limit=500", options));
-  state.doubaoItems = data.data;
+  const rows = [];
+  const seenPageTokens = new Set();
+  let pageToken = "";
+  while (true) {
+    const params = new URLSearchParams({ page_size: "100", offset: String(rows.length) });
+    if (pageToken) params.set("page_token", pageToken);
+    if (options.force) params.set("force", "1");
+    const data = await api(`/api/doubao-items/page?${params.toString()}`);
+    rows.push(...data.data);
+    if (!data.has_more) break;
+    const nextPageToken = String(data.page_token || "");
+    if (!nextPageToken || seenPageTokens.has(nextPageToken)) {
+      throw new Error("飞书分页游标异常，豆包表读取未完成");
+    }
+    seenPageTokens.add(nextPageToken);
+    pageToken = nextPageToken;
+  }
+  state.doubaoItems = rows;
   const existingIds = new Set(state.doubaoItems.map((row) => row.record_id));
   state.selectedDoubaoIds = new Set([...state.selectedDoubaoIds].filter((id) => existingIds.has(id)));
   renderDoubaoItems();
