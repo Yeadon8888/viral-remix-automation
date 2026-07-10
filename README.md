@@ -1,6 +1,6 @@
-# Viral Remix Automation
+# 短视频带货全链路自动化工作后台
 
-围绕飞书多维表格「爆款复刻素材输入」搭建的手动触发工具。当前版本先支持单条/批量处理，后续可以在同一套接口上加定时任务。
+围绕飞书多维表格搭建的短视频运营后台。前台分为「视频复刻」「豆包视频」「Prompt配置」三个工作区；Dola 本地工作台已从前台退役，后端兼容接口暂时保留。
 
 ## 数据流
 
@@ -11,6 +11,7 @@
 5. 在「爆款复刻视频生成任务」表创建 1 条视频任务，写入视频生成 Prompt 和参考图链接。
 6. 手动触发任务表视频生成时，调用 CPA `/v1/videos`，下载结果视频并转存 R2，再写回任务表。
 7. 可把已完成的视频任务同步到发布表「视频生成列表」。
+8. 豆包视频支持 MY / PH / TH 国家配置；按国家选择 Seedance Prompt，并把选中记录幂等同步到「数据表-兼职」。目标任务进入「接单中」或「已完成」后，系统不会覆盖兼职人员的工作数据。
 
 ## 本地运行
 
@@ -34,6 +35,9 @@ FEISHU_APP_SECRET=
 FEISHU_APP_TOKEN=H3RybjMFqabStts0zFUcWrz9nvb
 FEISHU_SOURCE_TABLE_ID=tblDEJZwbA7iEuL1
 FEISHU_TASK_TABLE_ID=tblJSkNvzYaku9Kg
+FEISHU_PROMPT_TABLE_ID=tblvFcsSoHnTP5Te
+FEISHU_DOUBAO_TABLE_ID=tblvHL2tMBrksvpH
+FEISHU_PART_TIME_TABLE_ID=tblhFSNlmKkeJFVK
 FEISHU_PUBLISH_TABLE_ID=tbl0D4WlwbkxtrZx
 TIKHUB_API_KEY=
 GEMINI_API_KEY=
@@ -67,6 +71,7 @@ R2_PREFIX=viral-remix-7d
 ## API
 
 - `GET /api/health`：检查缺失环境变量。
+- `GET /api/countries`：读取豆包视频支持的国家注册表。
 - `GET /api/materials`：读取素材输入表。
 - `POST /api/materials/<record_id>/analyze-video`：理解爆款视频并生成中文视频生成 Prompt。
 - `POST /api/materials/<record_id>/store-image`：商品主图转存对象存储。
@@ -78,5 +83,10 @@ R2_PREFIX=viral-remix-7d
 - `POST /api/tasks/<record_id>/generate-video`：单条生成视频。
 - `POST /api/tasks/batch-generate-video`：批量生成视频。
 - `POST /api/tasks/sync-publish`：把已完成任务的标题、文案、标签、商品标题和视频链接同步到发布表。
+- `GET /api/doubao-items/page`：按飞书游标读取全部豆包记录，不受 500 条限制。
+- `POST /api/doubao-items/<record_id>/generate-prompt`：按 `country_code` 生成单条国家化 Prompt。
+- `POST /api/doubao-items/batch-generate-prompts`：用一个后台任务批量生成国家化 Prompt。
+- `POST /api/doubao-items/<record_id>/sync-part-time`：幂等同步单条记录到兼职表。
+- `POST /api/doubao-items/batch-sync-part-time`：批量同步已选记录，并汇总创建、更新、冲突和失败数。
 
 如果设置了 `ADMIN_TOKEN`，所有 `/api/*` 请求都需要带 `X-Admin-Token` 请求头。

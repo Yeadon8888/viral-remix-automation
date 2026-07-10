@@ -27,6 +27,7 @@ class Settings:
     task_table_id: str = env("FEISHU_TASK_TABLE_ID", "tblJSkNvzYaku9Kg")
     prompt_table_id: str = env("FEISHU_PROMPT_TABLE_ID", "tblvFcsSoHnTP5Te")
     doubao_table_id: str = env("FEISHU_DOUBAO_TABLE_ID", "tblvHL2tMBrksvpH")
+    part_time_table_id: str = env("FEISHU_PART_TIME_TABLE_ID", "tblhFSNlmKkeJFVK")
     publish_table_id: str = env("FEISHU_PUBLISH_TABLE_ID", "tbl0D4WlwbkxtrZx")
 
     tikhub_api_key: str = env("TIKHUB_API_KEY")

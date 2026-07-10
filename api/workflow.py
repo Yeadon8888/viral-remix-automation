@@ -6,6 +6,7 @@ from typing import Any
 import requests
 
 from .config import Settings
+from .countries import doubao_fallback_prompt, get_country
 from .cpa import CpaVideoClient
 from .feishu import FeishuClient, attachment_count, field_value, first_attachment
 from .gemini import GeminiClient, local_language
@@ -13,7 +14,7 @@ from .image_gen import NewTokenImageClient, normalize_styles
 from .logging_bus import add_log
 from .prompting import DEFAULT_IMAGE_PROMPTS, DEFAULT_VIDEO_ANALYSIS_TEMPLATE, STYLE_LABELS, image_prompt_snapshot
 from .r2 import R2Storage
-from .services import ViralVideoAssetService
+from .services import PartTimeSyncService, ViralVideoAssetService
 from .tikhub import TikHubClient
 
 MATERIAL_PROMPT_FIELD = "视频生成Prompt"
@@ -225,6 +226,7 @@ class ViralRemixWorkflow:
         self.image_client = NewTokenImageClient(settings)
         self.cpa = CpaVideoClient(settings)
         self.video_assets = ViralVideoAssetService(settings, self.feishu, self.r2, self.tikhub)
+        self.part_time_sync = PartTimeSyncService(settings, self.feishu)
 
     def list_prompt_configs(self) -> list[dict[str, Any]]:
         if not self.settings.prompt_table_id:
@@ -266,8 +268,8 @@ class ViralRemixWorkflow:
             raise RuntimeError("没有可更新的 Prompt 字段")
         if "是否启用" in fields and fields["是否启用"] not in {"启用", "停用"}:
             raise RuntimeError("是否启用只能是：启用 / 停用")
-        if "目标地区" in fields and fields["目标地区"] not in {"墨西哥", "马来", "通用"}:
-            raise RuntimeError("目标地区只能是：墨西哥 / 马来 / 通用")
+        if "目标地区" in fields and fields["目标地区"] not in {"墨西哥", "马来", "马来西亚", "菲律宾", "泰国", "通用"}:
+            raise RuntimeError("目标地区只能是：墨西哥 / 马来 / 马来西亚 / 菲律宾 / 泰国 / 通用")
         if "模板内容" in fields and not fields["模板内容"]:
             raise RuntimeError("模板内容不能为空")
         return self.feishu.update_record(self.settings.prompt_table_id, record_id, fields)
@@ -457,6 +459,12 @@ class ViralRemixWorkflow:
                 "文案": field_value(fields, "文案", ""),
                 "标签": field_value(fields, "标签", ""),
                 "视频生成链接": video_url,
+                "目标国家": field_value(fields, "目标国家", ""),
+                "Prompt配置版本": field_value(fields, "Prompt配置版本", ""),
+                "兼职同步记录ID": field_value(fields, "兼职同步记录ID", ""),
+                "兼职同步状态": field_value(fields, "兼职同步状态", ""),
+                "兼职同步时间": field_value(fields, "兼职同步时间", ""),
+                "兼职同步错误": field_value(fields, "兼职同步错误", ""),
                 DOLA_STATUS_FIELD: dola_status,
                 DOLA_VIDEO_FIELD: field_value(fields, DOLA_VIDEO_FIELD, ""),
                 DOLA_ERROR_FIELD: field_value(fields, DOLA_ERROR_FIELD, ""),
@@ -591,14 +599,24 @@ class ViralRemixWorkflow:
         add_log("success", f"豆包商品图入库完成: {stored['url']}", "workflow", job_id)
         return {"record_id": record_id, "stored_image_url": stored["url"]}
 
-    def generate_doubao_prompt(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
+    def generate_doubao_prompt(
+        self,
+        record_id: str,
+        country_code: str = "MY",
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        country = get_country(country_code)
         record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
         fields = record.get("fields", {})
         product_name = str(field_value(fields, "商品名称", "") or "").strip()
         product_link = str(field_value(fields, "商品链接", "") or "").strip()
         image_bytes, image_mime, filename = self._resolve_doubao_image(fields, prefer_stored=True)
-        prompt_rules, prompt_version = self._active_prompt_by_key(DOUBAO_PROMPT_KEY, "马来", DOUBAO_FALLBACK_PROMPT)
-        add_log("info", f"开始生成豆包视频提示词: {product_name or filename}", "workflow", job_id)
+        prompt_rules, prompt_version = self._active_prompt_by_key(
+            DOUBAO_PROMPT_KEY,
+            country.prompt_region,
+            doubao_fallback_prompt(country),
+        )
+        add_log("info", f"开始生成豆包视频提示词: {product_name or filename} / {country.name}", "workflow", job_id)
         result = self.gemini.generate_doubao_video_prompt(
             product_name=product_name,
             product_link=product_link,
@@ -614,10 +632,51 @@ class ViralRemixWorkflow:
                 "标题": result["title"],
                 "文案": result["caption"],
                 "标签": result["tags"],
+                "目标国家": country.name,
+                "Prompt配置版本": prompt_version,
+                "兼职同步状态": "未同步",
+                "兼职同步错误": "",
             },
         )
         add_log("success", f"豆包视频提示词已回填: {product_name or filename} / {prompt_version}", "workflow", job_id)
-        return {"record_id": record_id, "prompt_version": prompt_version, "has_prompt": True}
+        return {
+            "record_id": record_id,
+            "country_code": country.code,
+            "prompt_version": prompt_version,
+            "has_prompt": True,
+        }
+
+    def sync_doubao_to_part_time(
+        self,
+        record_id: str,
+        country_code: str = "MY",
+        job_id: str | None = None,
+        target_records: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
+        fields = record.get("fields", {})
+        stored_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
+        image_url = str(field_value(fields, "商品图链接", "") or "").strip()
+        if not stored_url.startswith("http") and not image_url.startswith("http") and first_attachment(fields, "商品图"):
+            self.store_doubao_image(record_id, job_id=job_id)
+        country = get_country(country_code)
+        add_log("info", f"开始同步豆包记录到兼职表: {record_id} / {country.name}", "workflow", job_id)
+        try:
+            result = self.part_time_sync.sync_record(record_id, country.code, target_records=target_records)
+        except Exception as exc:
+            self.feishu.update_record(
+                self.settings.doubao_table_id,
+                record_id,
+                {
+                    "目标国家": country.name,
+                    "兼职同步状态": "同步失败",
+                    "兼职同步时间": now_ms(),
+                    "兼职同步错误": public_error_message(exc),
+                },
+            )
+            raise
+        add_log("success", f"豆包记录兼职表同步完成: {record_id} / {result['status']}", "workflow", job_id)
+        return result
 
     def _download_url(self, url: str, with_provider_auth: bool = False) -> tuple[bytes, str]:
         headers = {

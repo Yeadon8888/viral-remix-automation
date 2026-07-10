@@ -15,6 +15,7 @@ except ModuleNotFoundError:
     pass
 
 from api.config import settings
+from api.countries import get_country, list_countries
 from api.feishu import field_value
 from api.image_gen import STYLE_LABELS
 from api.jobs import get_job, list_jobs, run_job
@@ -148,6 +149,7 @@ def config_status():
         "task_table_id": settings.task_table_id,
         "prompt_table_id": settings.prompt_table_id,
         "doubao_table_id": settings.doubao_table_id,
+        "part_time_table_id": settings.part_time_table_id,
         "publish_table_id": settings.publish_table_id,
         "gemini_model": settings.gemini_model,
         "cpa_model": settings.cpa_video_model,
@@ -156,6 +158,11 @@ def config_status():
         "newtoken_timeout_seconds": settings.newtoken_timeout_seconds,
         "storage_mode": "upload_gateway" if settings.has_upload_gateway else "direct_r2",
     })
+
+
+@app.route("/api/countries")
+def countries():
+    return jsonify({"success": True, "data": list_countries()})
 
 
 @app.route("/api/worker/latest")
@@ -321,8 +328,35 @@ def list_doubao_items_page():
 
 @app.route("/api/doubao-items/<record_id>/generate-prompt", methods=["POST"])
 def generate_doubao_prompt(record_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        country = get_country(body.get("country_code"))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
     workflow = get_workflow()
-    job_id = run_workflow_job(f"doubao-generate-prompt:{record_id}", workflow.generate_doubao_prompt, record_id)
+    job_id = run_workflow_job(
+        f"doubao-generate-prompt:{record_id}:{country.code}",
+        workflow.generate_doubao_prompt,
+        record_id,
+        country.code,
+    )
+    return jsonify({"success": True, "job_id": job_id})
+
+
+@app.route("/api/doubao-items/<record_id>/sync-part-time", methods=["POST"])
+def sync_doubao_part_time(record_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        country = get_country(body.get("country_code"))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+    workflow = get_workflow()
+    job_id = run_workflow_job(
+        f"doubao-sync-part-time:{record_id}:{country.code}",
+        workflow.sync_doubao_to_part_time,
+        record_id,
+        country.code,
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -412,6 +446,71 @@ def batch_store_doubao_images():
         return {"processed": len(results), "results": results}
 
     job_id = run_workflow_job("doubao-batch-store-images", runner)
+    return jsonify({"success": True, "job_id": job_id})
+
+
+def validated_doubao_batch_request():
+    body = request.get_json(silent=True) or {}
+    record_ids = body.get("record_ids")
+    if not isinstance(record_ids, list) or not record_ids:
+        raise ValueError("record_ids is required")
+    ids = list(dict.fromkeys(str(item).strip() for item in record_ids if str(item).strip()))
+    if not ids:
+        raise ValueError("record_ids is required")
+    country = get_country(body.get("country_code"))
+    return ids[:200], country
+
+
+@app.route("/api/doubao-items/batch-generate-prompts", methods=["POST"])
+def batch_generate_doubao_prompts():
+    try:
+        record_ids, country = validated_doubao_batch_request()
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+    workflow = get_workflow()
+
+    def runner(job_id=None):
+        results = []
+        for record_id in record_ids:
+            try:
+                results.append(workflow.generate_doubao_prompt(record_id, country.code, job_id=job_id))
+            except Exception as exc:
+                results.append({"record_id": record_id, "error": str(exc)})
+        failed = len([item for item in results if item.get("error")])
+        return {"processed": len(results), "failed": failed, "results": results}
+
+    job_id = run_workflow_job(f"doubao-batch-prompts:{country.code}", runner)
+    return jsonify({"success": True, "job_id": job_id})
+
+
+@app.route("/api/doubao-items/batch-sync-part-time", methods=["POST"])
+def batch_sync_doubao_part_time():
+    try:
+        record_ids, country = validated_doubao_batch_request()
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+    workflow = get_workflow()
+
+    def runner(job_id=None):
+        results = []
+        target_records = workflow.feishu.list_records(settings.part_time_table_id)
+        for record_id in record_ids:
+            try:
+                results.append(workflow.sync_doubao_to_part_time(
+                    record_id,
+                    country.code,
+                    job_id=job_id,
+                    target_records=target_records,
+                ))
+            except Exception as exc:
+                results.append({"record_id": record_id, "status": "failed", "error": str(exc)})
+        summary = {
+            name: len([item for item in results if item.get("status") == name])
+            for name in ("created", "updated", "conflict", "failed")
+        }
+        return {"processed": len(results), **summary, "results": results}
+
+    job_id = run_workflow_job(f"doubao-batch-sync-part-time:{country.code}", runner)
     return jsonify({"success": True, "job_id": job_id})
 
 

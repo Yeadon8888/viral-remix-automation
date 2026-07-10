@@ -3,227 +3,268 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#101a17">
-  <title>短视频带货全链路自动化工作台</title>
+  <meta name="theme-color" content="#15231f">
+  <title>短视频带货全链路自动化工作后台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <div class="mark">VR</div>
-      <div>
-        <h1>短视频带货全链路自动化工作台</h1>
-        <p>视频拆解 -> 主图入库 -> 商品组图 -> Dola本地Worker -> 视频回填</p>
-      </div>
-    </div>
-    <div class="auth">
-      <input id="adminToken" type="password" placeholder="Admin Token（如已配置）">
-      <button id="saveToken">保存</button>
-    </div>
-  </header>
-
-  <main>
-    <section class="status-strip">
-      <div>
-        <span class="eyebrow">配置</span>
-        <strong id="configLine">加载中</strong>
-      </div>
-      <button id="refreshConfig" class="secondary">刷新</button>
-    </section>
-
-    <nav class="page-tabs" aria-label="工作区">
-      <button id="pageMaterials" class="tab active" type="button" data-page="materials">素材处理</button>
-      <button id="pageVideos" class="tab" type="button" data-page="videos">视频生成</button>
-      <button id="pageDoubao" class="tab" type="button" data-page="doubao">豆包视频</button>
-      <button id="pagePrompts" class="tab" type="button" data-page="prompts">Prompt配置</button>
-    </nav>
-
-    <section id="materialsPage" class="page-view active">
-      <div class="panel source-panel">
-        <div class="panel-head">
-          <div>
-            <h2>素材处理</h2>
-            <p>v3-墨西哥-爆款短视频带货项目数据</p>
-          </div>
-          <div class="actions">
-            <button id="loadMaterials" class="secondary">读取</button>
-          </div>
-        </div>
-        <div class="metric-row">
-          <div><span id="metricMaterials">0</span><small>素材</small></div>
-          <div><span id="metricMainImages">0</span><small>主图转存</small></div>
-          <div><span id="metricScripts">0</span><small>Prompt</small></div>
-          <div><span id="metricImages">0</span><small>组图</small></div>
-          <div><span id="metricTasks">0</span><small>任务</small></div>
-        </div>
-        <div class="batch-bar">
-          <label class="checkline">
-            <input id="selectAllMaterials" type="checkbox">
-            <span>全选当前素材</span>
-          </label>
-          <div class="range-picker" aria-label="按行号选择素材">
-            <span>从</span>
-            <input id="rangeStart" type="number" min="1" inputmode="numeric" placeholder="起始行">
-            <span>到</span>
-            <input id="rangeEnd" type="number" min="1" inputmode="numeric" placeholder="结束行">
-            <button id="selectRange" class="mini secondary" type="button">选择范围</button>
-            <button id="clearMaterialSelection" class="mini ghost" type="button">清空</button>
-          </div>
-          <strong id="selectedMaterialCount">已选 0 条</strong>
-          <div class="actions">
-            <button id="batchAnalyze" class="secondary">批量生成Prompt</button>
-            <button id="batchStoreImage" class="secondary">批量主图入库</button>
-            <button id="batchGenerateImages" class="secondary">批量生成组图</button>
-            <button id="batchCreateTasks">批量创建任务</button>
-          </div>
-        </div>
-        <div class="table-toolbar">
-          <span id="materialsRefreshState">等待读取飞书素材表</span>
-          <button id="refreshMaterialsTable" class="mini secondary" type="button">刷新表格</button>
-        </div>
-        <div id="materials" class="table-wrap"></div>
-      </div>
-    </section>
-
-    <section id="videosPage" class="page-view">
-      <div class="panel task-panel">
-        <div class="panel-head">
-          <div>
-            <h2>视频生成</h2>
-            <p>爆款复刻视频生成任务</p>
-          </div>
-          <div class="actions">
-            <button id="loadTasks" class="secondary">读取</button>
-            <button id="batchSyncReferenceImages" class="secondary">批量参考图入表</button>
-            <button id="batchStoreManualVideos" class="secondary">批量视频入库</button>
-            <button id="syncPublish" class="secondary">同步发布表</button>
-            <button id="batchVideos">批量生成视频</button>
-          </div>
-        </div>
-        <div id="selectedMaterial" class="selected-box">未选择素材</div>
-        <div class="batch-bar task-batch-bar">
-          <label class="checkline">
-            <input id="selectAllTasks" type="checkbox">
-            <span>全选当前任务</span>
-          </label>
-          <div class="range-picker" aria-label="按行号选择视频任务">
-            <span>从</span>
-            <input id="taskRangeStart" type="number" min="1" inputmode="numeric" placeholder="起始行">
-            <span>到</span>
-            <input id="taskRangeEnd" type="number" min="1" inputmode="numeric" placeholder="结束行">
-            <button id="selectTaskRange" class="mini secondary" type="button">选择范围</button>
-            <button id="clearTaskSelection" class="mini ghost" type="button">清空</button>
-          </div>
-          <strong id="selectedTaskCount">已选 0 条</strong>
-          <div class="actions">
-            <span class="helper-text">按飞书任务表行号选择；参考图入表用于人工生成，视频入库用于人工回填后转对象存储</span>
-          </div>
-        </div>
-        <div class="table-toolbar">
-          <span id="tasksRefreshState">等待读取飞书任务表</span>
-          <button id="refreshTasksTable" class="mini secondary" type="button">刷新表格</button>
-        </div>
-        <div id="tasks" class="table-wrap"></div>
-      </div>
-    </section>
-
-    <section id="doubaoPage" class="page-view">
-      <div class="panel doubao-panel">
-        <div class="panel-head">
-          <div>
-            <h2>豆包视频</h2>
-            <p>豆包视频制作：商品图分析 -> Seedance 视频 Prompt -> 本地Worker生成 -> 视频回填</p>
-          </div>
-          <div class="actions">
-            <button id="loadDoubao" class="secondary">读取</button>
-            <button id="connectLocalWorker" class="worker-button" type="button">连接本地Worker</button>
-            <button id="batchDoubaoStoreImages" class="secondary">批量图片入库</button>
-            <button id="batchDoubaoPrompts">批量生成提示词</button>
-          </div>
-        </div>
-        <div class="worker-card">
-          <div>
-            <strong>本地Worker负责 Dola 视频生成</strong>
-            <span id="workerStatus">云端只读取飞书记录、生成提示词和接收回填；点击连接会打开本机 Worker。</span>
-          </div>
-          <div class="worker-card-actions">
-            <button id="updateLocalWorker" class="mini ghost" type="button">更新本地Worker</button>
-            <button id="openLocalWorker" class="mini ghost" type="button">打开 127.0.0.1:5177</button>
-          </div>
-        </div>
-        <div class="metric-row compact">
-          <div><span id="metricDoubaoRows">0</span><small>记录</small></div>
-          <div><span id="metricDoubaoImages">0</span><small>可用原图</small></div>
-          <div><span id="metricDoubaoStored">0</span><small>已入库</small></div>
-          <div><span id="metricDoubaoPrompts">0</span><small>已生成Prompt</small></div>
-        </div>
-        <div class="batch-bar">
-          <label class="checkline">
-            <input id="selectAllDoubao" type="checkbox">
-            <span>全选当前豆包记录</span>
-          </label>
-          <div class="range-picker" aria-label="按行号选择豆包记录">
-            <span>从</span>
-            <input id="doubaoRangeStart" type="number" min="1" inputmode="numeric" placeholder="起始行">
-            <span>到</span>
-            <input id="doubaoRangeEnd" type="number" min="1" inputmode="numeric" placeholder="结束行">
-            <button id="selectDoubaoRange" class="mini secondary" type="button">选择范围</button>
-            <button id="clearDoubaoSelection" class="mini ghost" type="button">清空</button>
-          </div>
-          <strong id="selectedDoubaoCount">已选 0 条</strong>
-          <div class="actions">
-            <span class="helper-text">批量图片入库和生成提示词只处理已勾选记录</span>
-          </div>
-        </div>
-        <div class="table-toolbar">
-          <span id="doubaoRefreshState">等待读取豆包视频制作表</span>
-          <button id="refreshDoubaoTable" class="mini secondary" type="button">刷新表格</button>
-        </div>
-        <div id="doubaoItems" class="table-wrap"></div>
-      </div>
-    </section>
-
-    <section id="promptsPage" class="page-view">
-      <div class="panel prompt-panel">
-        <div class="panel-head">
-          <div>
-            <h2>Prompt配置</h2>
-            <p>爆款复刻Prompt配置：全局模板、版本和启停状态</p>
-          </div>
-          <div class="actions">
-            <button id="loadPrompts" class="secondary">读取</button>
-          </div>
-        </div>
-        <div class="prompt-note">
-          <strong>推荐调试方式</strong>
-          <span>先在配置表改模板版本并启用，再重跑单条素材；工具会把实际发送给模型的 Prompt 快照写回素材表。</span>
-        </div>
-        <div id="promptEditor" class="prompt-editor" hidden></div>
-        <div class="table-toolbar">
-          <span id="promptsRefreshState">等待读取 Prompt 配置表</span>
-          <button id="refreshPromptsTable" class="mini secondary" type="button">刷新表格</button>
-        </div>
-        <div id="prompts" class="table-wrap"></div>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head">
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">VR</div>
         <div>
-          <h2>运行记录</h2>
-          <p>后台任务与接口日志</p>
-        </div>
-        <div class="actions">
-          <button id="loadJobs" class="secondary">刷新任务</button>
-          <button id="loadLogs" class="secondary">刷新日志</button>
+          <strong>Video Retail</strong>
+          <span>短视频运营中心</span>
         </div>
       </div>
-      <div id="jobs" class="jobs"></div>
-      <pre id="logs" class="logs"></pre>
-    </section>
-  </main>
 
+      <nav class="page-tabs" aria-label="工作区">
+        <button id="pageRemix" class="tab active" type="button" data-page="remix">
+          <span class="nav-icon" aria-hidden="true">复</span>
+          <span><strong>视频复刻</strong><small>素材与视频任务</small></span>
+        </button>
+        <button id="pageDoubao" class="tab" type="button" data-page="doubao">
+          <span class="nav-icon" aria-hidden="true">豆</span>
+          <span><strong>豆包视频</strong><small>多国家提示词与派单</small></span>
+        </button>
+        <button id="pagePrompts" class="tab" type="button" data-page="prompts">
+          <span class="nav-icon" aria-hidden="true">P</span>
+          <span><strong>Prompt配置</strong><small>模板、地区与版本</small></span>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <span class="live-dot" aria-hidden="true"></span>
+        <div><strong>Production</strong><small>飞书数据源已连接</small></div>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">OPERATIONS CONSOLE</p>
+          <h1>短视频带货全链路自动化工作后台</h1>
+          <p>跨市场内容生产、任务协同与交付管理</p>
+        </div>
+        <div class="auth">
+          <label for="adminToken">管理令牌</label>
+          <input id="adminToken" type="password" autocomplete="off" placeholder="Admin Token（如已配置）">
+          <button id="saveToken" type="button">保存</button>
+        </div>
+      </header>
+
+      <main>
+        <section class="status-strip">
+          <div>
+            <span class="eyebrow">系统连接</span>
+            <strong id="configLine">正在检查配置…</strong>
+          </div>
+          <button id="refreshConfig" class="secondary mini" type="button">重新检查</button>
+        </section>
+
+        <div id="remixSubnav" class="section-switcher" aria-label="视频复刻视图">
+          <button id="pageMaterials" class="active" type="button">素材流水线</button>
+          <button id="pageVideos" type="button">视频任务</button>
+        </div>
+
+        <section id="materialsPage" class="page-view active">
+          <div class="panel source-panel">
+            <div class="panel-head">
+              <div>
+                <span class="section-kicker">VIDEO REMIX</span>
+                <h2>素材流水线</h2>
+                <p>从爆款拆解、商品主图到组图与复刻任务，一处完成素材准备。</p>
+              </div>
+              <div class="actions">
+                <button id="loadMaterials" class="secondary" type="button">读取素材</button>
+              </div>
+            </div>
+            <div class="metric-row">
+              <div><small>素材总数</small><span id="metricMaterials">0</span></div>
+              <div><small>主图已入库</small><span id="metricMainImages">0</span></div>
+              <div><small>Prompt就绪</small><span id="metricScripts">0</span></div>
+              <div><small>组图就绪</small><span id="metricImages">0</span></div>
+              <div><small>视频任务</small><span id="metricTasks">0</span></div>
+            </div>
+            <div class="batch-bar">
+              <label class="checkline">
+                <input id="selectAllMaterials" type="checkbox">
+                <span>全选当前素材</span>
+              </label>
+              <div class="range-picker" aria-label="按行号选择素材">
+                <span>行号</span>
+                <input id="rangeStart" type="number" min="1" inputmode="numeric" aria-label="素材起始行" placeholder="起始">
+                <span>—</span>
+                <input id="rangeEnd" type="number" min="1" inputmode="numeric" aria-label="素材结束行" placeholder="结束">
+                <button id="selectRange" class="mini secondary" type="button">选择</button>
+                <button id="clearMaterialSelection" class="mini ghost" type="button">清空</button>
+              </div>
+              <strong id="selectedMaterialCount">已选 0 条</strong>
+              <div class="actions">
+                <button id="batchAnalyze" class="secondary" type="button">生成Prompt</button>
+                <button id="batchStoreImage" class="secondary" type="button">主图入库</button>
+                <button id="batchGenerateImages" class="secondary" type="button">生成组图</button>
+                <button id="batchCreateTasks" class="primary" type="button">创建任务</button>
+              </div>
+            </div>
+            <div class="table-toolbar">
+              <span id="materialsRefreshState">等待读取飞书素材表</span>
+              <button id="refreshMaterialsTable" class="mini secondary" type="button">刷新表格</button>
+            </div>
+            <div id="materials" class="table-wrap"></div>
+          </div>
+        </section>
+
+        <section id="videosPage" class="page-view">
+          <div class="panel task-panel">
+            <div class="panel-head">
+              <div>
+                <span class="section-kicker">VIDEO REMIX</span>
+                <h2>视频任务</h2>
+                <p>管理复刻视频生成、人工回填、对象存储与发布同步。</p>
+              </div>
+              <div class="actions">
+                <button id="loadTasks" class="secondary" type="button">读取任务</button>
+                <button id="batchSyncReferenceImages" class="secondary" type="button">参考图入表</button>
+                <button id="batchStoreManualVideos" class="secondary" type="button">视频入库</button>
+                <button id="syncPublish" class="secondary" type="button">同步发布表</button>
+                <button id="batchVideos" type="button">生成视频</button>
+              </div>
+            </div>
+            <div id="selectedMaterial" class="selected-box">未选择素材</div>
+            <div class="batch-bar task-batch-bar">
+              <label class="checkline">
+                <input id="selectAllTasks" type="checkbox">
+                <span>全选当前任务</span>
+              </label>
+              <div class="range-picker" aria-label="按行号选择视频任务">
+                <span>行号</span>
+                <input id="taskRangeStart" type="number" min="1" inputmode="numeric" aria-label="任务起始行" placeholder="起始">
+                <span>—</span>
+                <input id="taskRangeEnd" type="number" min="1" inputmode="numeric" aria-label="任务结束行" placeholder="结束">
+                <button id="selectTaskRange" class="mini secondary" type="button">选择</button>
+                <button id="clearTaskSelection" class="mini ghost" type="button">清空</button>
+              </div>
+              <strong id="selectedTaskCount">已选 0 条</strong>
+              <span class="helper-text">仅处理当前勾选的任务</span>
+            </div>
+            <div class="table-toolbar">
+              <span id="tasksRefreshState">等待读取飞书任务表</span>
+              <button id="refreshTasksTable" class="mini secondary" type="button">刷新表格</button>
+            </div>
+            <div id="tasks" class="table-wrap"></div>
+          </div>
+        </section>
+
+        <section id="doubaoPage" class="page-view">
+          <div class="panel doubao-panel">
+            <div class="panel-head">
+              <div>
+                <span class="section-kicker">DOUBAO / SEEDANCE</span>
+                <h2>豆包视频</h2>
+                <p>按目标国家生成本地化 Seedance Prompt，并将选中任务安全同步到兼职表。</p>
+              </div>
+              <div class="actions">
+                <button id="loadDoubao" class="secondary" type="button">读取记录</button>
+                <button id="batchDoubaoStoreImages" class="secondary" type="button">图片入库</button>
+              </div>
+            </div>
+            <div class="metric-row compact">
+              <div><small>记录总数</small><span id="metricDoubaoRows">0</span></div>
+              <div><small>可用原图</small><span id="metricDoubaoImages">0</span></div>
+              <div><small>已入库</small><span id="metricDoubaoStored">0</span></div>
+              <div><small>Prompt就绪</small><span id="metricDoubaoPrompts">0</span></div>
+              <div><small>已同步兼职</small><span id="metricDoubaoSynced">0</span></div>
+            </div>
+            <div class="country-toolbar">
+              <label for="doubaoCountry">
+                <span>目标国家</span>
+                <select id="doubaoCountry" aria-describedby="countryHelp"></select>
+              </label>
+              <p id="countryHelp">国家会同时决定 Prompt 模板、口播语言和兼职任务归属。</p>
+              <div class="actions">
+                <button id="batchDoubaoPrompts" class="primary" type="button">批量生成提示词</button>
+                <button id="batchDoubaoSyncPartTime" class="sync-button" type="button">同步到兼职表</button>
+              </div>
+            </div>
+            <div class="batch-bar doubao-batch-bar">
+              <label class="checkline">
+                <input id="selectAllDoubao" type="checkbox">
+                <span>全选当前记录</span>
+              </label>
+              <div class="range-picker" aria-label="按行号选择豆包记录">
+                <span>行号</span>
+                <input id="doubaoRangeStart" type="number" min="1" inputmode="numeric" aria-label="豆包起始行" placeholder="起始">
+                <span>—</span>
+                <input id="doubaoRangeEnd" type="number" min="1" inputmode="numeric" aria-label="豆包结束行" placeholder="结束">
+                <button id="selectDoubaoRange" class="mini secondary" type="button">选择</button>
+                <button id="clearDoubaoSelection" class="mini ghost" type="button">清空</button>
+              </div>
+              <strong id="selectedDoubaoCount">已选 0 条</strong>
+              <span class="helper-text">批量操作只处理已勾选记录</span>
+            </div>
+            <div class="table-toolbar">
+              <span id="doubaoRefreshState">等待读取豆包视频制作表</span>
+              <button id="refreshDoubaoTable" class="mini secondary" type="button">刷新表格</button>
+            </div>
+            <div id="doubaoItems" class="table-wrap"></div>
+          </div>
+        </section>
+
+        <section id="promptsPage" class="page-view">
+          <div class="panel prompt-panel">
+            <div class="panel-head">
+              <div>
+                <span class="section-kicker">PROMPT OPERATIONS</span>
+                <h2>Prompt配置</h2>
+                <p>集中管理国家模板、稳定 Key、版本与启停状态，修改后直接写回飞书。</p>
+              </div>
+              <div class="actions prompt-filters">
+                <label for="promptCountryFilter">地区</label>
+                <select id="promptCountryFilter">
+                  <option value="">全部地区</option>
+                  <option value="马来">马来西亚</option>
+                  <option value="菲律宾">菲律宾</option>
+                  <option value="泰国">泰国</option>
+                  <option value="通用">通用</option>
+                  <option value="墨西哥">墨西哥</option>
+                </select>
+                <button id="loadPrompts" class="secondary" type="button">读取配置</button>
+              </div>
+            </div>
+            <div class="prompt-note">
+              <strong>模板选择优先级</strong>
+              <span>目标国家精确匹配 → 通用模板 → 系统兜底；保存后新任务立即生效，历史任务不会被自动覆盖。</span>
+            </div>
+            <div id="promptEditor" class="prompt-editor" hidden></div>
+            <div class="table-toolbar">
+              <span id="promptsRefreshState">等待读取 Prompt 配置表</span>
+              <button id="refreshPromptsTable" class="mini secondary" type="button">刷新表格</button>
+            </div>
+            <div id="prompts" class="table-wrap"></div>
+          </div>
+        </section>
+
+        <details class="panel runtime-panel">
+          <summary>
+            <span><strong>运行记录</strong><small>后台任务与接口日志</small></span>
+            <span class="summary-hint">展开查看</span>
+          </summary>
+          <div class="runtime-body">
+            <div class="actions">
+              <button id="loadJobs" class="secondary" type="button">刷新任务</button>
+              <button id="loadLogs" class="secondary" type="button">刷新日志</button>
+            </div>
+            <div id="jobs" class="jobs"></div>
+            <pre id="logs" class="logs"></pre>
+          </div>
+        </details>
+      </main>
+    </div>
+  </div>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
   <script src="/js/app.js"></script>
 </body>
 </html>
