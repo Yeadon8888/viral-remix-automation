@@ -181,30 +181,29 @@ class GeminiClient:
         image_bytes: bytes,
         image_mime: str,
     ) -> dict[str, str]:
-        prompt = f"""
-请先理解商品图片中的真实商品，再严格参考以下【豆包/Seedance 视频导演规则】，生成可直接回填到表格的内容。
-
-【豆包/Seedance 视频导演规则】
-{prompt_rules}
-
-【商品信息】
+        business_prompt = render_template(
+            prompt_rules,
+            {
+                "product_name": product_name or "未填写",
+                "product_link": product_link or "未填写",
+            },
+        )
+        technical_contract = f"""
+【本次商品输入】
 - 商品名称：{product_name or "未填写"}
 - 商品链接：{product_link or "未填写"}
-- 目标市场与口播语言：严格遵循上述导演规则
+- 商品图片：使用随本次请求附带的图片
 
-请只输出 JSON，不要 Markdown，不要代码块：
+【系统回填格式】
+为便于系统回填，请只输出 JSON，不要 Markdown，不要代码块：
 {{
-  "final_video_prompt": "[Video Prompt]\\n中文视频生成提示词，口播和字幕使用导演规则指定的语言",
-  "title": "使用导演规则指定语言的发布标题",
-  "caption": "使用导演规则指定语言的发布正文",
-  "tags": "#tag1 #tag2 #tag3"
+  "final_video_prompt": "严格按照手动模板生成的完整视频提示词",
+  "title": "发布标题；手动模板未要求时可为空字符串",
+  "caption": "发布正文；手动模板未要求时可为空字符串",
+  "tags": "发布标签；手动模板未要求时可为空字符串"
 }}
-
-要求：
-1. final_video_prompt 的目标市场、语言、时长、镜头和风格必须严格遵循上述导演规则，不得自行改成其他国家或语言。
-2. 必须严格锁定图片中的商品外观、颜色、材质、结构和比例，不把海报文字、箭头、边框、光效当作商品本体。
-3. title、caption、tags 必须基于商品图片分析生成，并使用导演规则指定的目标市场语言。
 """.strip()
+        prompt = "\n\n".join((business_prompt, technical_contract)).strip()
         content: list[dict[str, Any]] = [
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": _data_url(image_mime, image_bytes)}},

@@ -88,6 +88,45 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
         self.assertNotIn("墨西哥西班牙语", prompt)
         self.assertNotIn("必须用于 10 秒 4 镜头 TikTok 墨西哥带货视频", prompt)
 
+    def test_configured_template_controls_all_business_rules(self):
+        captured = {}
+        client = object.__new__(GeminiClient)
+        client.settings = SimpleNamespace(gemini_model="test-model")
+
+        def fake_post_chat(payload):
+            captured["payload"] = payload
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"final_video_prompt":"prompt","title":"title","caption":"caption","tags":"#tag"}'
+                        }
+                    }
+                ]
+            }
+
+        client._post_chat = fake_post_chat
+        template = "手动模板规则\n商品：{product_name}\n链接：{product_link}\n只使用这里写明的创作要求。"
+
+        client.generate_doubao_video_prompt(
+            product_name="Produk Malaysia",
+            product_link="https://example.com/product",
+            prompt_rules=template,
+            image_bytes=b"image",
+            image_mime="image/png",
+        )
+
+        prompt = captured["payload"]["messages"][0]["content"][0]["text"]
+        self.assertTrue(prompt.startswith("手动模板规则"))
+        self.assertIn("商品：Produk Malaysia", prompt)
+        self.assertIn("链接：https://example.com/product", prompt)
+        self.assertNotIn("请先理解商品图片中的真实商品", prompt)
+        self.assertNotIn("必须严格锁定图片中的商品外观", prompt)
+        self.assertIn('"final_video_prompt"', prompt)
+        self.assertIn('"title"', prompt)
+        self.assertIn('"caption"', prompt)
+        self.assertIn('"tags"', prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
