@@ -7,7 +7,7 @@
 - `api/jobs/runner.py`：任务运行器已从 `app.py` 拆出，路由层只负责触发任务和查询任务状态。
 - `api/services/viral_video_assets.py`：爆款视频直链缓存、TikHub 重新解析、ffmpeg 首帧截取、R2 首帧入库已从 `ViralRemixWorkflow` 拆出。
 - `public/css/style.css`：工作台视觉层整理为响应式 B2B 控制台风格，突出视频复刻、豆包视频、Prompt 配置三个业务区。
-- `api/countries.py`：MY / MY_EN / PH / TH / ID 的稳定国家语言配置码、飞书地区映射和语言信息集中管理；同一市场可安全拥有多种语言版本。
+- `api/countries.py`：MY / MY_EN / PH / TH / ID / MX 的稳定国家语言配置码、飞书地区映射和语言信息集中管理；同一市场可安全拥有多种语言版本。
 - `api/services/part_time_sync.py`：豆包记录到兼职表的字段映射、`来源记录 + 国家 + 语言` 幂等键和状态保护独立为领域服务；批量同步只预载一次目标表。
 - 前端信息架构收敛为「视频复刻 / 豆包视频 / Prompt配置」三类；素材与视频任务成为视频复刻内部视图，Dola 前台入口退役。
 

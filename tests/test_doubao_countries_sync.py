@@ -9,10 +9,10 @@ from api.workflow import ViralRemixWorkflow
 
 
 class CountryRegistryTests(unittest.TestCase):
-    def test_registry_exposes_initial_southeast_asia_markets(self):
+    def test_registry_exposes_supported_market_languages(self):
         countries = {item["code"]: item for item in list_countries()}
 
-        self.assertEqual(set(countries), {"MY", "MY_EN", "PH", "TH", "ID"})
+        self.assertEqual(set(countries), {"MY", "MY_EN", "PH", "TH", "ID", "MX"})
         self.assertEqual(countries["MY"]["prompt_region"], "马来")
         self.assertEqual(countries["MY"]["language_name"], "马来语")
         self.assertEqual(countries["MY_EN"]["prompt_region"], "马来-英语")
@@ -21,6 +21,10 @@ class CountryRegistryTests(unittest.TestCase):
         self.assertEqual(countries["TH"]["prompt_region"], "泰国")
         self.assertEqual(countries["ID"]["prompt_region"], "印度尼西亚")
         self.assertEqual(countries["ID"]["language_name"], "印尼语")
+        self.assertEqual(countries["MX"]["name"], "墨西哥")
+        self.assertEqual(countries["MX"]["prompt_region"], "墨西哥")
+        self.assertEqual(countries["MX"]["language_name"], "西班牙语")
+        self.assertEqual(countries["MX"]["language"], "Español de México（墨西哥西班牙语）")
 
     def test_registry_rejects_unknown_country_code(self):
         with self.assertRaisesRegex(ValueError, "不支持的国家"):
@@ -315,7 +319,7 @@ class CountryAwareApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             [item["code"] for item in response.get_json()["data"]],
-            ["MY", "MY_EN", "PH", "TH", "ID"],
+            ["MY", "MY_EN", "PH", "TH", "ID", "MX"],
         )
 
     def test_single_prompt_endpoint_passes_country_code_to_job(self):

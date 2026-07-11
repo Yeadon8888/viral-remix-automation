@@ -386,7 +386,6 @@ function promptRegionOptions() {
   const options = [
     { value: "", label: "全部地区" },
     { value: "通用", label: "通用" },
-    { value: "墨西哥", label: "墨西哥" },
   ];
   state.countries.forEach((country) => {
     if (!options.some((item) => item.value === country.prompt_region)) {

@@ -50,6 +50,13 @@ COUNTRIES = (
         language_name="印尼语",
         language="Bahasa Indonesia（印度尼西亚语）",
     ),
+    Country(
+        code="MX",
+        name="墨西哥",
+        prompt_region="墨西哥",
+        language_name="西班牙语",
+        language="Español de México（墨西哥西班牙语）",
+    ),
 )
 
 COUNTRY_BY_CODE = {country.code: country for country in COUNTRIES}
