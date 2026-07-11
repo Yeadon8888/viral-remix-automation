@@ -4,8 +4,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Lock
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, g, has_request_context, jsonify, request, send_from_directory
 from flask_cors import CORS
+from werkzeug.exceptions import ServiceUnavailable
 
 try:
     from dotenv import load_dotenv
@@ -16,16 +17,18 @@ except ModuleNotFoundError:
 
 from api.config import settings
 from api.countries import get_country, list_countries
+from api.auth import Operator, resolve_operator
 from api.feishu import field_value
 from api.image_gen import STYLE_LABELS
-from api.jobs import get_job, list_jobs, run_job
+from api.jobs import coordinated_resources, enqueue_job, get_job, job_health, list_jobs
 from api.logging_bus import recent_logs
-from api.workflow import MATERIAL_PROMPT_FIELD, ViralRemixWorkflow
+from api.persistence import get_persistence
+from api.workflow import MATERIAL_PROMPT_FIELD, PromptConflictError, ViralRemixWorkflow
 
 
 app = Flask(__name__, static_folder="public", static_url_path="")
 CORS(app)
-workflow = ViralRemixWorkflow(settings)
+workflow = ViralRemixWorkflow(settings, ledger=get_persistence(settings))
 cache_lock = Lock()
 list_cache = {}
 
@@ -52,15 +55,30 @@ def clear_list_cache() -> None:
         list_cache.clear()
 
 
-def run_workflow_job(name: str, fn, *args, **kwargs) -> str:
-    def runner(job_id=None):
-        clear_list_cache()
-        try:
-            return fn(*args, job_id=job_id, **kwargs)
-        finally:
-            clear_list_cache()
+def current_operator() -> Operator:
+    if has_request_context() and getattr(g, "operator", None):
+        return g.operator
+    return Operator("system", "admin")
 
-    return run_job(name, runner)
+
+def enqueue_workflow_action(name: str, action: str, payload: dict) -> str:
+    clear_list_cache()
+    try:
+        return enqueue_job(name, action, payload, operator=current_operator().id, settings=settings)
+    except Exception as exc:
+        raise ServiceUnavailable(str(exc)) from exc
+
+
+def audit_write(action: str, resource: str, status: str, detail: str = "") -> None:
+    try:
+        get_persistence(settings).audit(current_operator().id, action, resource, status, detail)
+    except Exception as exc:
+        raise ServiceUnavailable(f"审计服务不可用: {exc}") from exc
+
+
+@app.errorhandler(ServiceUnavailable)
+def service_unavailable(exc):
+    return jsonify({"success": False, "message": str(exc.description)}), 503
 
 
 def request_limit(default: int = 500, maximum: int = 1000) -> int:
@@ -113,11 +131,18 @@ def compact_material_rows(rows: list[dict]) -> list[dict]:
 
 
 def require_admin():
-    if not settings.admin_token:
+    admin_token = getattr(settings, "admin_token", "")
+    users_json = getattr(settings, "admin_users_json", "")
+    if not admin_token and not users_json:
+        g.operator = Operator("local-admin", "admin")
         return None
     token = request.headers.get("X-Admin-Token") or request.args.get("token")
-    if token != settings.admin_token:
+    operator = resolve_operator(token or "", legacy_admin_token=admin_token, users_json=users_json)
+    if not operator:
         return jsonify({"success": False, "message": "Unauthorized"}), 401
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and operator.role == "viewer":
+        return jsonify({"success": False, "message": "Forbidden"}), 403
+    g.operator = operator
     return None
 
 
@@ -135,9 +160,29 @@ def index():
     return send_from_directory("public", "index.html")
 
 
+@app.route("/healthz")
+def healthz():
+    try:
+        coordination = job_health()
+        persistence = get_persistence(settings).health()
+    except Exception as exc:
+        return jsonify({"status": "unavailable", "message": str(exc)}), 503
+    return jsonify({"status": "ok", "coordination": coordination, "persistence": persistence})
+
+
 @app.route("/api/health")
 def health():
-    return jsonify({"success": True, "missing": settings.missing_required()})
+    try:
+        coordination = job_health()
+        persistence = get_persistence(settings).health()
+    except Exception as exc:
+        return jsonify({"success": False, "message": str(exc)}), 503
+    return jsonify({
+        "success": True,
+        "missing": settings.missing_required(),
+        "coordination": coordination,
+        "persistence": persistence,
+    })
 
 
 @app.route("/api/config")
@@ -265,9 +310,24 @@ def list_prompts():
 
 @app.route("/api/prompts/<record_id>", methods=["PATCH"])
 def update_prompt(record_id):
-    body = request.get_json(silent=True) or {}
+    body = dict(request.get_json(silent=True) or {})
+    revision = str(body.pop("revision", "") or "").strip()
+    if not revision:
+        return jsonify({"success": False, "message": "Prompt 版本缺失，请刷新后重新编辑"}), 428
     workflow = get_workflow()
-    data = workflow.update_prompt_config(record_id, body)
+    audit_write("prompt.update", f"prompt:{record_id}", "started")
+    try:
+        with coordinated_resources([f"prompt:{record_id}"], settings=settings):
+            data = workflow.update_prompt_config(record_id, body, expected_revision=revision)
+    except PromptConflictError as exc:
+        audit_write("prompt.update", f"prompt:{record_id}", "conflict", str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 409
+    except TimeoutError as exc:
+        raise ServiceUnavailable(str(exc)) from exc
+    except Exception as exc:
+        audit_write("prompt.update", f"prompt:{record_id}", "failed", str(exc))
+        raise
+    audit_write("prompt.update", f"prompt:{record_id}", "done")
     clear_list_cache()
     return jsonify({"success": True, "data": data})
 
@@ -279,7 +339,16 @@ def update_material_templates(record_id):
     if not isinstance(styles, list):
         return jsonify({"success": False, "message": "styles must be an array"}), 400
     workflow = get_workflow()
-    data = workflow.update_material_templates(record_id, styles)
+    audit_write("material.update_templates", f"material:{record_id}", "started")
+    try:
+        with coordinated_resources([f"material:{record_id}"], settings=settings):
+            data = workflow.update_material_templates(record_id, styles)
+    except TimeoutError as exc:
+        raise ServiceUnavailable(str(exc)) from exc
+    except Exception as exc:
+        audit_write("material.update_templates", f"material:{record_id}", "failed", str(exc))
+        raise
+    audit_write("material.update_templates", f"material:{record_id}", "done")
     clear_list_cache()
     return jsonify({"success": True, "data": data})
 
@@ -333,12 +402,10 @@ def generate_doubao_prompt(record_id):
         country = get_country(body.get("country_code"))
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
-    workflow = get_workflow()
-    job_id = run_workflow_job(
+    job_id = enqueue_workflow_action(
         f"doubao-generate-prompt:{record_id}:{country.code}",
-        workflow.generate_doubao_prompt,
-        record_id,
-        country.code,
+        "doubao.generate_prompt",
+        {"record_id": record_id, "country_code": country.code},
     )
     return jsonify({"success": True, "job_id": job_id})
 
@@ -350,20 +417,21 @@ def sync_doubao_part_time(record_id):
         country = get_country(body.get("country_code"))
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
-    workflow = get_workflow()
-    job_id = run_workflow_job(
+    job_id = enqueue_workflow_action(
         f"doubao-sync-part-time:{record_id}:{country.code}",
-        workflow.sync_doubao_to_part_time,
-        record_id,
-        country.code,
+        "doubao.sync_part_time",
+        {"record_id": record_id, "country_code": country.code},
     )
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/doubao-items/<record_id>/store-image", methods=["POST"])
 def store_doubao_image(record_id):
-    workflow = get_workflow()
-    job_id = run_workflow_job(f"doubao-store-image:{record_id}", workflow.store_doubao_image, record_id)
+    job_id = enqueue_workflow_action(
+        f"doubao-store-image:{record_id}",
+        "doubao.store_image",
+        {"record_id": record_id},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -391,11 +459,20 @@ def get_dola_local_task(record_id):
 def update_dola_local_status(record_id):
     body = request.get_json(silent=True) or {}
     workflow = get_workflow()
-    data = workflow.update_dola_local_status(
-        record_id,
-        str(body.get("status") or ""),
-        str(body.get("error") or ""),
-    )
+    audit_write("dola.update_status", f"task:{record_id}", "started")
+    try:
+        with coordinated_resources([f"task:{record_id}"], settings=settings):
+            data = workflow.update_dola_local_status(
+                record_id,
+                str(body.get("status") or ""),
+                str(body.get("error") or ""),
+            )
+    except TimeoutError as exc:
+        raise ServiceUnavailable(str(exc)) from exc
+    except Exception as exc:
+        audit_write("dola.update_status", f"task:{record_id}", "failed", str(exc))
+        raise
+    audit_write("dola.update_status", f"task:{record_id}", "done")
     clear_list_cache()
     return jsonify({"success": True, "data": data})
 
@@ -406,15 +483,24 @@ def upload_dola_local_video(record_id):
     if not file:
         return jsonify({"success": False, "message": "file is required"}), 400
     workflow = get_workflow()
+    audit_write("dola.upload_video", f"task:{record_id}", "started")
     with TemporaryDirectory() as tmpdir:
         filename = file.filename or f"{record_id}.mp4"
         target = Path(tmpdir) / filename
         file.save(target)
-        data = workflow.store_dola_local_video_file(
-            record_id,
-            target,
-            file.mimetype or "video/mp4",
-        )
+        try:
+            with coordinated_resources([f"task:{record_id}"], settings=settings):
+                data = workflow.store_dola_local_video_file(
+                    record_id,
+                    target,
+                    file.mimetype or "video/mp4",
+                )
+        except TimeoutError as exc:
+            raise ServiceUnavailable(str(exc)) from exc
+        except Exception as exc:
+            audit_write("dola.upload_video", f"task:{record_id}", "failed", str(exc))
+            raise
+    audit_write("dola.upload_video", f"task:{record_id}", "done")
     clear_list_cache()
     return jsonify({"success": True, "data": data})
 
@@ -424,28 +510,11 @@ def batch_store_doubao_images():
     body = request.get_json(silent=True) or {}
     record_ids = body.get("record_ids")
     limit = int(body.get("limit", 50))
-    workflow = get_workflow()
-
-    def runner(job_id=None):
-        ids = record_ids
-        if not ids:
-            rows = workflow.list_doubao_items(limit=200)
-            ids = [
-                row["record_id"]
-                for row in rows
-                if row.get("record_id")
-                and (row.get("商品图数量") or str(row.get("商品图链接") or "").startswith("http"))
-                and not str(row.get("商品图存储链接") or "").startswith("http")
-            ][:limit]
-        results = []
-        for rid in ids[:limit]:
-            try:
-                results.append(workflow.store_doubao_image(rid, job_id=job_id))
-            except Exception as exc:
-                results.append({"record_id": rid, "error": str(exc)})
-        return {"processed": len(results), "results": results}
-
-    job_id = run_workflow_job("doubao-batch-store-images", runner)
+    job_id = enqueue_workflow_action(
+        "doubao-batch-store-images",
+        "doubao.batch_store_images",
+        {"record_ids": record_ids or [], "limit": limit},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -467,19 +536,11 @@ def batch_generate_doubao_prompts():
         record_ids, country = validated_doubao_batch_request()
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
-    workflow = get_workflow()
-
-    def runner(job_id=None):
-        results = []
-        for record_id in record_ids:
-            try:
-                results.append(workflow.generate_doubao_prompt(record_id, country.code, job_id=job_id))
-            except Exception as exc:
-                results.append({"record_id": record_id, "error": str(exc)})
-        failed = len([item for item in results if item.get("error")])
-        return {"processed": len(results), "failed": failed, "results": results}
-
-    job_id = run_workflow_job(f"doubao-batch-prompts:{country.code}", runner)
+    job_id = enqueue_workflow_action(
+        f"doubao-batch-prompts:{country.code}",
+        "doubao.batch_generate_prompts",
+        {"record_ids": record_ids, "country_code": country.code},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -489,70 +550,71 @@ def batch_sync_doubao_part_time():
         record_ids, country = validated_doubao_batch_request()
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
-    workflow = get_workflow()
-
-    def runner(job_id=None):
-        results = []
-        target_records = workflow.feishu.list_records(settings.part_time_table_id)
-        for record_id in record_ids:
-            try:
-                results.append(workflow.sync_doubao_to_part_time(
-                    record_id,
-                    country.code,
-                    job_id=job_id,
-                    target_records=target_records,
-                ))
-            except Exception as exc:
-                results.append({"record_id": record_id, "status": "failed", "error": str(exc)})
-        summary = {
-            name: len([item for item in results if item.get("status") == name])
-            for name in ("created", "updated", "conflict", "failed")
-        }
-        return {"processed": len(results), **summary, "results": results}
-
-    job_id = run_workflow_job(f"doubao-batch-sync-part-time:{country.code}", runner)
+    job_id = enqueue_workflow_action(
+        f"doubao-batch-sync-part-time:{country.code}",
+        "doubao.batch_sync_part_time",
+        {"record_ids": record_ids, "country_code": country.code},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/prepare", methods=["POST"])
 def prepare_material(record_id):
-    workflow = get_workflow()
-    job_id = run_workflow_job(f"prepare-material:{record_id}", workflow.prepare_material, record_id)
+    job_id = enqueue_workflow_action(
+        f"prepare-material:{record_id}",
+        "material.prepare",
+        {"record_id": record_id},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/analyze-video", methods=["POST"])
 def analyze_material_video(record_id):
-    workflow = get_workflow()
-    job_id = run_workflow_job(f"analyze-video:{record_id}", workflow.analyze_viral_video, record_id)
+    job_id = enqueue_workflow_action(
+        f"analyze-video:{record_id}",
+        "material.analyze_video",
+        {"record_id": record_id},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/store-image", methods=["POST"])
 def store_material_image(record_id):
-    workflow = get_workflow()
-    job_id = run_workflow_job(f"store-image:{record_id}", workflow.store_product_image, record_id)
+    job_id = enqueue_workflow_action(
+        f"store-image:{record_id}",
+        "material.store_image",
+        {"record_id": record_id},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/generate-images", methods=["POST"])
 def generate_material_images(record_id):
-    workflow = get_workflow()
-    job_id = run_workflow_job(f"generate-images:{record_id}", workflow.generate_product_images, record_id)
+    job_id = enqueue_workflow_action(
+        f"generate-images:{record_id}",
+        "material.generate_images",
+        {"record_id": record_id},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/create-tasks", methods=["POST"])
 def create_material_tasks(record_id):
-    workflow = get_workflow()
-    job_id = run_workflow_job(f"create-tasks:{record_id}", workflow.create_video_tasks, record_id)
+    job_id = enqueue_workflow_action(
+        f"create-tasks:{record_id}",
+        "material.create_tasks",
+        {"record_id": record_id},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/materials/<record_id>/retry-failed-step", methods=["POST"])
 def retry_failed_material_step(record_id):
-    workflow = get_workflow()
-    job_id = run_workflow_job(f"retry-failed-step:{record_id}", workflow.retry_failed_material_step, record_id)
+    job_id = enqueue_workflow_action(
+        f"retry-failed-step:{record_id}",
+        "material.retry_failed_step",
+        {"record_id": record_id},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -562,30 +624,16 @@ def batch_material_step():
     record_ids = body.get("record_ids") or []
     step = str(body.get("step") or "").strip()
     limit = int(body.get("limit", 50))
-    workflow = get_workflow()
-    handlers = {
-        "analyze-video": workflow.analyze_viral_video,
-        "store-image": workflow.store_product_image,
-        "generate-images": workflow.generate_product_images,
-        "create-tasks": workflow.create_video_tasks,
-    }
-    handler = handlers.get(step)
-    if not handler:
+    if step not in {"analyze-video", "store-image", "generate-images", "create-tasks"}:
         return jsonify({"success": False, "message": "unsupported material step"}), 400
     if not isinstance(record_ids, list) or not record_ids:
         return jsonify({"success": False, "message": "record_ids is required"}), 400
 
-    def runner(job_id=None):
-        results = []
-        for rid in [str(item) for item in record_ids if item][:limit]:
-            try:
-                results.append({"record_id": rid, "result": handler(rid, job_id=job_id)})
-            except Exception as exc:
-                results.append({"record_id": rid, "error": str(exc)})
-        failed = len([item for item in results if item.get("error")])
-        return {"processed": len(results), "failed": failed, "results": results}
-
-    job_id = run_workflow_job(f"batch-{step}", runner)
+    job_id = enqueue_workflow_action(
+        f"batch-{step}",
+        "material.batch_step",
+        {"record_ids": record_ids[:limit], "step": step, "limit": limit},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -594,47 +642,41 @@ def batch_prepare():
     body = request.get_json(silent=True) or {}
     record_ids = body.get("record_ids")
     limit = int(body.get("limit", 5))
-    workflow = get_workflow()
-
-    def runner(job_id=None):
-        ids = record_ids
-        if not ids:
-            rows = workflow.list_materials(limit=500)
-            ids = [
-                row["record_id"]
-                for row in rows
-                if row.get("record_id") and row.get("爆款视频链接") and row.get("自动化状态") != "已创建任务"
-            ][:limit]
-        results = []
-        for rid in ids[:limit]:
-            try:
-                results.append(workflow.prepare_material(rid, job_id=job_id))
-            except Exception as exc:
-                results.append({"record_id": rid, "error": str(exc)})
-        return {"processed": len(results), "results": results}
-
-    job_id = run_workflow_job("batch-prepare-materials", runner)
+    job_id = enqueue_workflow_action(
+        "batch-prepare-materials",
+        "material.batch_prepare",
+        {"record_ids": record_ids or [], "limit": limit},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/tasks/<record_id>/generate-video", methods=["POST"])
 def generate_task_video(record_id):
-    workflow = get_workflow()
-    job_id = run_workflow_job(f"generate-video:{record_id}", workflow.generate_task_video, record_id)
+    job_id = enqueue_workflow_action(
+        f"generate-video:{record_id}",
+        "task.generate_video",
+        {"record_id": record_id},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/tasks/<record_id>/sync-reference-image", methods=["POST"])
 def sync_task_reference_image(record_id):
-    workflow = get_workflow()
-    job_id = run_workflow_job(f"sync-reference-image:{record_id}", workflow.sync_task_reference_image, record_id)
+    job_id = enqueue_workflow_action(
+        f"sync-reference-image:{record_id}",
+        "task.sync_reference_image",
+        {"record_id": record_id},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
 @app.route("/api/tasks/<record_id>/store-manual-video", methods=["POST"])
 def store_manual_task_video(record_id):
-    workflow = get_workflow()
-    job_id = run_workflow_job(f"store-manual-video:{record_id}", workflow.store_manual_task_video, record_id)
+    job_id = enqueue_workflow_action(
+        f"store-manual-video:{record_id}",
+        "task.store_manual_video",
+        {"record_id": record_id},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -643,26 +685,11 @@ def batch_generate_video():
     body = request.get_json(silent=True) or {}
     record_ids = body.get("record_ids")
     limit = int(body.get("limit", 3))
-    workflow = get_workflow()
-
-    def runner(job_id=None):
-        ids = record_ids
-        if not ids:
-            rows = workflow.list_tasks(limit=200)
-            ids = [
-                row["record_id"]
-                for row in rows
-                if row.get("record_id") and row.get("生成状态") in ("待生成视频", "内容已生成", "")
-            ][:limit]
-        results = []
-        for rid in ids[:limit]:
-            try:
-                results.append(workflow.generate_task_video(rid, job_id=job_id))
-            except Exception as exc:
-                results.append({"record_id": rid, "error": str(exc)})
-        return {"processed": len(results), "results": results}
-
-    job_id = run_workflow_job("batch-generate-videos", runner)
+    job_id = enqueue_workflow_action(
+        "batch-generate-videos",
+        "task.batch_generate_video",
+        {"record_ids": record_ids or [], "limit": limit},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -671,29 +698,11 @@ def batch_sync_reference_images():
     body = request.get_json(silent=True) or {}
     record_ids = body.get("record_ids")
     limit = int(body.get("limit", 100))
-    workflow = get_workflow()
-
-    def runner(job_id=None):
-        ids = record_ids
-        if not ids:
-            rows = workflow.list_tasks(limit=max(limit, 200))
-            ids = [
-                row["record_id"]
-                for row in rows
-                if row.get("record_id")
-                and str(row.get("首帧/参考图链接") or "").startswith("http")
-                and not int(row.get("首帧附件数") or 0)
-            ][:limit]
-        results = []
-        for rid in ids[:limit]:
-            try:
-                results.append(workflow.sync_task_reference_image(rid, job_id=job_id))
-            except Exception as exc:
-                results.append({"record_id": rid, "error": str(exc)})
-        failed = len([item for item in results if item.get("error")])
-        return {"processed": len(results), "failed": failed, "results": results}
-
-    job_id = run_workflow_job("batch-sync-reference-images", runner)
+    job_id = enqueue_workflow_action(
+        "batch-sync-reference-images",
+        "task.batch_sync_reference_images",
+        {"record_ids": record_ids or [], "limit": limit},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -702,31 +711,11 @@ def batch_store_manual_videos():
     body = request.get_json(silent=True) or {}
     record_ids = body.get("record_ids")
     limit = int(body.get("limit", 100))
-    workflow = get_workflow()
-
-    def runner(job_id=None):
-        ids = record_ids
-        if not ids:
-            rows = workflow.list_tasks(limit=max(limit, 200))
-            ids = [
-                row["record_id"]
-                for row in rows
-                if row.get("record_id")
-                and (
-                    int(row.get("生成视频附件数") or 0)
-                    or str(row.get("生成视频链接") or "").startswith("http")
-                )
-            ][:limit]
-        results = []
-        for rid in ids[:limit]:
-            try:
-                results.append(workflow.store_manual_task_video(rid, job_id=job_id))
-            except Exception as exc:
-                results.append({"record_id": rid, "error": str(exc)})
-        failed = len([item for item in results if item.get("error")])
-        return {"processed": len(results), "failed": failed, "results": results}
-
-    job_id = run_workflow_job("batch-store-manual-videos", runner)
+    job_id = enqueue_workflow_action(
+        "batch-store-manual-videos",
+        "task.batch_store_manual_videos",
+        {"record_ids": record_ids or [], "limit": limit},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 
@@ -735,8 +724,11 @@ def sync_publish_tasks():
     body = request.get_json(silent=True) or {}
     record_ids = body.get("record_ids")
     limit = int(body.get("limit", 100))
-    workflow = get_workflow()
-    job_id = run_workflow_job("sync-publish-tasks", workflow.sync_publish_items, record_ids, limit)
+    job_id = enqueue_workflow_action(
+        "sync-publish-tasks",
+        "publish.sync",
+        {"record_ids": record_ids or [], "limit": limit},
+    )
     return jsonify({"success": True, "job_id": job_id})
 
 

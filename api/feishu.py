@@ -50,21 +50,31 @@ class FeishuClient:
         }
 
     def _request(self, method: str, path: str, **kwargs) -> dict[str, Any]:
+        method = method.upper()
         headers = kwargs.pop("headers", self.headers())
-        resp = self._session.request(
-            method,
-            f"{self.base_url}{path}",
-            headers=headers,
-            timeout=kwargs.pop("timeout", 60),
-            **kwargs,
-        )
-        try:
-            data = resp.json()
-        except ValueError:
-            data = {"code": resp.status_code, "msg": resp.text[:500]}
-        if resp.status_code >= 400 or data.get("code", 0) != 0:
-            raise FeishuError(data.get("msg") or str(data)[:500])
-        return data.get("data", data)
+        timeout = kwargs.pop("timeout", 60)
+        attempts = 3 if method in {"GET", "PUT", "DELETE"} else 1
+        last_data: dict[str, Any] = {}
+        for attempt in range(attempts):
+            resp = self._session.request(
+                method,
+                f"{self.base_url}{path}",
+                headers=headers,
+                timeout=timeout,
+                **kwargs,
+            )
+            try:
+                data = resp.json()
+            except ValueError:
+                data = {"code": resp.status_code, "msg": resp.text[:500]}
+            if resp.status_code < 400 and data.get("code", 0) == 0:
+                return data.get("data", data)
+            last_data = data
+            transient = resp.status_code == 429 or resp.status_code >= 500 or data.get("code") == 1254291
+            if not transient or attempt + 1 >= attempts:
+                break
+            time.sleep(0.25 * (2 ** attempt))
+        raise FeishuError(last_data.get("msg") or str(last_data)[:500])
 
     def list_records_page(self, table_id: str, page_size: int = 100, page_token: str = "") -> dict[str, Any]:
         params: dict[str, Any] = {"page_size": page_size}

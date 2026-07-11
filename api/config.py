@@ -16,9 +16,23 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    raw = env(name)
+    if not raw:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     admin_token: str = env("ADMIN_TOKEN")
+    admin_users_json: str = env("ADMIN_USERS_JSON")
+
+    redis_url: str = env("REDIS_URL")
+    database_url: str = env("DATABASE_URL")
+    coordination_required: bool = env_bool("COORDINATION_REQUIRED", False)
+    job_worker_concurrency: int = env_int("JOB_WORKER_CONCURRENCY", 2)
+    job_lock_ttl_seconds: int = env_int("JOB_LOCK_TTL_SECONDS", 3600)
 
     feishu_app_id: str = env("FEISHU_APP_ID")
     feishu_app_secret: str = env("FEISHU_APP_SECRET")

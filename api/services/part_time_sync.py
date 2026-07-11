@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 from ..config import Settings
 from ..countries import Country, get_country
@@ -18,9 +19,10 @@ def url_cell(url: str) -> dict[str, str]:
 
 
 class PartTimeSyncService:
-    def __init__(self, settings: Settings, feishu: FeishuClient):
+    def __init__(self, settings: Settings, feishu: FeishuClient, ledger=None):
         self.settings = settings
         self.feishu = feishu
+        self.ledger = ledger
 
     def _find_target(
         self,
@@ -49,6 +51,7 @@ class PartTimeSyncService:
         source_record_id: str,
         country_code: str = "MY",
         target_records: list[dict[str, Any]] | None = None,
+        owner_id: str = "",
     ) -> dict[str, Any]:
         country = get_country(country_code)
         source = self.feishu.get_record(self.settings.doubao_table_id, source_record_id)
@@ -73,10 +76,27 @@ class PartTimeSyncService:
         if prompt_language and prompt_language != country.language_name:
             raise RuntimeError(f"当前提示词语言为{prompt_language}，请先按{country.language_name}重新生成提示词")
 
+        ledger_scope = f"part-time:{source_record_id}:{country.code}:{country.language_name}"
+        ledger_owner = owner_id or f"sync-{uuid4().hex}"
+        reservation = self.ledger.reserve(ledger_scope, ledger_owner) if self.ledger else None
+        if reservation and not reservation.acquired and not reservation.target_record_id:
+            raise RuntimeError("该兼职同步任务正在处理中，请稍后刷新")
+
         records = target_records
         if records is None:
             records = self.feishu.list_records(self.settings.part_time_table_id)
-        target = self._find_target(source_record_id, country, records)
+        target = None
+        if reservation and reservation.target_record_id:
+            target = next(
+                (record for record in records if str(record.get("record_id") or "") == reservation.target_record_id),
+                None,
+            )
+            if target is None:
+                target = self.feishu.get_record(self.settings.part_time_table_id, reservation.target_record_id)
+        if target is None:
+            target = self._find_target(source_record_id, country, records)
+        if target and reservation and reservation.acquired:
+            self.ledger.complete(ledger_scope, ledger_owner, str(target.get("record_id") or ""))
         target_fields = {
             "文本": f"豆包视频｜{country.name}｜{country.language_name}｜{product_name}",
             "图片地址": url_cell(image_url),
@@ -87,37 +107,44 @@ class PartTimeSyncService:
             "目标国家": country.name,
             "目标语言": country.language_name,
         }
-        if target:
-            target_record_id = str(target.get("record_id") or "")
-            target_status = str(field_value(target.get("fields", {}), "任务状态", "") or "").strip()
-            if target_status in LOCKED_TARGET_STATUSES:
-                message = f"目标兼职任务状态为{target_status}，已保护现有任务，未覆盖"
-                self._track_source(source_record_id, {
-                    "目标国家": country.name,
-                    "目标语言": country.language_name,
-                    "兼职同步记录ID": target_record_id,
-                    "兼职同步状态": "同步冲突",
-                    "兼职同步时间": now_ms(),
-                    "兼职同步错误": message,
-                })
-                return {
-                    "record_id": source_record_id,
-                    "target_record_id": target_record_id,
-                    "country_code": country.code,
-                    "status": "conflict",
-                    "message": message,
-                }
-            self.feishu.update_record(self.settings.part_time_table_id, target_record_id, target_fields)
-            target["fields"] = target_fields
-            result_status = "updated"
-        else:
-            created = self.feishu.create_record(self.settings.part_time_table_id, target_fields)
-            target_record_id = str(created.get("record_id") or "")
-            if not target_record_id:
-                raise RuntimeError("兼职表创建成功但未返回记录 ID")
-            if target_records is not None:
-                target_records.append({"record_id": target_record_id, "fields": target_fields})
-            result_status = "created"
+        try:
+            if target:
+                target_record_id = str(target.get("record_id") or "")
+                target_status = str(field_value(target.get("fields", {}), "任务状态", "") or "").strip()
+                if target_status in LOCKED_TARGET_STATUSES:
+                    message = f"目标兼职任务状态为{target_status}，已保护现有任务，未覆盖"
+                    self._track_source(source_record_id, {
+                        "目标国家": country.name,
+                        "目标语言": country.language_name,
+                        "兼职同步记录ID": target_record_id,
+                        "兼职同步状态": "同步冲突",
+                        "兼职同步时间": now_ms(),
+                        "兼职同步错误": message,
+                    })
+                    return {
+                        "record_id": source_record_id,
+                        "target_record_id": target_record_id,
+                        "country_code": country.code,
+                        "status": "conflict",
+                        "message": message,
+                    }
+                self.feishu.update_record(self.settings.part_time_table_id, target_record_id, target_fields)
+                target["fields"] = target_fields
+                result_status = "updated"
+            else:
+                created = self.feishu.create_record(self.settings.part_time_table_id, target_fields)
+                target_record_id = str(created.get("record_id") or "")
+                if not target_record_id:
+                    raise RuntimeError("兼职表创建成功但未返回记录 ID")
+                if target_records is not None:
+                    target_records.append({"record_id": target_record_id, "fields": target_fields})
+                result_status = "created"
+                if reservation and reservation.acquired:
+                    self.ledger.complete(ledger_scope, ledger_owner, target_record_id)
+        except Exception:
+            if reservation and reservation.acquired:
+                self.ledger.release(ledger_scope, ledger_owner)
+            raise
 
         self._track_source(source_record_id, {
             "目标国家": country.name,

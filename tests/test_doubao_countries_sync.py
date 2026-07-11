@@ -325,19 +325,14 @@ class CountryAwareApiTests(unittest.TestCase):
     def test_single_prompt_endpoint_passes_country_code_to_job(self):
         captured = {}
 
-        class FakeWorkflow:
-            def generate_doubao_prompt(self, record_id, country_code="MY", job_id=None):
-                return None
-
-        def fake_job(name, fn, *args, **kwargs):
-            captured.update({"name": name, "fn": fn, "args": args, "kwargs": kwargs})
+        def fake_job(name, action, payload):
+            captured.update({"name": name, "action": action, "payload": payload})
             return "job-1"
 
         settings = SimpleNamespace(admin_token="")
         with (
-            patch.object(app_module, "workflow", FakeWorkflow()),
             patch.object(app_module, "settings", settings),
-            patch.object(app_module, "run_workflow_job", fake_job),
+            patch.object(app_module, "enqueue_workflow_action", fake_job),
         ):
             response = self.client.post(
                 "/api/doubao-items/source-1/generate-prompt",
@@ -345,7 +340,8 @@ class CountryAwareApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(captured["args"], ("source-1", "PH"))
+        self.assertEqual(captured["action"], "doubao.generate_prompt")
+        self.assertEqual(captured["payload"], {"record_id": "source-1", "country_code": "PH"})
 
     def test_batch_prompt_endpoint_rejects_unknown_country(self):
         response = self.client.post(

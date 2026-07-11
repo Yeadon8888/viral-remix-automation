@@ -13,6 +13,7 @@ test("Doubao UI uses one country selector and backend batch endpoints", () => {
   assert.match(js, /\/api\/doubao-items\/batch-generate-prompts/);
   assert.match(js, /\/api\/doubao-items\/batch-sync-part-time/);
   assert.match(js, /country_code/);
+  assert.match(js, /"revision": row\.revision/);
   assert.doesNotMatch(js, /\{ value: "墨西哥", label: "墨西哥" \}/);
   assert.doesNotMatch(html, /连接本地Worker|更新本地Worker|打开 127\.0\.0\.1:5177/);
 });

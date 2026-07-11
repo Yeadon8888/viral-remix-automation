@@ -1225,6 +1225,12 @@ function closePromptEditor() {
 
 async function savePromptEdit() {
   if (!state.editingPromptId) return;
+  const row = state.prompts.find((item) => item.record_id === state.editingPromptId);
+  if (!row?.revision) {
+    notify("Prompt 版本已过期，请刷新后重新编辑", "error");
+    await loadPrompts({ force: true });
+    return;
+  }
   const button = $("savePromptEdit");
   const oldText = button.textContent;
   button.disabled = true;
@@ -1233,6 +1239,7 @@ async function savePromptEdit() {
     await api(`/api/prompts/${state.editingPromptId}`, {
       method: "PATCH",
       body: JSON.stringify({
+        "revision": row.revision,
         "Prompt名称": $("editPromptName").value,
         "版本": $("editPromptVersion").value,
         "是否启用": $("editPromptEnabled").value,
@@ -1242,7 +1249,10 @@ async function savePromptEdit() {
         "备注": $("editPromptNote").value,
       }),
     });
-    await loadPrompts();
+    await loadPrompts({ force: true });
+  } catch (error) {
+    notify(error.message || "Prompt 保存失败", "error");
+    await loadPrompts({ force: true });
   } finally {
     button.disabled = false;
     button.textContent = oldText;

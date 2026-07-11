@@ -1,4 +1,6 @@
 from datetime import datetime
+import hashlib
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -24,6 +26,29 @@ DOLA_STATUS_FIELD = "Dola生成状态"
 DOLA_VIDEO_FIELD = "Dola视频链接"
 DOLA_ERROR_FIELD = "Dola错误信息"
 DOLA_LOCAL_STATUSES = {"待Dola生成", "准备中", "等待发送", "等待下载", "已完成", "失败"}
+PROMPT_EDITABLE_FIELDS = (
+    "Prompt名称",
+    "版本",
+    "是否启用",
+    "目标地区",
+    "模板内容",
+    "变量说明",
+    "备注",
+)
+
+
+class PromptConflictError(RuntimeError):
+    pass
+
+
+def prompt_revision(fields: dict[str, Any]) -> str:
+    body = json.dumps(
+        {key: field_value(fields, key, "") for key in PROMPT_EDITABLE_FIELDS},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
 def now_ms() -> int:
@@ -217,7 +242,7 @@ def build_video_prompt(base_prompt: str, region: str, task_index: int, total_tas
 
 
 class ViralRemixWorkflow:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, ledger=None):
         self.settings = settings
         self.feishu = FeishuClient(settings)
         self.r2 = R2Storage(settings)
@@ -226,7 +251,7 @@ class ViralRemixWorkflow:
         self.image_client = NewTokenImageClient(settings)
         self.cpa = CpaVideoClient(settings)
         self.video_assets = ViralVideoAssetService(settings, self.feishu, self.r2, self.tikhub)
-        self.part_time_sync = PartTimeSyncService(settings, self.feishu)
+        self.part_time_sync = PartTimeSyncService(settings, self.feishu, ledger=ledger)
 
     def list_prompt_configs(self) -> list[dict[str, Any]]:
         if not self.settings.prompt_table_id:
@@ -246,19 +271,17 @@ class ViralRemixWorkflow:
                 "模板内容": field_value(fields, "模板内容", ""),
                 "变量说明": field_value(fields, "变量说明", ""),
                 "备注": field_value(fields, "备注", ""),
+                "revision": prompt_revision(fields),
             })
         return out
 
-    def update_prompt_config(self, record_id: str, patch: dict[str, Any]) -> dict[str, Any]:
-        allowed_fields = {
-            "Prompt名称",
-            "版本",
-            "是否启用",
-            "目标地区",
-            "模板内容",
-            "变量说明",
-            "备注",
-        }
+    def update_prompt_config(
+        self,
+        record_id: str,
+        patch: dict[str, Any],
+        expected_revision: str = "",
+    ) -> dict[str, Any]:
+        allowed_fields = set(PROMPT_EDITABLE_FIELDS)
         fields = {
             key: str(value or "").strip()
             for key, value in patch.items()
@@ -266,6 +289,10 @@ class ViralRemixWorkflow:
         }
         if not fields:
             raise RuntimeError("没有可更新的 Prompt 字段")
+        if expected_revision:
+            current = self.feishu.get_record(self.settings.prompt_table_id, record_id)
+            if prompt_revision(current.get("fields", {})) != expected_revision:
+                raise PromptConflictError("Prompt 已被其他人修改，请刷新后重新编辑")
         if "是否启用" in fields and fields["是否启用"] not in {"启用", "停用"}:
             raise RuntimeError("是否启用只能是：启用 / 停用")
         allowed_regions = {"墨西哥", "通用", *prompt_regions()}
@@ -665,7 +692,12 @@ class ViralRemixWorkflow:
         country = get_country(country_code)
         add_log("info", f"开始同步豆包记录到兼职表: {record_id} / {country.name}", "workflow", job_id)
         try:
-            result = self.part_time_sync.sync_record(record_id, country.code, target_records=target_records)
+            result = self.part_time_sync.sync_record(
+                record_id,
+                country.code,
+                target_records=target_records,
+                owner_id=job_id or "",
+            )
         except Exception as exc:
             self.feishu.update_record(
                 self.settings.doubao_table_id,
