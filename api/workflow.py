@@ -1299,26 +1299,11 @@ class ViralRemixWorkflow:
         add_log("success", f"发布表同步完成: 新增 {created} / 更新 {updated} / 跳过 {skipped}", "workflow", job_id)
         return {"created": created, "updated": updated, "skipped": skipped}
 
-    def sync_doubao_publish_items(
-        self,
-        record_ids: list[str],
-        limit: int = 200,
-        job_id: str | None = None,
-    ) -> dict[str, Any]:
-        if not self.settings.publish_table_id:
-            raise RuntimeError("缺少 FEISHU_PUBLISH_TABLE_ID")
-
+    def _doubao_publish_part_time_rows(self, record_ids: list[str]) -> tuple[set[str], list[tuple[dict[str, Any], str, str]]]:
         allowed_sources = {str(item).strip() for item in record_ids if str(item).strip()}
         if not allowed_sources:
             raise ValueError("请先选择要同步的豆包素材记录")
-
-        source_by_id = {
-            str(record.get("record_id") or ""): record.get("fields", {})
-            for record in self.feishu.list_records(self.settings.doubao_table_id)
-            if str(record.get("record_id") or "") in allowed_sources
-        }
-
-        part_time_rows = []
+        part_time_rows: list[tuple[dict[str, Any], str, str]] = []
         for record in self.feishu.list_records(self.settings.part_time_table_id):
             fields = record.get("fields", {})
             source_id = str(field_value(fields, "来源记录ID", "") or "").strip()
@@ -1332,7 +1317,35 @@ class ViralRemixWorkflow:
                 and video_url
             ):
                 part_time_rows.append((record, source_id, video_url))
+        return allowed_sources, part_time_rows
+
+    def doubao_publish_readiness(self, record_ids: list[str]) -> dict[str, int]:
+        allowed_sources, part_time_rows = self._doubao_publish_part_time_rows(record_ids)
+        ready_sources = {source_id for _, source_id, _ in part_time_rows}
+        return {
+            "selected_sources": len(allowed_sources),
+            "ready_sources": len(ready_sources),
+            "eligible_videos": len(part_time_rows),
+            "pending_sources": len(allowed_sources - ready_sources),
+        }
+
+    def sync_doubao_publish_items(
+        self,
+        record_ids: list[str],
+        limit: int = 200,
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        if not self.settings.publish_table_id:
+            raise RuntimeError("缺少 FEISHU_PUBLISH_TABLE_ID")
+
+        allowed_sources, part_time_rows = self._doubao_publish_part_time_rows(record_ids)
         part_time_rows = part_time_rows[:max(1, min(int(limit), 200))]
+
+        source_by_id = {
+            str(record.get("record_id") or ""): record.get("fields", {})
+            for record in self.feishu.list_records(self.settings.doubao_table_id)
+            if str(record.get("record_id") or "") in allowed_sources
+        }
 
         existing_by_part_time: dict[str, str] = {}
         existing_by_video: dict[str, str] = {}

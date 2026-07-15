@@ -36,6 +36,15 @@ class PersistentJobRouteTests(unittest.TestCase):
         ]
         settings = SimpleNamespace(admin_token="", admin_users_json="")
 
+        class ReadyWorkflow:
+            def doubao_publish_readiness(self, record_ids):
+                return {
+                    "selected_sources": len(record_ids),
+                    "ready_sources": len(record_ids),
+                    "eligible_videos": len(record_ids),
+                    "pending_sources": 0,
+                }
+
         for path, body, expected_action in cases:
             captured = {}
 
@@ -47,11 +56,39 @@ class PersistentJobRouteTests(unittest.TestCase):
                 self.subTest(path=path),
                 patch.object(app_module, "settings", settings),
                 patch.object(app_module, "enqueue_workflow_action", enqueue),
+                patch.object(app_module, "get_workflow", return_value=ReadyWorkflow()),
             ):
                 response = self.client.post(path, json=body)
                 self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
                 self.assertEqual(captured.get("action"), expected_action)
                 self.assertEqual(response.get_json()["job_id"], "job-1")
+
+    def test_doubao_publish_sync_rejects_selection_without_completed_video(self):
+        settings = SimpleNamespace(admin_token="", admin_users_json="")
+
+        class PendingWorkflow:
+            def doubao_publish_readiness(self, record_ids):
+                return {
+                    "selected_sources": len(record_ids),
+                    "ready_sources": 0,
+                    "eligible_videos": 0,
+                    "pending_sources": len(record_ids),
+                }
+
+        with (
+            patch.object(app_module, "settings", settings),
+            patch.object(app_module, "get_workflow", return_value=PendingWorkflow()),
+            patch.object(app_module, "enqueue_workflow_action") as enqueue,
+        ):
+            response = self.client.post(
+                "/api/doubao-items/batch-sync-publish",
+                json={"record_ids": ["rec-1"]},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("兼职表", response.get_json()["message"])
+        self.assertIn("视频", response.get_json()["message"])
+        enqueue.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -567,12 +567,19 @@ def batch_sync_doubao_publish():
     ids = list(dict.fromkeys(str(item).strip() for item in record_ids if str(item).strip()))[:200]
     if not ids:
         return jsonify({"success": False, "message": "record_ids is required"}), 400
+    readiness = get_workflow().doubao_publish_readiness(ids)
+    if not readiness["eligible_videos"]:
+        return jsonify({
+            "success": False,
+            "message": "所选素材在兼职表中还没有可同步的视频：需要任务状态为已完成、视频地址已填写，且审核未标记为无效或未去水印。",
+            "readiness": readiness,
+        }), 409
     job_id = enqueue_workflow_action(
         "doubao-batch-sync-publish",
         "publish.sync_doubao",
         {"record_ids": ids, "limit": min(max(int(body.get("limit", 200)), 1), 200)},
     )
-    return jsonify({"success": True, "job_id": job_id})
+    return jsonify({"success": True, "job_id": job_id, "readiness": readiness})
 
 
 @app.route("/api/materials/<record_id>/prepare", methods=["POST"])

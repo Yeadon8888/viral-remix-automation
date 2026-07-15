@@ -1698,8 +1698,14 @@ async function batchDoubaoSyncPublish(button = null) {
       method: "POST",
       body: JSON.stringify({ record_ids: rows.map((row) => row.record_id), limit: 200 }),
     });
-    notify(`已启动豆包成片发布表同步：${data.job_id}`);
+    const pending = Number(data.readiness.pending_sources || 0);
+    const readyText = `已确认 ${data.readiness.ready_sources} 条素材有 ${data.readiness.eligible_videos} 个可用视频`;
+    notify(pending
+      ? `${readyText}，其余 ${pending} 条视频未生成，已跳过`
+      : `${readyText}，已启动发布表同步`);
     await loadJobs();
+  } catch (error) {
+    notify(error.message, "error");
   } finally {
     setPendingJob(name, false);
     if (button) {

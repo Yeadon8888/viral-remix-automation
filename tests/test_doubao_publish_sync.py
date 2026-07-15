@@ -76,8 +76,15 @@ class DoubaoPublishSyncTests(unittest.TestCase):
         )
         workflow.feishu = FakeFeishu()
 
+        readiness = workflow.doubao_publish_readiness(["source-1", "source-missing"])
         result = workflow.sync_doubao_publish_items(["source-1"])
 
+        self.assertEqual(readiness, {
+            "selected_sources": 2,
+            "ready_sources": 1,
+            "eligible_videos": 2,
+            "pending_sources": 1,
+        })
         self.assertEqual(result, {"eligible": 2, "created": 1, "updated": 1, "skipped": 0})
         created_fields = calls["created"][0][1]
         self.assertEqual(created_fields["商品标题"], "Travel bag")
