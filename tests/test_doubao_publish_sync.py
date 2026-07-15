@@ -9,6 +9,9 @@ class DoubaoPublishSyncTests(unittest.TestCase):
         calls = {"created": [], "updated": []}
 
         class FakeFeishu:
+            def list_records_filtered(self, table_id, **kwargs):
+                return self.list_records(table_id)
+
             def list_records(self, table_id, **kwargs):
                 if table_id == "doubao":
                     return [{

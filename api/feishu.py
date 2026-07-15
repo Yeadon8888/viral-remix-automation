@@ -1,5 +1,6 @@
 import time
 import mimetypes
+import json
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -105,6 +106,47 @@ class FeishuClient:
             if not page_token:
                 break
         return items
+
+    def list_records_filtered(
+        self,
+        table_id: str,
+        field_names: list[str],
+        filter_config: dict[str, Any],
+        page_size: int = 200,
+        max_records: int | None = None,
+    ) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        offset = 0
+        limit = max(1, min(int(page_size), 200))
+        while True:
+            data = self._request(
+                "GET",
+                f"/base/v3/bases/{self.settings.feishu_app_token}/tables/{table_id}/records",
+                params={
+                    "field_id": field_names,
+                    "filter": json.dumps(filter_config, ensure_ascii=False, separators=(",", ":")),
+                    "limit": limit,
+                    "offset": offset,
+                },
+            )
+            fields = data.get("fields", [])
+            record_ids = data.get("record_id_list", [])
+            rows = data.get("data", [])
+            for record_id, row in zip(record_ids, rows):
+                values = row if isinstance(row, list) else []
+                records.append({
+                    "record_id": record_id,
+                    "fields": {
+                        str(name): values[index] if index < len(values) else None
+                        for index, name in enumerate(fields)
+                    },
+                })
+                if max_records and len(records) >= max_records:
+                    return records[:max_records]
+            if not data.get("has_more") or not record_ids:
+                break
+            offset += len(record_ids)
+        return records
 
     def get_record(self, table_id: str, record_id: str) -> dict[str, Any]:
         data = self._request(

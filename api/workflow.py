@@ -1304,7 +1304,18 @@ class ViralRemixWorkflow:
         if not allowed_sources:
             raise ValueError("请先选择要同步的豆包素材记录")
         part_time_rows: list[tuple[dict[str, Any], str, str]] = []
-        for record in self.feishu.list_records(self.settings.part_time_table_id):
+        part_time_records = self.feishu.list_records_filtered(
+            self.settings.part_time_table_id,
+            field_names=["来源记录ID", "视频地址", "任务状态", "审核"],
+            filter_config={
+                "logic": "and",
+                "conditions": [
+                    ["任务状态", "intersects", ["已完成"]],
+                    ["视频地址", "non_empty"],
+                ],
+            },
+        )
+        for record in part_time_records:
             fields = record.get("fields", {})
             source_id = str(field_value(fields, "来源记录ID", "") or "").strip()
             status = str(field_value(fields, "任务状态", "") or "").strip()
