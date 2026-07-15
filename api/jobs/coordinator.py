@@ -191,8 +191,9 @@ class RedisJobBackend:
         executor: JobExecutor,
         max_workers: int = 2,
         namespace: str = "viral-remix",
-        lock_ttl_seconds: int = 3600,
+        lock_ttl_seconds: int = 300,
         lock_wait_seconds: int = 30,
+        recovery_interval_seconds: float = 30.0,
         start_workers: bool = True,
     ):
         self.redis = redis_client
@@ -201,6 +202,7 @@ class RedisJobBackend:
         self.namespace = namespace.strip(":")
         self.lock_ttl_seconds = max(30, lock_ttl_seconds)
         self.lock_wait_seconds = max(1, lock_wait_seconds)
+        self.recovery_interval_seconds = max(0.01, recovery_interval_seconds)
         self._stop = Event()
         self._threads: list[Thread] = []
         if start_workers:
@@ -272,6 +274,16 @@ class RedisJobBackend:
             thread = Thread(target=self._worker_loop, name=f"redis-job-{index + 1}", daemon=True)
             thread.start()
             self._threads.append(thread)
+        recovery = Thread(target=self._recovery_loop, name="redis-job-recovery", daemon=True)
+        recovery.start()
+        self._threads.append(recovery)
+
+    def _recovery_loop(self) -> None:
+        while not self._stop.wait(self.recovery_interval_seconds):
+            try:
+                self._recover_stale_jobs()
+            except Exception:
+                continue
 
     def enqueue(
         self,

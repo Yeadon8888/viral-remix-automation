@@ -134,6 +134,40 @@ class RedisJobBackendTests(unittest.TestCase):
         finally:
             consumer.shutdown()
 
+    def test_expired_processing_job_is_recovered_without_another_restart(self):
+        fakeredis, RedisJobBackend = self.dependencies()
+        redis_client = fakeredis.FakeRedis(decode_responses=True)
+        executed = []
+        backend = RedisJobBackend(
+            redis_client,
+            lambda action, payload, current_job_id, operator: executed.append(payload["record_id"]),
+            max_workers=1,
+            namespace="test-periodic-recover",
+            recovery_interval_seconds=0.05,
+            start_workers=False,
+        )
+        job_id = backend.enqueue(
+            "doubao-generate-prompt:rec-periodic:MY",
+            "doubao.generate_prompt",
+            {"record_id": "rec-periodic", "country_code": "MY"},
+            ["doubao:rec-periodic"],
+            "alice",
+        )
+        redis_client.rpoplpush(backend.queue_key, backend.processing_key)
+        redis_client.hset(backend._job_key(job_id), mapping={
+            "status": "running",
+            "lease_until": str(int(time.time() * 1000) + 60_000),
+        })
+        backend.start_workers()
+        redis_client.hset(backend._job_key(job_id), "lease_until", "1")
+
+        try:
+            job = self.wait_for(backend, job_id)
+            self.assertEqual(job["status"], "done")
+            self.assertEqual(executed, ["rec-periodic"])
+        finally:
+            backend.shutdown()
+
     def test_enqueue_race_reuses_dedupe_owner_before_job_hash_exists(self):
         fakeredis, RedisJobBackend = self.dependencies()
         server = fakeredis.FakeServer()

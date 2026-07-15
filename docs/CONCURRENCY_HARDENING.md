@@ -5,7 +5,7 @@
 - `REDIS_URL`：Redis 连接地址，用于任务队列、任务状态、精确去重和记录锁。
 - `DATABASE_URL`：PostgreSQL 连接地址，用于兼职幂等台账和操作审计。
 - `JOB_WORKER_CONCURRENCY`：单实例 Worker 并发数，默认 `2`。
-- `JOB_LOCK_TTL_SECONDS`：记录锁租约，默认 `3600` 秒。
+- `JOB_LOCK_TTL_SECONDS`：记录锁租约，默认 `300` 秒；长任务会心跳续租，Worker 中断后由 30 秒周期检查自动回收。
 - `ADMIN_USERS_JSON`：可选，Token 到操作者/角色的映射；未配置时兼容 `ADMIN_TOKEN`。
 
 生产环境在 Redis 或 PostgreSQL 缺失时不得静默使用内存协调器。内存后端仅用于本地开发和自动化测试。

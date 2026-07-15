@@ -52,7 +52,7 @@ def get_backend(settings=None):
                 client,
                 executor,
                 max_workers=getattr(settings, "job_worker_concurrency", 2),
-                lock_ttl_seconds=getattr(settings, "job_lock_ttl_seconds", 3600),
+                lock_ttl_seconds=getattr(settings, "job_lock_ttl_seconds", 300),
             )
         elif getattr(settings, "coordination_required", False):
             raise RuntimeError("生产环境缺少 REDIS_URL，已拒绝启用不安全的内存任务队列")

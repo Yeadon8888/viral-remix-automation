@@ -32,7 +32,7 @@ class Settings:
     database_url: str = env("DATABASE_URL")
     coordination_required: bool = env_bool("COORDINATION_REQUIRED", False)
     job_worker_concurrency: int = env_int("JOB_WORKER_CONCURRENCY", 2)
-    job_lock_ttl_seconds: int = env_int("JOB_LOCK_TTL_SECONDS", 3600)
+    job_lock_ttl_seconds: int = env_int("JOB_LOCK_TTL_SECONDS", 300)
 
     feishu_app_id: str = env("FEISHU_APP_ID")
     feishu_app_secret: str = env("FEISHU_APP_SECRET")
