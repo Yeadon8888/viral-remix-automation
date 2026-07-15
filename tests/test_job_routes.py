@@ -17,6 +17,7 @@ class PersistentJobRouteTests(unittest.TestCase):
             ("/api/doubao-items/batch-store-images", {"record_ids": ["rec-1"], "limit": 50}, "doubao.batch_store_images"),
             ("/api/doubao-items/batch-generate-prompts", {"record_ids": ["rec-1"], "country_code": "MX"}, "doubao.batch_generate_prompts"),
             ("/api/doubao-items/batch-sync-part-time", {"record_ids": ["rec-1"], "country_code": "MX"}, "doubao.batch_sync_part_time"),
+            ("/api/doubao-items/batch-sync-publish", {"record_ids": ["rec-1"], "limit": 200}, "publish.sync_doubao"),
             ("/api/materials/mat-1/prepare", {}, "material.prepare"),
             ("/api/materials/mat-1/analyze-video", {}, "material.analyze_video"),
             ("/api/materials/mat-1/store-image", {}, "material.store_image"),

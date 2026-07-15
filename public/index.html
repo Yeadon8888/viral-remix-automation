@@ -26,7 +26,7 @@
         </button>
         <button id="pageDoubao" class="tab" type="button" data-page="doubao">
           <span class="nav-icon" aria-hidden="true">豆</span>
-          <span><strong>豆包视频</strong><small>多国家提示词与派单</small></span>
+          <span><strong>豆包视频素材表</strong><small>多国家提示词与派单</small></span>
         </button>
         <button id="pagePrompts" class="tab" type="button" data-page="prompts">
           <span class="nav-icon" aria-hidden="true">P</span>
@@ -162,8 +162,8 @@
             <div class="panel-head">
               <div>
                 <span class="section-kicker">DOUBAO / SEEDANCE</span>
-                <h2>豆包视频</h2>
-                <p>按目标国家生成本地化 Seedance Prompt，并将选中任务安全同步到兼职表。</p>
+                <h2>豆包视频素材表</h2>
+                <p>按目标国家生成本地化 Seedance Prompt，并衔接兼职成片与发布表。</p>
               </div>
               <div class="actions">
                 <button id="loadDoubao" class="secondary" type="button">读取记录</button>
@@ -184,6 +184,7 @@
               </label>
               <p id="countryHelp">国家与语言会共同决定 Prompt 模板、口播语言和兼职任务归属。</p>
               <div class="actions">
+                <button id="batchDoubaoSyncPublish" class="secondary" type="button">同步到发布表</button>
                 <button id="batchDoubaoPrompts" class="primary" type="button">批量生成提示词</button>
                 <button id="batchDoubaoSyncPartTime" class="sync-button" type="button">同步到兼职表</button>
               </div>
@@ -205,7 +206,7 @@
               <span class="helper-text">批量操作只处理已勾选记录</span>
             </div>
             <div class="table-toolbar">
-              <span id="doubaoRefreshState">等待读取豆包视频制作表</span>
+              <span id="doubaoRefreshState">等待读取豆包视频素材表</span>
               <button id="refreshDoubaoTable" class="mini secondary" type="button">刷新表格</button>
             </div>
             <div id="doubaoItems" class="table-wrap"></div>

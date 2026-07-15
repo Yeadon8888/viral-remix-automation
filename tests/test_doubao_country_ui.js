@@ -10,8 +10,10 @@ test("Doubao UI uses one country selector and backend batch endpoints", () => {
 
   assert.match(html, /id="doubaoCountry"/);
   assert.match(html, /id="batchDoubaoSyncPartTime"/);
+  assert.match(html, /id="batchDoubaoSyncPublish"/);
   assert.match(js, /\/api\/doubao-items\/batch-generate-prompts/);
   assert.match(js, /\/api\/doubao-items\/batch-sync-part-time/);
+  assert.match(js, /\/api\/doubao-items\/batch-sync-publish/);
   assert.match(js, /country_code/);
   assert.match(js, /"revision": row\.revision/);
   assert.doesNotMatch(js, /\{ value: "墨西哥", label: "墨西哥" \}/);
@@ -24,7 +26,7 @@ test("main navigation exposes three product areas", () => {
 
   assert.match(html, /短视频带货全链路自动化工作后台/);
   assert.match(html, /data-page="remix"[\s\S]*?<strong>视频复刻<\/strong>/);
-  assert.match(html, /data-page="doubao"[\s\S]*?<strong>豆包视频<\/strong>/);
+  assert.match(html, /data-page="doubao"[\s\S]*?<strong>豆包视频素材表<\/strong>/);
   assert.match(html, /data-page="prompts"[\s\S]*?<strong>Prompt配置<\/strong>/);
   assert.doesNotMatch(html, /视频拆解 -&gt;|视频拆解 -> 主图入库/);
 });

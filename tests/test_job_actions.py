@@ -91,6 +91,27 @@ class JobActionContractTests(unittest.TestCase):
         self.assertEqual(result["processed"], 2)
         self.assertEqual(result["failed"], 0)
 
+    def test_doubao_publish_action_invokes_joined_sync(self):
+        from api.jobs.actions import execute_action
+
+        calls = []
+
+        class FakeWorkflow:
+            def sync_doubao_publish_items(self, record_ids, limit=100, job_id=None):
+                calls.append((record_ids, limit, job_id))
+                return {"created": 1}
+
+        result = execute_action(
+            "publish.sync_doubao",
+            {"record_ids": ["source-2", "source-1"], "limit": 200},
+            "job-1",
+            "alice",
+            workflow=FakeWorkflow(),
+        )
+
+        self.assertEqual(result, {"created": 1})
+        self.assertEqual(calls, [(["source-1", "source-2"], 200, "job-1")])
+
     def test_unknown_action_is_rejected(self):
         try:
             from api.jobs.actions import execute_action

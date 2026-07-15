@@ -201,4 +201,7 @@ def execute_action(
     if action == "publish.sync":
         return work.sync_publish_items(record_ids or None, data.get("limit", 100), job_id=job_id)
 
+    if action == "publish.sync_doubao":
+        return work.sync_doubao_publish_items(record_ids, data.get("limit", 200), job_id=job_id)
+
     raise ValueError(f"不支持的任务动作：{action}")

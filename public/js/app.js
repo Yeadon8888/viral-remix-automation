@@ -1023,7 +1023,7 @@ function renderCompletedDoubaoGroups(rows) {
 function renderDoubaoItems() {
   renderDoubaoMetrics();
   if (!state.doubaoItems.length) {
-    $("doubaoItems").innerHTML = `<div class="selected-box">暂无豆包视频制作记录</div>`;
+    $("doubaoItems").innerHTML = `<div class="selected-box">暂无豆包视频素材记录</div>`;
     renderDoubaoSelectionState();
     return;
   }
@@ -1678,6 +1678,38 @@ async function batchDoubaoSyncPartTime(button = null) {
   }
 }
 
+async function batchDoubaoSyncPublish(button = null) {
+  const name = "doubao-batch-sync-publish";
+  if (isJobBusy(name)) return;
+  const rows = selectedDoubaoRows();
+  if (!rows.length) {
+    notify("请先勾选要同步到发布表的豆包素材记录", "error");
+    return;
+  }
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  try {
+    const data = await api("/api/doubao-items/batch-sync-publish", {
+      method: "POST",
+      body: JSON.stringify({ record_ids: rows.map((row) => row.record_id), limit: 200 }),
+    });
+    notify(`已启动豆包成片发布表同步：${data.job_id}`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+  }
+}
+
 async function syncPublishTasks(button = null) {
   const name = "sync-publish-tasks";
   if (isJobBusy(name)) return;
@@ -1896,6 +1928,7 @@ $("batchCreateTasks").onclick = () => runBatchMaterialStep("create-tasks", $("ba
 $("batchDoubaoStoreImages").onclick = () => batchDoubaoStoreImages($("batchDoubaoStoreImages"));
 $("batchDoubaoPrompts").onclick = () => batchDoubaoPrompts($("batchDoubaoPrompts"));
 $("batchDoubaoSyncPartTime").onclick = () => batchDoubaoSyncPartTime($("batchDoubaoSyncPartTime"));
+$("batchDoubaoSyncPublish").onclick = () => batchDoubaoSyncPublish($("batchDoubaoSyncPublish"));
 
 $("batchVideos").onclick = async () => {
   const name = "batch-generate-videos";

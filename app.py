@@ -558,6 +558,23 @@ def batch_sync_doubao_part_time():
     return jsonify({"success": True, "job_id": job_id})
 
 
+@app.route("/api/doubao-items/batch-sync-publish", methods=["POST"])
+def batch_sync_doubao_publish():
+    body = request.get_json(silent=True) or {}
+    record_ids = body.get("record_ids")
+    if not isinstance(record_ids, list):
+        return jsonify({"success": False, "message": "record_ids is required"}), 400
+    ids = list(dict.fromkeys(str(item).strip() for item in record_ids if str(item).strip()))[:200]
+    if not ids:
+        return jsonify({"success": False, "message": "record_ids is required"}), 400
+    job_id = enqueue_workflow_action(
+        "doubao-batch-sync-publish",
+        "publish.sync_doubao",
+        {"record_ids": ids, "limit": min(max(int(body.get("limit", 200)), 1), 200)},
+    )
+    return jsonify({"success": True, "job_id": job_id})
+
+
 @app.route("/api/materials/<record_id>/prepare", methods=["POST"])
 def prepare_material(record_id):
     job_id = enqueue_workflow_action(

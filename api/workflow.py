@@ -2,6 +2,7 @@ from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
 from typing import Any
 
@@ -68,6 +69,15 @@ def split_urls(value: Any) -> list[str]:
         for line in str(value or "").replace(",", "\n").splitlines()
         if line.strip().startswith("http")
     ]
+
+
+def first_http_url(value: Any) -> str:
+    text = str(value or "").strip()
+    markdown = re.search(r"\[[^\]]*\]\((https?://[^)\s]+)\)", text)
+    if markdown:
+        return markdown.group(1)
+    plain = re.search(r"https?://[^\s<>\]]+", text)
+    return plain.group(0).rstrip(").,;") if plain else ""
 
 
 def url_cell(url: str) -> dict[str, str]:
@@ -1288,3 +1298,96 @@ class ViralRemixWorkflow:
 
         add_log("success", f"发布表同步完成: 新增 {created} / 更新 {updated} / 跳过 {skipped}", "workflow", job_id)
         return {"created": created, "updated": updated, "skipped": skipped}
+
+    def sync_doubao_publish_items(
+        self,
+        record_ids: list[str],
+        limit: int = 200,
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        if not self.settings.publish_table_id:
+            raise RuntimeError("缺少 FEISHU_PUBLISH_TABLE_ID")
+
+        allowed_sources = {str(item).strip() for item in record_ids if str(item).strip()}
+        if not allowed_sources:
+            raise ValueError("请先选择要同步的豆包素材记录")
+
+        source_by_id = {
+            str(record.get("record_id") or ""): record.get("fields", {})
+            for record in self.feishu.list_records(self.settings.doubao_table_id)
+            if str(record.get("record_id") or "") in allowed_sources
+        }
+
+        part_time_rows = []
+        for record in self.feishu.list_records(self.settings.part_time_table_id):
+            fields = record.get("fields", {})
+            source_id = str(field_value(fields, "来源记录ID", "") or "").strip()
+            status = str(field_value(fields, "任务状态", "") or "").strip()
+            review = str(field_value(fields, "审核", "") or "").strip()
+            video_url = first_http_url(field_value(fields, "视频地址", ""))
+            if (
+                source_id in allowed_sources
+                and status == "已完成"
+                and review not in {"无效链接", "未去水印"}
+                and video_url
+            ):
+                part_time_rows.append((record, source_id, video_url))
+        part_time_rows = part_time_rows[:max(1, min(int(limit), 200))]
+
+        existing_by_part_time: dict[str, str] = {}
+        existing_by_video: dict[str, str] = {}
+        for record in self.feishu.list_records(self.settings.publish_table_id):
+            fields = record.get("fields", {})
+            publish_id = str(record.get("record_id") or "")
+            part_time_id = str(field_value(fields, "豆包兼职记录ID", "") or "").strip()
+            video_url = first_http_url(field_value(fields, "视频链接", ""))
+            if part_time_id:
+                existing_by_part_time[part_time_id] = publish_id
+            if video_url:
+                existing_by_video[video_url] = publish_id
+
+        created = 0
+        updated = 0
+        skipped = 0
+        for part_time_record, source_id, video_url in part_time_rows:
+            part_time_id = str(part_time_record.get("record_id") or "")
+            source_fields = source_by_id.get(source_id)
+            if not source_fields:
+                skipped += 1
+                add_log("error", f"发布表同步跳过：找不到豆包素材 {source_id}", "workflow", job_id)
+                continue
+
+            product_title = str(field_value(source_fields, "商品名称", "") or "").strip()
+            fields = {
+                "标题": str(field_value(source_fields, "标题", product_title) or product_title).strip(),
+                "商品标题": product_title,
+                "视频链接": video_url,
+                "文案": str(field_value(source_fields, "文案", "") or "").strip(),
+                "标签": str(field_value(source_fields, "标签", "") or "").strip(),
+                "豆包素材记录ID": source_id,
+                "豆包兼职记录ID": part_time_id,
+            }
+            try:
+                existing_id = existing_by_part_time.get(part_time_id) or existing_by_video.get(video_url)
+                if existing_id:
+                    self.feishu.update_record(self.settings.publish_table_id, existing_id, fields)
+                    updated += 1
+                else:
+                    create_fields = {**fields, "发布状态": "待发布", "生成时间": now_ms()}
+                    created_record = self.feishu.create_record(self.settings.publish_table_id, create_fields)
+                    publish_id = str(created_record.get("record_id") or "")
+                    existing_by_part_time[part_time_id] = publish_id
+                    existing_by_video[video_url] = publish_id
+                    created += 1
+            except Exception as exc:
+                skipped += 1
+                add_log("error", f"发布表同步失败({part_time_id}): {exc}", "workflow", job_id)
+
+        result = {"eligible": len(part_time_rows), "created": created, "updated": updated, "skipped": skipped}
+        add_log(
+            "success",
+            f"豆包发布表同步完成: 新增 {created} / 更新 {updated} / 跳过 {skipped}",
+            "workflow",
+            job_id,
+        )
+        return result
