@@ -53,6 +53,7 @@ class DoubaoWorkflowPaginationTests(unittest.TestCase):
         workflow = object.__new__(ViralRemixWorkflow)
         workflow.settings = SimpleNamespace(doubao_table_id="doubao-table")
         workflow.feishu = FakeFeishu()
+        workflow.r2 = SimpleNamespace(is_managed_url=lambda url: False)
 
         page = workflow.list_doubao_items_page(
             page_size=100,

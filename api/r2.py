@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import boto3
@@ -28,6 +29,16 @@ class R2Storage:
         date_prefix = datetime.utcnow().strftime("%Y%m%d")
         media_type = "videos" if content_type.startswith("video/") else "images"
         return f"{self.settings.r2_prefix}/{date_prefix}/{media_type}/{uuid4().hex}{suffix}"
+
+    def is_managed_url(self, url: str) -> bool:
+        candidate = urlparse(str(url or "").strip())
+        if candidate.scheme not in {"http", "https"} or not candidate.netloc:
+            return False
+        for base_url in (self.settings.upload_api_url, self.settings.r2_public_url):
+            base = urlparse(str(base_url or "").strip())
+            if candidate.scheme == base.scheme and candidate.netloc == base.netloc:
+                return True
+        return False
 
     def _upload_via_gateway(self, data: bytes, key: str, content_type: str) -> dict:
         gateway_key = f"{self.settings.upload_prefix}/{key}".strip("/")

@@ -478,6 +478,10 @@ class ViralRemixWorkflow:
             attachment = first_attachment(fields, "商品图")
             image_url = str(field_value(fields, "商品图链接", "") or "").strip()
             stored_image_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
+            image_is_managed = self.r2.is_managed_url(stored_image_url)
+            image_can_transfer = not image_is_managed and bool(
+                attachment or image_url.startswith("http") or stored_image_url.startswith("http")
+            )
             video_url = first_available_field(fields, (DOLA_VIDEO_FIELD, "视频生成链接", "视频链接"), "")
             dola_status = str(field_value(fields, DOLA_STATUS_FIELD, "") or "").strip()
             if not dola_status:
@@ -489,7 +493,11 @@ class ViralRemixWorkflow:
                 "商品链接": field_value(fields, "商品链接", ""),
                 "商品图链接": image_url,
                 "商品图存储链接": stored_image_url,
-                "图片来源": "附件" if attachment else "链接" if image_url.startswith("http") else "",
+                "商品图已入库": image_is_managed,
+                "商品图可转存": image_can_transfer,
+                "图片来源": "附件" if attachment else "链接" if (
+                    image_url.startswith("http") or stored_image_url.startswith("http")
+                ) else "",
                 "商品图数量": len(fields.get("商品图") or []),
                 "商品图文件名": (attachment or {}).get("name", ""),
                 "最终视频生成提示词": field_value(fields, "最终视频生成提示词", ""),
@@ -602,7 +610,7 @@ class ViralRemixWorkflow:
 
     def _resolve_doubao_image(self, fields: dict[str, Any], prefer_stored: bool = True) -> tuple[bytes, str, str]:
         stored_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
-        if prefer_stored and stored_url.startswith("http"):
+        if stored_url.startswith("http") and (prefer_stored or not self.r2.is_managed_url(stored_url)):
             data, mime = self._download_url(stored_url)
             return data, mime, stored_url.rsplit("/", 1)[-1] or "doubao-stored-image"
 
@@ -627,6 +635,10 @@ class ViralRemixWorkflow:
         record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
         fields = record.get("fields", {})
         product_name = str(field_value(fields, "商品名称", record_id) or record_id).strip()
+        stored_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
+        if self.r2.is_managed_url(stored_url):
+            add_log("info", f"豆包商品图已在对象存储，跳过重复入库: {product_name}", "workflow", job_id)
+            return {"record_id": record_id, "stored_image_url": stored_url, "skipped": True}
         add_log("info", f"开始豆包商品图入库: {product_name}", "workflow", job_id)
         data, mime, filename = self._resolve_doubao_image(fields, prefer_stored=False)
         stored = self.r2.upload_bytes(data, filename or "doubao-product-image", mime)

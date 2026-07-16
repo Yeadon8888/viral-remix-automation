@@ -91,6 +91,46 @@ class JobActionContractTests(unittest.TestCase):
         self.assertEqual(result["processed"], 2)
         self.assertEqual(result["failed"], 0)
 
+    def test_batch_image_transfer_includes_external_urls_from_storage_field(self):
+        try:
+            from api.jobs.actions import execute_action
+        except ImportError as exc:
+            self.fail(f"缺少 Action 执行器: {exc}")
+        calls = []
+
+        class FakeWorkflow:
+            def list_doubao_items(self, limit):
+                return [
+                    {
+                        "record_id": "external-record",
+                        "商品图存储链接": "https://img.kalocdn.com/product/cover.png",
+                        "商品图已入库": False,
+                        "商品图可转存": True,
+                    },
+                    {
+                        "record_id": "managed-record",
+                        "商品图存储链接": "https://vc-upload.example.com/product/cover.png",
+                        "商品图已入库": True,
+                        "商品图可转存": False,
+                    },
+                ]
+
+            def store_doubao_image(self, record_id, job_id=None):
+                calls.append(record_id)
+                return {"record_id": record_id}
+
+        result = execute_action(
+            "doubao.batch_store_images",
+            {"limit": 50},
+            "job-1",
+            "alice",
+            workflow=FakeWorkflow(),
+        )
+
+        self.assertEqual(calls, ["external-record"])
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(result["failed"], 0)
+
     def test_doubao_publish_action_invokes_joined_sync(self):
         from api.jobs.actions import execute_action
 

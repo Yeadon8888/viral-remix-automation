@@ -936,11 +936,18 @@ function renderDoubaoMetrics() {
 }
 
 function hasDoubaoImage(row) {
-  return Number(row["商品图数量"] || 0) > 0 || String(row["商品图链接"] || "").startsWith("http");
+  return Boolean(row["商品图已入库"])
+    || Boolean(row["商品图可转存"])
+    || Number(row["商品图数量"] || 0) > 0
+    || String(row["商品图链接"] || "").startsWith("http");
 }
 
 function hasDoubaoStoredImage(row) {
-  return String(row["商品图存储链接"] || "").startsWith("http");
+  return Boolean(row["商品图已入库"]);
+}
+
+function canTransferDoubaoImage(row) {
+  return Boolean(row["商品图可转存"]);
 }
 
 function doubaoVideoUrl(row) {
@@ -965,6 +972,13 @@ function renderDoubaoRow(row, extraClass = "") {
   const syncRunning = isJobBusy(syncName);
   const syncState = String(row["兼职同步状态"] || "未同步").trim();
   const countryMatches = promptCountryMatchesSelection(row);
+  const storedImageUrl = String(row["商品图存储链接"] || "").trim();
+  const storageCell = hasDoubaoStoredImage(row)
+    ? `<a href="${esc(storedImageUrl)}" target="_blank">对象存储</a>`
+    : storedImageUrl.startsWith("http")
+      ? `${status("外链待转存")}<div><a href="${esc(storedImageUrl)}" target="_blank">打开外链</a></div>`
+      : canTransferDoubaoImage(row) ? status("待转存") : `<span class="muted">缺少可转存图片</span>`;
+  const storeLabel = storePending ? "提交中" : storeRunning ? "转存中" : hasDoubaoStoredImage(row) ? "已入库" : "立即转存";
   return `<tr class="${esc(extraClass)}">
     <td class="select-col"><input class="doubao-check" type="checkbox" aria-label="选择第 ${esc(row["行号"] || "")} 行" data-doubao-select-id="${esc(row.record_id)}" ${checked}></td>
     <td class="row-no">${esc(row["行号"] || "")}</td>
@@ -984,8 +998,8 @@ function renderDoubaoRow(row, extraClass = "") {
       ${row["商品图链接"] ? `<a href="${esc(row["商品图链接"])}" target="_blank">打开图片链接</a>` : ""}
     </td>
     <td>
-      ${hasDoubaoStoredImage(row) ? `<a href="${esc(row["商品图存储链接"])}" target="_blank">对象存储</a>` : `<span class="muted">待入库</span>`}
-      <button class="mini ghost${storePending ? " is-pending" : ""}" data-action="doubao-store" data-id="${esc(row.record_id)}" ${storeRunning || !hasDoubaoImage(row) ? "disabled" : ""}>${storePending ? "提交中" : storeRunning ? "入库中" : hasDoubaoStoredImage(row) ? "重新入库" : "图片入库"}</button>
+      ${storageCell}
+      <button class="mini ghost${storePending ? " is-pending" : ""}" data-action="doubao-store" data-id="${esc(row.record_id)}" ${storeRunning || !canTransferDoubaoImage(row) ? "disabled" : ""}>${storeLabel}</button>
     </td>
     <td>${prompt ? renderPromptDetail("查看Prompt", prompt) : `<span class="muted">未生成</span>`}</td>
     <td class="publish-cell">
@@ -1547,7 +1561,7 @@ async function storeDoubaoImage(id, button = null) {
   renderDoubaoItems();
   try {
     const data = await api(`/api/doubao-items/${id}/store-image`, { method: "POST", body: "{}" });
-    notify(`已启动豆包商品图入库：${data.job_id}`);
+    notify(`已启动商品图转存：${data.job_id}`);
     await loadJobs();
   } finally {
     setPendingJob(name, false);
@@ -1565,12 +1579,12 @@ async function batchDoubaoStoreImages(button = null) {
   if (isJobBusy(name)) return;
   const selectedRows = selectedDoubaoRows();
   if (!selectedRows.length) {
-    notify("请先勾选要图片入库的豆包记录", "error");
+    notify("请先勾选要转存商品图的豆包记录", "error");
     return;
   }
-  const rows = selectedRows.filter((row) => hasDoubaoImage(row) && !hasDoubaoStoredImage(row));
+  const rows = selectedRows.filter((row) => canTransferDoubaoImage(row));
   if (!rows.length) {
-    notify("已勾选记录里没有可入库的商品图", "error");
+    notify("已勾选记录里没有待转存的商品图", "error");
     return;
   }
   const oldText = button ? button.textContent : "";
@@ -1585,7 +1599,7 @@ async function batchDoubaoStoreImages(button = null) {
       method: "POST",
       body: JSON.stringify({ record_ids: rows.map((row) => row.record_id), limit: 50 }),
     });
-    notify(`已启动豆包商品图批量入库：${data.job_id}`);
+    notify(`已启动商品图批量转存：${data.job_id}`);
     await loadJobs();
   } finally {
     setPendingJob(name, false);

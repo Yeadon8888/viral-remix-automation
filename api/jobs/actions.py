@@ -108,8 +108,7 @@ def execute_action(
                 row["record_id"]
                 for row in rows
                 if row.get("record_id")
-                and (row.get("商品图数量") or str(row.get("商品图链接") or "").startswith("http"))
-                and not str(row.get("商品图存储链接") or "").startswith("http")
+                and row.get("商品图可转存")
             ][:limit]
         return _batch(ids, lambda rid: work.store_doubao_image(rid, job_id=job_id))
 
