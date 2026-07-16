@@ -1273,6 +1273,25 @@ async function savePromptEdit() {
   }
 }
 
+function renderJob(job) {
+  const result = job.result || {};
+  const failed = Number(result.failed || 0);
+  const processed = Number(result.processed || 0);
+  const itemErrors = Array.isArray(result.results)
+    ? result.results.map((item) => item?.error).filter(Boolean)
+    : [];
+  const outcome = job.status === "done" && failed > 0
+    ? `<span class="status failed">${job.name === "doubao-batch-store-images" ? "转存失败" : "部分失败"} ${failed}/${processed || failed}</span>`
+    : status(job.status);
+  const detail = itemErrors.length
+    ? `<div class="muted" title="${esc(itemErrors[0])}">${esc(compactErrorMessage(itemErrors[0]))}</div>`
+    : "";
+  return `<div class="job">
+    <div><strong>${esc(job.name)}</strong><div class="muted">${esc(job.id)}</div>${detail}</div>
+    <div>${outcome}</div>
+  </div>`;
+}
+
 async function loadJobs() {
   const data = await api("/api/jobs");
   const nextActiveNames = data.data
@@ -1285,10 +1304,7 @@ async function loadJobs() {
   state.lastActiveJobNames = nextActiveNames;
   if (nextSnapshot !== state.lastJobsSnapshot) {
     state.lastJobsSnapshot = nextSnapshot;
-    $("jobs").innerHTML = data.data.slice().reverse().map((job) => `<div class="job">
-      <div><strong>${esc(job.name)}</strong><div class="muted">${esc(job.id)}</div></div>
-      <div>${status(job.status)}</div>
-    </div>`).join("");
+    $("jobs").innerHTML = data.data.slice().reverse().map(renderJob).join("");
   }
   if (!activeChanged) return;
   if (state.activePage === "materials" && activePageLoaded("materials")) renderMaterials();

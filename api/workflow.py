@@ -745,6 +745,10 @@ class ViralRemixWorkflow:
         if with_provider_auth:
             headers["Authorization"] = f"Bearer {self.settings.newtoken_api_key}"
         resp = requests.get(url, headers=headers, timeout=120)
+        if resp.status_code == 403 and "Referer" in headers:
+            retry_headers = dict(headers)
+            retry_headers.pop("Referer", None)
+            resp = requests.get(url, headers=retry_headers, timeout=120)
         if resp.status_code >= 400 and not with_provider_auth and self.settings.newtoken_base_url in url:
             return self._download_url(url, with_provider_auth=True)
         if resp.status_code >= 400:

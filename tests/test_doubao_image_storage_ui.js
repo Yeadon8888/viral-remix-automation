@@ -75,3 +75,21 @@ test("Doubao page names the batch action as object-storage transfer", () => {
 
   assert.match(html, /id="batchDoubaoStoreImages"[^>]*>批量转存到对象存储<\/button>/);
 });
+
+test("completed batch with item failures is shown as failed with its reason", () => {
+  const context = loadApp();
+  const html = vm.runInContext(`renderJob({
+    id: "job-1",
+    name: "doubao-batch-store-images",
+    status: "done",
+    result: {
+      processed: 3,
+      failed: 3,
+      results: [{ error: "download failed: HTTP 403" }]
+    }
+  })`, context);
+
+  assert.match(html, />转存失败 3\/3</);
+  assert.match(html, /download failed: HTTP 403/);
+  assert.doesNotMatch(html, /class="status done"/);
+});

@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from api.r2 import R2Storage
 from api.workflow import ViralRemixWorkflow
@@ -53,6 +54,25 @@ def make_workflow(feishu, storage=None):
 
 
 class DoubaoImageStorageTests(unittest.TestCase):
+    def test_download_retries_without_referer_when_cdn_rejects_hotlink_header(self):
+        workflow = object.__new__(ViralRemixWorkflow)
+        workflow.settings = SimpleNamespace(newtoken_api_key="", newtoken_base_url="https://api.example.com")
+
+        class Response:
+            def __init__(self, status_code, content=b"", content_type=""):
+                self.status_code = status_code
+                self.content = content
+                self.headers = {"content-type": content_type}
+
+        responses = [Response(403), Response(200, b"image-bytes", "image/png")]
+        with patch("api.workflow.requests.get", side_effect=responses) as get:
+            data, mime = workflow._download_url("https://img.kalocdn.com/product/cover.png")
+
+        self.assertEqual((data, mime), (b"image-bytes", "image/png"))
+        self.assertEqual(get.call_count, 2)
+        self.assertIn("Referer", get.call_args_list[0].kwargs["headers"])
+        self.assertNotIn("Referer", get.call_args_list[1].kwargs["headers"])
+
     def test_list_marks_external_storage_urls_for_transfer(self):
         feishu = FakeFeishu(records=[
             {"record_id": "external", "fields": {"商品图存储链接": "https://img.kalocdn.com/product/cover.png"}},
