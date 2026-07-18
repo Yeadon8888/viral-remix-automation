@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from ..config import Settings
 from ..countries import Country, get_country
-from ..feishu import FeishuClient, field_value
+from ..feishu import FeishuClient, FeishuError, field_value
 
 
 LOCKED_TARGET_STATUSES = {"接单中", "已完成"}
@@ -92,7 +92,15 @@ class PartTimeSyncService:
                 None,
             )
             if target is None:
-                target = self.feishu.get_record(self.settings.part_time_table_id, reservation.target_record_id)
+                try:
+                    target = self.feishu.get_record(self.settings.part_time_table_id, reservation.target_record_id)
+                except FeishuError as exc:
+                    if "RecordIdNotFound" not in str(exc):
+                        raise
+                    self.ledger.invalidate_target(ledger_scope, reservation.target_record_id)
+                    reservation = self.ledger.reserve(ledger_scope, ledger_owner)
+                    if not reservation.acquired:
+                        raise RuntimeError("已删除目标记录的幂等映射重建失败") from exc
         if target is None:
             target = self._find_target(source_record_id, country, records)
         if target and reservation and reservation.acquired:

@@ -47,6 +47,12 @@ class InMemoryIdempotencyLedger:
             if entry and entry.get("owner") == owner and not entry.get("target_record_id"):
                 self._entries.pop(scope, None)
 
+    def invalidate_target(self, scope: str, target_record_id: str) -> None:
+        with self._lock:
+            entry = self._entries.get(scope)
+            if entry and str(entry.get("target_record_id") or "") == target_record_id:
+                self._entries.pop(scope, None)
+
     def audit(self, operator: str, action: str, resource: str, status: str, detail: str = "") -> None:
         return None
 
@@ -171,6 +177,17 @@ class PostgresIdempotencyLedger:
                     WHERE scope = %s AND owner = %s AND target_record_id = ''
                     """,
                     (scope, owner),
+                )
+
+    def invalidate_target(self, scope: str, target_record_id: str) -> None:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    DELETE FROM automation_idempotency
+                    WHERE scope = %s AND target_record_id = %s
+                    """,
+                    (scope, target_record_id),
                 )
 
     def audit(self, operator: str, action: str, resource: str, status: str, detail: str = "") -> None:
