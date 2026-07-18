@@ -321,6 +321,10 @@ function selectedDoubaoRows() {
   return state.doubaoItems.filter((row) => state.selectedDoubaoIds.has(row.record_id));
 }
 
+function syncableDoubaoRows(rows = selectedDoubaoRows()) {
+  return rows.filter((row) => String(row["最终视频生成提示词"] || "").trim() && promptCountryMatchesSelection(row));
+}
+
 function isJobRunning(name) {
   return state.jobs.some((job) => job.name === name && job.status === "running");
 }
@@ -517,9 +521,11 @@ function currentVisibleDoubaoRows() {
 
 function renderDoubaoSelectionState() {
   const visibleIds = currentVisibleDoubaoRows().map((row) => row.record_id).filter(Boolean);
-  const selectedCount = state.doubaoItems.filter((row) => state.selectedDoubaoIds.has(row.record_id)).length;
+  const selectedRows = selectedDoubaoRows();
+  const selectedCount = selectedRows.length;
+  const syncableCount = syncableDoubaoRows(selectedRows).length;
   const visibleSelectedCount = visibleIds.filter((id) => state.selectedDoubaoIds.has(id)).length;
-  $("selectedDoubaoCount").textContent = `已选 ${selectedCount} 条`;
+  $("selectedDoubaoCount").textContent = `已选 ${selectedCount} 条 · 当前国家可同步 ${syncableCount} 条`;
   $("selectAllDoubao").checked = visibleIds.length > 0 && visibleSelectedCount === visibleIds.length;
   $("selectAllDoubao").indeterminate = visibleSelectedCount > 0 && visibleSelectedCount < visibleIds.length;
 }
@@ -1294,6 +1300,11 @@ function renderJob(job) {
 
 async function loadJobs() {
   const data = await api("/api/jobs");
+  const previousActiveDoubaoJobIds = new Set(state.jobs
+    .filter((job) => ["queued", "running"].includes(job.status) && String(job.name || "").startsWith("doubao-"))
+    .map((job) => job.id));
+  const completedDoubaoJob = data.data.some((job) => previousActiveDoubaoJobIds.has(job.id)
+    && !["queued", "running"].includes(job.status));
   const nextActiveNames = data.data
     .filter((job) => job.status === "running")
     .map((job) => `${job.name}:${job.id}`)
@@ -1305,6 +1316,9 @@ async function loadJobs() {
   if (nextSnapshot !== state.lastJobsSnapshot) {
     state.lastJobsSnapshot = nextSnapshot;
     $("jobs").innerHTML = data.data.slice().reverse().map(renderJob).join("");
+  }
+  if (completedDoubaoJob && state.activePage === "doubao" && activePageLoaded("doubao")) {
+    await loadDoubaoItems({ force: true });
   }
   if (!activeChanged) return;
   if (state.activePage === "materials" && activePageLoaded("materials")) renderMaterials();
@@ -1673,7 +1687,7 @@ async function batchDoubaoSyncPartTime(button = null) {
   if (isJobBusy(name)) return;
   const selectedRows = selectedDoubaoRows();
   const promptRows = selectedRows.filter((row) => String(row["最终视频生成提示词"] || "").trim());
-  const rows = promptRows.filter(promptCountryMatchesSelection);
+  const rows = syncableDoubaoRows(selectedRows);
   if (!rows.length) {
     const message = promptRows.length
       ? `所选提示词不属于${selectedCountryName()}·${selectedCountryLanguageName()}，请先按当前国家语言重新生成`

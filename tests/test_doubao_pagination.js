@@ -7,24 +7,31 @@ const vm = require("node:vm");
 function loadApp(fetchImpl) {
   const appPath = path.join(__dirname, "..", "public", "js", "app.js");
   const source = fs.readFileSync(appPath, "utf8").split('$("adminToken").value = state.token;')[0];
-  const element = {
-    addEventListener() {},
-    classList: { add() {}, remove() {}, toggle() {} },
-    querySelector() { return null; },
-    querySelectorAll() { return []; },
-    dataset: {},
-    disabled: false,
-    hidden: false,
-    innerHTML: "",
-    textContent: "",
-    value: "",
-  };
+  const elements = {};
+  function element(id) {
+    if (!elements[id]) {
+      elements[id] = {
+        addEventListener() {},
+        classList: { add() {}, remove() {}, toggle() {} },
+        querySelector() { return null; },
+        querySelectorAll() { return []; },
+        dataset: {},
+        disabled: false,
+        hidden: false,
+        innerHTML: "",
+        textContent: "",
+        value: "",
+      };
+    }
+    return elements[id];
+  }
   const context = vm.createContext({
+    __elements: elements,
     URLSearchParams,
     alert() {},
     console,
     document: {
-      getElementById() { return element; },
+      getElementById(id) { return element(id); },
       querySelectorAll() { return []; },
     },
     fetch: fetchImpl,
@@ -34,6 +41,74 @@ function loadApp(fetchImpl) {
   vm.runInContext(source, context);
   return context;
 }
+
+test("Doubao selection shows selected and currently syncable counts", () => {
+  const context = loadApp(async () => ({ ok: true, json: async () => ({ success: true }) }));
+  vm.runInContext(`
+    state.countries = [{ code: "MX", name: "墨西哥", language_name: "西班牙语" }];
+    state.doubaoCountryCode = "MX";
+    state.doubaoItems = [
+      { record_id: "ready", "最终视频生成提示词": "prompt", "目标国家": "墨西哥", "目标语言": "西班牙语" },
+      { record_id: "missing-prompt", "目标国家": "墨西哥", "目标语言": "西班牙语" }
+    ];
+    state.selectedDoubaoIds = new Set(["ready", "missing-prompt"]);
+    renderDoubaoSelectionState();
+  `, context);
+
+  assert.equal(
+    context.__elements.selectedDoubaoCount.textContent,
+    "已选 2 条 · 当前国家可同步 1 条",
+  );
+});
+
+test("Doubao data refreshes when a background job finishes", async () => {
+  const requests = [];
+  let jobRequestCount = 0;
+  const context = loadApp(async (requestPath) => {
+    requests.push(requestPath);
+    if (requestPath === "/api/jobs") {
+      jobRequestCount += 1;
+      return {
+        ok: true,
+        json: async () => ({
+          success: true,
+          data: [{
+            id: "job-1",
+            name: "doubao-batch-prompts:MX",
+            status: jobRequestCount === 1 ? "running" : "done",
+          }],
+        }),
+      };
+    }
+    if (String(requestPath).startsWith("/api/doubao-items/page?")) {
+      return {
+        ok: true,
+        json: async () => ({
+          success: true,
+          data: [{ record_id: "fresh-record", "最终视频生成提示词": "fresh prompt" }],
+          has_more: false,
+          page_token: "",
+        }),
+      };
+    }
+    throw new Error(`unexpected request: ${requestPath}`);
+  });
+  vm.runInContext(`
+    state.activePage = "doubao";
+    state.loadedPages.add("doubao");
+  `, context);
+
+  await vm.runInContext("loadJobs()", context);
+  await vm.runInContext("loadJobs()", context);
+
+  const refreshRequest = requests.find((requestPath) => String(requestPath).startsWith("/api/doubao-items/page?"));
+  assert.ok(refreshRequest, "expected completed Doubao job to refresh the table");
+  assert.equal(new URL(refreshRequest, "https://example.test").searchParams.get("force"), "1");
+  assert.deepEqual(
+    [...vm.runInContext("state.doubaoItems.map((row) => row.record_id)", context)],
+    ["fresh-record"],
+  );
+});
 
 test("loadDoubaoItems follows every cursor and merges all records", async () => {
   const requests = [];
