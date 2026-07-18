@@ -134,6 +134,44 @@ class RedisJobBackendTests(unittest.TestCase):
         finally:
             consumer.shutdown()
 
+    def test_expired_running_job_missing_from_processing_is_requeued(self):
+        fakeredis, RedisJobBackend = self.dependencies()
+        server = fakeredis.FakeServer()
+        redis_one = fakeredis.FakeRedis(server=server, decode_responses=True)
+        executed = []
+        producer = RedisJobBackend(
+            redis_one,
+            lambda *args: None,
+            start_workers=False,
+            namespace="test-orphan-recover",
+        )
+        job_id = producer.enqueue(
+            "doubao-batch-store-images",
+            "doubao.batch_store_images",
+            {"record_ids": ["rec-orphan"], "limit": 50},
+            ["doubao:rec-orphan"],
+            "alice",
+        )
+        redis_one.lrem(producer.queue_key, 0, job_id)
+        redis_one.hset(producer._job_key(job_id), mapping={
+            "status": "running",
+            "started_at": "1",
+            "lease_until": "1",
+        })
+
+        consumer = RedisJobBackend(
+            fakeredis.FakeRedis(server=server, decode_responses=True),
+            lambda action, payload, current_job_id, operator: executed.extend(payload["record_ids"]),
+            max_workers=1,
+            namespace="test-orphan-recover",
+        )
+        try:
+            job = self.wait_for(consumer, job_id)
+            self.assertEqual(job["status"], "done")
+            self.assertEqual(executed, ["rec-orphan"])
+        finally:
+            consumer.shutdown()
+
     def test_expired_processing_job_is_recovered_without_another_restart(self):
         fakeredis, RedisJobBackend = self.dependencies()
         redis_client = fakeredis.FakeRedis(decode_responses=True)

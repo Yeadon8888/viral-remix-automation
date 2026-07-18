@@ -238,7 +238,9 @@ class RedisJobBackend:
         recovered = 0
         try:
             now_ms = int(time.time() * 1000)
-            for raw_job_id in self.redis.lrange(self.processing_key, 0, -1):
+            processing_ids = self.redis.lrange(self.processing_key, 0, -1)
+            recent_ids = self.redis.zrange(self.history_key, -200, -1)
+            for raw_job_id in dict.fromkeys([*processing_ids, *recent_ids]):
                 job_id = str(raw_job_id)
                 job = self.get(job_id)
                 if not job:
@@ -259,6 +261,7 @@ class RedisJobBackend:
                         "lease_until": "",
                     })
                     pipe.lrem(self.processing_key, 0, job_id)
+                    pipe.lrem(self.queue_key, 0, job_id)
                     pipe.lpush(self.queue_key, job_id)
                     pipe.execute()
                 recovered += 1
