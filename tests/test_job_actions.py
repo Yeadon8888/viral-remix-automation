@@ -1,4 +1,6 @@
+import time
 import unittest
+from threading import Lock
 
 
 class JobActionContractTests(unittest.TestCase):
@@ -90,6 +92,36 @@ class JobActionContractTests(unittest.TestCase):
         self.assertEqual(calls, ["rec-1", "rec-2"])
         self.assertEqual(result["processed"], 2)
         self.assertEqual(result["failed"], 0)
+
+    def test_batch_helper_runs_with_bounded_concurrency(self):
+        from api.jobs.actions import _batch
+
+        active = 0
+        max_active = 0
+        lock = Lock()
+
+        def handler(record_id):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return {"record_id": record_id}
+
+        result = _batch(
+            ["rec-1", "rec-2", "rec-3", "rec-4"],
+            handler,
+            max_workers=3,
+        )
+
+        self.assertGreater(max_active, 1)
+        self.assertLessEqual(max_active, 3)
+        self.assertEqual(
+            [item["record_id"] for item in result["results"]],
+            ["rec-1", "rec-2", "rec-3", "rec-4"],
+        )
 
     def test_batch_image_transfer_includes_external_urls_from_storage_field(self):
         try:

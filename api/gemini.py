@@ -2,7 +2,7 @@ import base64
 import json
 import re
 import time
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 from typing import Any
 
 import requests
@@ -13,6 +13,7 @@ from .prompting import DEFAULT_VIDEO_ANALYSIS_TEMPLATE, render_template
 GEMINI_MAX_RETRIES = 4
 GEMINI_MIN_INTERVAL_SECONDS = 2.0
 _gemini_lock = Lock()
+_gemini_slots = BoundedSemaphore(2)
 _last_gemini_request_at = 0.0
 
 
@@ -97,10 +98,12 @@ class GeminiClient:
 
         last_error = ""
         for attempt in range(GEMINI_MAX_RETRIES + 1):
-            with _gemini_lock:
-                wait = GEMINI_MIN_INTERVAL_SECONDS - (time.time() - _last_gemini_request_at)
-                if wait > 0:
-                    time.sleep(wait)
+            with _gemini_slots:
+                with _gemini_lock:
+                    wait = GEMINI_MIN_INTERVAL_SECONDS - (time.time() - _last_gemini_request_at)
+                    if wait > 0:
+                        time.sleep(wait)
+                    _last_gemini_request_at = time.time()
                 resp = requests.post(
                     f"{self.settings.gemini_base_url}/v1/chat/completions",
                     headers={
@@ -110,7 +113,6 @@ class GeminiClient:
                     json=payload,
                     timeout=300,
                 )
-                _last_gemini_request_at = time.time()
 
             if resp.status_code < 400:
                 return resp.json()

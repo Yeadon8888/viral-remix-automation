@@ -1,4 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+
+from api.logging_bus import add_log
 
 
 _worker_workflow = None
@@ -54,18 +57,51 @@ def _workflow():
     return _worker_workflow
 
 
-def _batch(records: list[str], handler) -> dict[str, Any]:
-    results = []
-    for record_id in records:
+def _batch(
+    records: list[str],
+    handler,
+    *,
+    max_workers: int = 1,
+    job_id: str | None = None,
+    label: str = "",
+) -> dict[str, Any]:
+    total = len(records)
+    workers = min(total, max(1, int(max_workers))) if total else 1
+    if label:
+        add_log("info", f"{label}批量任务开始: {total} 条 / 并发 {workers}", "batch", job_id)
+
+    def run(item: tuple[int, str]) -> dict[str, Any]:
+        index, record_id = item
+        if label:
+            add_log("info", f"[{label} {index + 1}/{total}] 开始: {record_id}", "batch", job_id)
         try:
-            results.append(handler(record_id))
+            return handler(record_id)
         except Exception as exc:
-            results.append({"record_id": record_id, "error": str(exc)})
-    return {
+            if label:
+                add_log("error", f"[{label} {index + 1}/{total}] 失败: {record_id} / {exc}", "batch", job_id)
+            return {"record_id": record_id, "error": str(exc)}
+
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="batch-item") as pool:
+        results = list(pool.map(run, enumerate(records)))
+
+    result = {
         "processed": len(results),
         "failed": sum(1 for item in results if item.get("error") or item.get("status") == "failed"),
         "results": results,
     }
+    if label:
+        add_log(
+            "success" if result["failed"] == 0 else "error",
+            f"{label}批量任务完成: {result['processed']} 条 / 失败 {result['failed']} 条",
+            "batch",
+            job_id,
+        )
+    return result
+
+
+def _concurrency(workflow, setting_name: str, default: int) -> int:
+    settings = getattr(workflow, "settings", None)
+    return max(1, int(getattr(settings, setting_name, default)))
 
 
 def execute_action(
@@ -110,12 +146,21 @@ def execute_action(
                 if row.get("record_id")
                 and row.get("商品图可转存")
             ][:limit]
-        return _batch(ids, lambda rid: work.store_doubao_image(rid, job_id=job_id))
+        return _batch(
+            ids,
+            lambda rid: work.store_doubao_image(rid, job_id=job_id),
+            max_workers=_concurrency(work, "batch_image_concurrency", 4),
+            job_id=job_id,
+            label="图片转存",
+        )
 
     if action == "doubao.batch_generate_prompts":
         return _batch(
             record_ids,
             lambda rid: work.generate_doubao_prompt(rid, country_code, job_id=job_id),
+            max_workers=_concurrency(work, "batch_prompt_concurrency", 2),
+            job_id=job_id,
+            label="提示词生成",
         )
 
     if action == "doubao.batch_sync_part_time":
