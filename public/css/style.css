@@ -939,6 +939,14 @@ tr.selected { background: #eef8f3; box-shadow: inset 4px 0 0 var(--green); }
 
 .editor-grid input { width: 100%; }
 .editor-actions { justify-content: flex-end; }
+.editor-hint {
+  border-left: 3px solid var(--green);
+  background: #eef8f2;
+  padding: 9px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
 
 .prompt-filters { align-items: center; }
 .prompt-filters label { color: var(--muted); font-size: 11px; font-weight: 800; }

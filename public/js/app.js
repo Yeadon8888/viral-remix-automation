@@ -14,6 +14,7 @@ const state = {
   collapsedDoubaoDateGroups: new Set(),
   seenDoubaoDateGroups: new Set(),
   editingPromptId: "",
+  creatingPrompt: false,
   selectedMaterialId: localStorage.getItem("viral-remix-selected-material") || "",
   selectedMaterialIds: new Set(),
   selectedTaskIds: new Set(),
@@ -1097,9 +1098,14 @@ function renderDoubaoItems() {
 
 function renderPrompts() {
   renderPromptEditor();
-  const rows = state.promptCountryFilter
+  const filteredRows = state.promptCountryFilter
     ? state.prompts.filter((row) => String(row["目标地区"] || "") === state.promptCountryFilter)
     : state.prompts;
+  const rows = [...filteredRows].sort((left, right) => (
+    String(left["目标地区"] || "").localeCompare(String(right["目标地区"] || ""), "zh-CN")
+    || String(left["Prompt名称"] || "").localeCompare(String(right["Prompt名称"] || ""), "zh-CN")
+    || String(left["版本"] || "").localeCompare(String(right["版本"] || ""), "zh-CN")
+  ));
   if (!rows.length) {
     $("prompts").innerHTML = `<div class="selected-box">暂无 Prompt 配置</div>`;
     return;
@@ -1122,6 +1128,7 @@ function renderPrompts() {
 
   document.querySelectorAll("[data-action='edit-prompt']").forEach((button) => {
     button.addEventListener("click", () => {
+      state.creatingPrompt = false;
       state.editingPromptId = button.dataset.id;
       renderPromptEditor();
       $("promptEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -1132,7 +1139,26 @@ function renderPrompts() {
 
 function renderPromptEditor() {
   const box = $("promptEditor");
-  const row = state.prompts.find((item) => item.record_id === state.editingPromptId);
+  const defaultRegion = state.promptCountryFilter
+    || state.countries.find((country) => country.code === state.doubaoCountryCode)?.prompt_region
+    || "通用";
+  const defaultCountry = state.countries.find((country) => country.prompt_region === defaultRegion);
+  const defaultNameRegion = defaultCountry
+    ? `${defaultCountry.name}-${defaultCountry.language_name}`
+    : defaultRegion;
+  const row = state.creatingPrompt
+    ? {
+      "Prompt名称": `豆包视频-${defaultNameRegion}-新方案`,
+      "Prompt类型": "豆包视频",
+      "模板Key": "doubao_seedance_video_prompt",
+      "版本": "",
+      "是否启用": "停用",
+      "目标地区": defaultRegion,
+      "模板内容": "",
+      "变量说明": "{product_name} 商品名称\n{product_link} 商品链接",
+      "备注": "",
+    }
+    : state.prompts.find((item) => item.record_id === state.editingPromptId);
   if (!row) {
     box.hidden = true;
     box.innerHTML = "";
@@ -1141,7 +1167,7 @@ function renderPromptEditor() {
   box.hidden = false;
   box.innerHTML = `<div class="editor-head">
     <div>
-      <strong>编辑 Prompt</strong>
+      <strong>${state.creatingPrompt ? "新增豆包视频提示词" : "编辑 Prompt"}</strong>
       <span>${esc(row["模板Key"] || "")} · ${esc(row["Prompt类型"] || "")}</span>
     </div>
     <button id="closePromptEditor" class="mini secondary" type="button">收起</button>
@@ -1159,8 +1185,9 @@ function renderPromptEditor() {
   <label class="editor-block">模板内容<textarea id="editPromptContent" rows="18">${esc(row["模板内容"] || "")}</textarea></label>
   <label class="editor-block">变量说明<textarea id="editPromptVars" rows="3">${esc(row["变量说明"] || "")}</textarea></label>
   <label class="editor-block">备注<textarea id="editPromptNote" rows="3">${esc(row["备注"] || "")}</textarea></label>
+  ${state.creatingPrompt ? `<div class="editor-hint">新模板会先作为草稿保存。如果直接选择“启用”，同一国家当前生效的豆包视频模板会自动停用。</div>` : ""}
   <div class="editor-actions">
-    <button id="savePromptEdit" type="button">保存到飞书</button>
+    <button id="savePromptEdit" type="button">${state.creatingPrompt ? "新增到飞书" : "保存到飞书"}</button>
     <button id="cancelPromptEdit" class="secondary" type="button">取消</button>
   </div>`;
   $("closePromptEditor").onclick = closePromptEditor;
@@ -1240,39 +1267,49 @@ async function loadPrompts(options = {}) {
 
 function closePromptEditor() {
   state.editingPromptId = "";
+  state.creatingPrompt = false;
   renderPromptEditor();
 }
 
 async function savePromptEdit() {
-  if (!state.editingPromptId) return;
+  const isCreating = state.creatingPrompt;
+  if (!isCreating && !state.editingPromptId) return;
   const row = state.prompts.find((item) => item.record_id === state.editingPromptId);
-  if (!row?.revision) {
+  if (!isCreating && !row?.revision) {
     notify("Prompt 版本已过期，请刷新后重新编辑", "error");
     await loadPrompts({ force: true });
     return;
   }
   const button = $("savePromptEdit");
+  const fields = {
+    "Prompt名称": $("editPromptName").value.trim(),
+    "版本": $("editPromptVersion").value.trim(),
+    "是否启用": $("editPromptEnabled").value,
+    "目标地区": $("editPromptRegion").value,
+    "模板内容": $("editPromptContent").value.trim(),
+    "变量说明": $("editPromptVars").value.trim(),
+    "备注": $("editPromptNote").value.trim(),
+  };
+  const missing = ["Prompt名称", "版本", "目标地区", "模板内容"].find((field) => !fields[field]);
+  if (missing) {
+    notify(`${missing}不能为空`, "error");
+    return;
+  }
   const oldText = button.textContent;
   button.disabled = true;
   button.textContent = "保存中";
   try {
-    await api(`/api/prompts/${state.editingPromptId}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        "revision": row.revision,
-        "Prompt名称": $("editPromptName").value,
-        "版本": $("editPromptVersion").value,
-        "是否启用": $("editPromptEnabled").value,
-        "目标地区": $("editPromptRegion").value,
-        "模板内容": $("editPromptContent").value,
-        "变量说明": $("editPromptVars").value,
-        "备注": $("editPromptNote").value,
-      }),
+    await api(isCreating ? "/api/prompts" : `/api/prompts/${state.editingPromptId}`, {
+      method: isCreating ? "POST" : "PATCH",
+      body: JSON.stringify(isCreating ? fields : { "revision": row.revision, ...fields }),
     });
+    notify(isCreating ? "提示词已新增到飞书" : "Prompt 已保存");
+    state.creatingPrompt = false;
+    state.editingPromptId = "";
     await loadPrompts({ force: true });
   } catch (error) {
     notify(error.message || "Prompt 保存失败", "error");
-    await loadPrompts({ force: true });
+    if (!isCreating) await loadPrompts({ force: true });
   } finally {
     button.disabled = false;
     button.textContent = oldText;
@@ -1924,6 +1961,12 @@ $("pageDoubao").onclick = () => switchPage("doubao");
 $("pagePrompts").onclick = () => switchPage("prompts");
 $("loadDoubao").onclick = () => loadDoubaoItems({ force: true });
 $("loadPrompts").onclick = () => loadPrompts({ force: true });
+$("addPrompt").onclick = () => {
+  state.editingPromptId = "";
+  state.creatingPrompt = true;
+  renderPromptEditor();
+  $("promptEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
+};
 $("doubaoCountry").onchange = () => {
   state.doubaoCountryCode = $("doubaoCountry").value;
   localStorage.setItem("viral-remix-doubao-country", state.doubaoCountryCode);

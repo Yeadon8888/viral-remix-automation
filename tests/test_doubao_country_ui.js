@@ -25,10 +25,13 @@ test("Doubao UI uses one country selector and backend batch endpoints", () => {
 test("main navigation exposes three product areas", () => {
   const root = path.join(__dirname, "..");
   const html = fs.readFileSync(path.join(root, "public", "index.html"), "utf8");
+  const js = fs.readFileSync(path.join(root, "public", "js", "app.js"), "utf8");
 
   assert.match(html, /短视频带货全链路自动化工作后台/);
   assert.match(html, /data-page="remix"[\s\S]*?<strong>视频复刻<\/strong>/);
   assert.match(html, /data-page="doubao"[\s\S]*?<strong>豆包视频素材表<\/strong>/);
   assert.match(html, /data-page="prompts"[\s\S]*?<strong>Prompt配置<\/strong>/);
+  assert.match(html, /id="addPrompt"[\s\S]*?>新增提示词<\/button>/);
+  assert.match(js, /\/api\/prompts" :[\s\S]*?method: isCreating \? "POST"/);
   assert.doesNotMatch(html, /视频拆解 -&gt;|视频拆解 -> 主图入库/);
 });

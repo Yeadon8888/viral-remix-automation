@@ -63,6 +63,46 @@ class PromptApiConflictTests(unittest.TestCase):
         self.assertEqual(captured["revision"], "current")
         self.assertNotIn("revision", captured["body"])
 
+    def test_create_prompt_forwards_fields_to_workflow(self):
+        captured = {}
+
+        class FakeWorkflow:
+            def create_prompt_config(self, body):
+                captured.update(body)
+                return {"record_id": "prompt-2"}
+
+        with (
+            patch.object(app_module, "settings", self.settings),
+            patch.object(app_module, "workflow", FakeWorkflow()),
+        ):
+            response = self.client.post(
+                "/api/prompts",
+                json={
+                    "Prompt名称": "墨西哥方案二",
+                    "版本": "mx-v2",
+                    "目标地区": "墨西哥",
+                    "模板内容": "新模板",
+                },
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.get_json()["data"]["record_id"], "prompt-2")
+        self.assertEqual(captured["版本"], "mx-v2")
+
+    def test_create_prompt_validation_error_is_json_400(self):
+        class FakeWorkflow:
+            def create_prompt_config(self, body):
+                raise ValueError("版本不能为空")
+
+        with (
+            patch.object(app_module, "settings", self.settings),
+            patch.object(app_module, "workflow", FakeWorkflow()),
+        ):
+            response = self.client.post("/api/prompts", json={"Prompt名称": "新模板"})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("版本", response.get_json()["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -36,6 +36,7 @@ PROMPT_EDITABLE_FIELDS = (
     "变量说明",
     "备注",
 )
+PROMPT_REQUIRED_FIELDS = ("Prompt名称", "版本", "目标地区", "模板内容")
 
 
 class PromptConflictError(RuntimeError):
@@ -269,21 +270,102 @@ class ViralRemixWorkflow:
         records = self.feishu.list_records(self.settings.prompt_table_id)
         out = []
         for record in records:
-            fields = record.get("fields", {})
-            out.append({
-                "record_id": record.get("record_id"),
-                "Prompt名称": field_value(fields, "Prompt名称", ""),
-                "Prompt类型": field_value(fields, "Prompt类型", ""),
-                "模板Key": field_value(fields, "模板Key", ""),
-                "版本": field_value(fields, "版本", ""),
-                "是否启用": field_value(fields, "是否启用", ""),
-                "目标地区": field_value(fields, "目标地区", ""),
-                "模板内容": field_value(fields, "模板内容", ""),
-                "变量说明": field_value(fields, "变量说明", ""),
-                "备注": field_value(fields, "备注", ""),
-                "revision": prompt_revision(fields),
-            })
+            out.append(self._prompt_config_row(record))
         return out
+
+    @staticmethod
+    def _prompt_config_row(record: dict[str, Any]) -> dict[str, Any]:
+        fields = record.get("fields", {})
+        return {
+            "record_id": record.get("record_id"),
+            "Prompt名称": field_value(fields, "Prompt名称", ""),
+            "Prompt类型": field_value(fields, "Prompt类型", ""),
+            "模板Key": field_value(fields, "模板Key", ""),
+            "版本": field_value(fields, "版本", ""),
+            "是否启用": field_value(fields, "是否启用", ""),
+            "目标地区": field_value(fields, "目标地区", ""),
+            "模板内容": field_value(fields, "模板内容", ""),
+            "变量说明": field_value(fields, "变量说明", ""),
+            "备注": field_value(fields, "备注", ""),
+            "revision": prompt_revision(fields),
+        }
+
+    @staticmethod
+    def _prompt_write_fields(values: dict[str, Any], *, creating: bool = False) -> dict[str, str]:
+        fields = {
+            key: str(values.get(key) or "").strip()
+            for key in PROMPT_EDITABLE_FIELDS
+            if key in values
+        }
+        if creating:
+            fields["Prompt类型"] = "豆包视频"
+            fields["模板Key"] = DOUBAO_PROMPT_KEY
+            fields.setdefault("是否启用", "停用")
+        return fields
+
+    @staticmethod
+    def _validate_prompt_config(fields: dict[str, Any]) -> None:
+        for name in PROMPT_REQUIRED_FIELDS:
+            if not str(fields.get(name) or "").strip():
+                raise ValueError(f"{name}不能为空")
+        if fields.get("是否启用") not in {"启用", "停用"}:
+            raise ValueError("是否启用只能是：启用 / 停用")
+        allowed_regions = {"墨西哥", "通用", *prompt_regions()}
+        if fields.get("目标地区") not in allowed_regions:
+            raise ValueError(f"目标地区只能是：{' / '.join(sorted(allowed_regions))}")
+
+    @staticmethod
+    def _ensure_unique_prompt_version(
+        rows: list[dict[str, Any]],
+        key: str,
+        region: str,
+        version: str,
+        *,
+        exclude_record_id: str = "",
+    ) -> None:
+        for row in rows:
+            if row.get("record_id") == exclude_record_id:
+                continue
+            if (
+                str(row.get("模板Key") or "").strip() == key
+                and str(row.get("目标地区") or "").strip() == region
+                and str(row.get("版本") or "").strip().casefold() == version.casefold()
+            ):
+                raise ValueError(f"版本 {version} 在 {region} 已存在，请使用新版本号")
+
+    def _disable_prompt_siblings(
+        self,
+        rows: list[dict[str, Any]],
+        key: str,
+        region: str,
+        *,
+        exclude_record_id: str = "",
+    ) -> None:
+        for row in rows:
+            if row.get("record_id") == exclude_record_id:
+                continue
+            if (
+                str(row.get("模板Key") or "").strip() == key
+                and str(row.get("目标地区") or "").strip() == region
+                and str(row.get("是否启用") or "").strip() == "启用"
+            ):
+                self.feishu.update_record(
+                    self.settings.prompt_table_id,
+                    str(row["record_id"]),
+                    {"是否启用": "停用"},
+                )
+
+    def create_prompt_config(self, values: dict[str, Any]) -> dict[str, Any]:
+        fields = self._prompt_write_fields(values, creating=True)
+        self._validate_prompt_config(fields)
+        rows = self.list_prompt_configs()
+        key = fields["模板Key"]
+        region = fields["目标地区"]
+        self._ensure_unique_prompt_version(rows, key, region, fields["版本"])
+        if fields["是否启用"] == "启用":
+            self._disable_prompt_siblings(rows, key, region)
+        created = self.feishu.create_record(self.settings.prompt_table_id, fields)
+        return self._prompt_config_row(created)
 
     def update_prompt_config(
         self,
@@ -291,25 +373,22 @@ class ViralRemixWorkflow:
         patch: dict[str, Any],
         expected_revision: str = "",
     ) -> dict[str, Any]:
-        allowed_fields = set(PROMPT_EDITABLE_FIELDS)
-        fields = {
-            key: str(value or "").strip()
-            for key, value in patch.items()
-            if key in allowed_fields
-        }
+        fields = self._prompt_write_fields(patch)
         if not fields:
             raise RuntimeError("没有可更新的 Prompt 字段")
-        if expected_revision:
-            current = self.feishu.get_record(self.settings.prompt_table_id, record_id)
-            if prompt_revision(current.get("fields", {})) != expected_revision:
-                raise PromptConflictError("Prompt 已被其他人修改，请刷新后重新编辑")
-        if "是否启用" in fields and fields["是否启用"] not in {"启用", "停用"}:
-            raise RuntimeError("是否启用只能是：启用 / 停用")
-        allowed_regions = {"墨西哥", "通用", *prompt_regions()}
-        if "目标地区" in fields and fields["目标地区"] not in allowed_regions:
-            raise RuntimeError(f"目标地区只能是：{' / '.join(sorted(allowed_regions))}")
-        if "模板内容" in fields and not fields["模板内容"]:
-            raise RuntimeError("模板内容不能为空")
+        current = self.feishu.get_record(self.settings.prompt_table_id, record_id)
+        if expected_revision and prompt_revision(current.get("fields", {})) != expected_revision:
+            raise PromptConflictError("Prompt 已被其他人修改，请刷新后重新编辑")
+        current_row = self._prompt_config_row(current)
+        merged = {**current_row, **fields}
+        self._validate_prompt_config(merged)
+        rows = self.list_prompt_configs()
+        key = str(merged.get("模板Key") or "").strip()
+        region = str(merged.get("目标地区") or "").strip()
+        version = str(merged.get("版本") or "").strip()
+        self._ensure_unique_prompt_version(rows, key, region, version, exclude_record_id=record_id)
+        if merged.get("是否启用") == "启用":
+            self._disable_prompt_siblings(rows, key, region, exclude_record_id=record_id)
         return self.feishu.update_record(self.settings.prompt_table_id, record_id, fields)
 
     def _active_prompt_templates(self, region: str) -> tuple[dict[str, str], dict[str, str]]:

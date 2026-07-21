@@ -226,12 +226,13 @@
                 <select id="promptCountryFilter">
                   <option value="">全部地区</option>
                 </select>
+                <button id="addPrompt" type="button">新增提示词</button>
                 <button id="loadPrompts" class="secondary" type="button">读取配置</button>
               </div>
             </div>
             <div class="prompt-note">
               <strong>模板选择优先级</strong>
-              <span>目标国家精确匹配 → 通用模板 → 系统兜底；保存后新任务立即生效，历史任务不会被自动覆盖。</span>
+              <span>目标国家精确匹配 → 通用模板 → 系统兜底；新增默认为停用草稿，同一国家启用新方案时会自动停用旧方案。</span>
             </div>
             <div id="promptEditor" class="prompt-editor" hidden></div>
             <div class="table-toolbar">

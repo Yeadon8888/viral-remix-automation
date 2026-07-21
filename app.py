@@ -308,6 +308,27 @@ def list_prompts():
     return jsonify({"success": True, "data": data})
 
 
+@app.route("/api/prompts", methods=["POST"])
+def create_prompt():
+    body = dict(request.get_json(silent=True) or {})
+    current_workflow = get_workflow()
+    audit_write("prompt.create", "prompt-config:global", "started")
+    try:
+        with coordinated_resources(["prompt-config:global"], settings=settings):
+            data = current_workflow.create_prompt_config(body)
+    except ValueError as exc:
+        audit_write("prompt.create", "prompt-config:global", "failed", str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 400
+    except TimeoutError as exc:
+        raise ServiceUnavailable(str(exc)) from exc
+    except Exception as exc:
+        audit_write("prompt.create", "prompt-config:global", "failed", str(exc))
+        raise
+    audit_write("prompt.create", f"prompt:{data.get('record_id', '')}", "done")
+    clear_list_cache()
+    return jsonify({"success": True, "data": data}), 201
+
+
 @app.route("/api/prompts/<record_id>", methods=["PATCH"])
 def update_prompt(record_id):
     body = dict(request.get_json(silent=True) or {})
@@ -317,11 +338,14 @@ def update_prompt(record_id):
     workflow = get_workflow()
     audit_write("prompt.update", f"prompt:{record_id}", "started")
     try:
-        with coordinated_resources([f"prompt:{record_id}"], settings=settings):
+        with coordinated_resources(["prompt-config:global"], settings=settings):
             data = workflow.update_prompt_config(record_id, body, expected_revision=revision)
     except PromptConflictError as exc:
         audit_write("prompt.update", f"prompt:{record_id}", "conflict", str(exc))
         return jsonify({"success": False, "message": str(exc)}), 409
+    except ValueError as exc:
+        audit_write("prompt.update", f"prompt:{record_id}", "failed", str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 400
     except TimeoutError as exc:
         raise ServiceUnavailable(str(exc)) from exc
     except Exception as exc:
