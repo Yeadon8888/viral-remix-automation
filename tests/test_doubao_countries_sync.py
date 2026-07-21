@@ -161,6 +161,38 @@ class PartTimeSyncServiceTests(unittest.TestCase):
         self.assertEqual(len(target_updates), 1)
         self.assertEqual(target_updates[0][1], "target-existing")
 
+    def test_synced_source_is_skipped_without_target_write(self):
+        service, calls = self.make_service({
+            "商品名称": "Travel bag",
+            "商品图存储链接": "https://cdn.example/bag.jpg",
+            "最终视频生成提示词": "prompt",
+            "目标国家": "泰国",
+            "目标语言": "泰语",
+            "兼职同步状态": "已同步",
+        })
+
+        result = service.sync_record("source-1", "TH")
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(calls["created"], [])
+        self.assertEqual(calls["updated"], [])
+        self.assertEqual(calls["listed"], 0)
+
+    def test_force_update_processes_synced_source(self):
+        service, calls = self.make_service({
+            "商品名称": "Travel bag",
+            "商品图存储链接": "https://cdn.example/bag.jpg",
+            "最终视频生成提示词": "prompt",
+            "目标国家": "泰国",
+            "目标语言": "泰语",
+            "兼职同步状态": "已同步",
+        })
+
+        result = service.sync_record("source-1", "TH", force_update=True)
+
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(len(calls["created"]), 1)
+
     def test_claimed_record_is_a_conflict_and_is_never_overwritten(self):
         service, calls = self.make_service(
             {

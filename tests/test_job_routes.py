@@ -90,6 +90,27 @@ class PersistentJobRouteTests(unittest.TestCase):
         self.assertIn("视频", response.get_json()["message"])
         enqueue.assert_not_called()
 
+    def test_part_time_batch_preserves_explicit_force_update(self):
+        settings = SimpleNamespace(admin_token="", admin_users_json="")
+        captured = {}
+
+        def enqueue(name, action, payload):
+            captured.update({"action": action, "payload": payload})
+            return "job-1"
+
+        with (
+            patch.object(app_module, "settings", settings),
+            patch.object(app_module, "enqueue_workflow_action", enqueue),
+        ):
+            response = self.client.post(
+                "/api/doubao-items/batch-sync-part-time",
+                json={"record_ids": ["rec-1"], "country_code": "MX", "force_update": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["action"], "doubao.batch_sync_part_time")
+        self.assertIs(captured["payload"]["force_update"], True)
+
 
 if __name__ == "__main__":
     unittest.main()

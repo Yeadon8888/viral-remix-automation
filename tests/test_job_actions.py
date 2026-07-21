@@ -163,6 +163,41 @@ class JobActionContractTests(unittest.TestCase):
         self.assertEqual(result["processed"], 1)
         self.assertEqual(result["failed"], 0)
 
+    def test_part_time_batch_passes_force_update_and_counts_skipped_rows(self):
+        from api.jobs.actions import execute_action
+
+        calls = []
+
+        class FakeFeishu:
+            def list_records(self, table_id):
+                return []
+
+        class FakeWorkflow:
+            settings = type("Settings", (), {"part_time_table_id": "target-table"})()
+            feishu = FakeFeishu()
+
+            def sync_doubao_to_part_time(
+                self,
+                record_id,
+                country_code,
+                job_id=None,
+                target_records=None,
+                force_update=False,
+            ):
+                calls.append((record_id, force_update))
+                return {"record_id": record_id, "status": "skipped"}
+
+        result = execute_action(
+            "doubao.batch_sync_part_time",
+            {"record_ids": ["rec-1"], "country_code": "MX", "force_update": True},
+            "job-1",
+            "alice",
+            workflow=FakeWorkflow(),
+        )
+
+        self.assertEqual(calls, [("rec-1", True)])
+        self.assertEqual(result["skipped"], 1)
+
     def test_doubao_publish_action_invokes_joined_sync(self):
         from api.jobs.actions import execute_action
 

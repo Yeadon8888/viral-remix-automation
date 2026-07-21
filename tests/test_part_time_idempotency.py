@@ -15,6 +15,7 @@ class PartTimeIdempotencyTests(unittest.TestCase):
             "最终视频生成提示词": "Mexican Spanish prompt",
             "目标国家": "墨西哥",
             "目标语言": "西班牙语",
+            "兼职同步状态": "已同步",
         }
         created = []
         target_records = []
@@ -48,8 +49,8 @@ class PartTimeIdempotencyTests(unittest.TestCase):
             ledger=ledger,
         )
 
-        result = service.sync_record("source-1", "MX", owner_id="retry-job")
-        repeated = service.sync_record("source-1", "MX", owner_id="later-job")
+        result = service.sync_record("source-1", "MX", owner_id="retry-job", force_update=True)
+        repeated = service.sync_record("source-1", "MX", owner_id="later-job", force_update=True)
 
         self.assertEqual(result["status"], "created")
         self.assertEqual(result["target_record_id"], "target-new")

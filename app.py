@@ -570,6 +570,7 @@ def batch_generate_doubao_prompts():
 
 @app.route("/api/doubao-items/batch-sync-part-time", methods=["POST"])
 def batch_sync_doubao_part_time():
+    body = request.get_json(silent=True) or {}
     try:
         record_ids, country = validated_doubao_batch_request()
     except ValueError as exc:
@@ -577,7 +578,11 @@ def batch_sync_doubao_part_time():
     job_id = enqueue_workflow_action(
         f"doubao-batch-sync-part-time:{country.code}",
         "doubao.batch_sync_part_time",
-        {"record_ids": record_ids, "country_code": country.code},
+        {
+            "record_ids": record_ids,
+            "country_code": country.code,
+            "force_update": body.get("force_update") is True,
+        },
     )
     return jsonify({"success": True, "job_id": job_id})
 

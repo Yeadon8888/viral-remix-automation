@@ -322,8 +322,10 @@ function selectedDoubaoRows() {
   return state.doubaoItems.filter((row) => state.selectedDoubaoIds.has(row.record_id));
 }
 
-function syncableDoubaoRows(rows = selectedDoubaoRows()) {
-  return rows.filter((row) => String(row["最终视频生成提示词"] || "").trim() && promptCountryMatchesSelection(row));
+function syncableDoubaoRows(rows = selectedDoubaoRows(), forceUpdate = false) {
+  return rows.filter((row) => String(row["最终视频生成提示词"] || "").trim()
+    && promptCountryMatchesSelection(row)
+    && (forceUpdate || String(row["兼职同步状态"] || "").trim() !== "已同步"));
 }
 
 function isJobRunning(name) {
@@ -524,9 +526,11 @@ function renderDoubaoSelectionState() {
   const visibleIds = currentVisibleDoubaoRows().map((row) => row.record_id).filter(Boolean);
   const selectedRows = selectedDoubaoRows();
   const selectedCount = selectedRows.length;
-  const syncableCount = syncableDoubaoRows(selectedRows).length;
+  const forceUpdate = Boolean($("forceDoubaoSyncUpdate")?.checked);
+  const syncableCount = syncableDoubaoRows(selectedRows, forceUpdate).length;
+  const syncedSkipped = syncableDoubaoRows(selectedRows, true).length - syncableDoubaoRows(selectedRows, false).length;
   const visibleSelectedCount = visibleIds.filter((id) => state.selectedDoubaoIds.has(id)).length;
-  $("selectedDoubaoCount").textContent = `已选 ${selectedCount} 条 · 当前国家可同步 ${syncableCount} 条`;
+  $("selectedDoubaoCount").textContent = `已选 ${selectedCount} 条 · 当前国家可同步 ${syncableCount} 条${!forceUpdate && syncedSkipped ? ` · 跳过已同步 ${syncedSkipped} 条` : ""}`;
   $("selectAllDoubao").checked = visibleIds.length > 0 && visibleSelectedCount === visibleIds.length;
   $("selectAllDoubao").indeterminate = visibleSelectedCount > 0 && visibleSelectedCount < visibleIds.length;
 }
@@ -1724,9 +1728,13 @@ async function batchDoubaoSyncPartTime(button = null) {
   if (isJobBusy(name)) return;
   const selectedRows = selectedDoubaoRows();
   const promptRows = selectedRows.filter((row) => String(row["最终视频生成提示词"] || "").trim());
-  const rows = syncableDoubaoRows(selectedRows);
+  const forceUpdate = Boolean($("forceDoubaoSyncUpdate")?.checked);
+  const rows = syncableDoubaoRows(selectedRows, forceUpdate);
   if (!rows.length) {
-    const message = promptRows.length
+    const hasSyncedRows = syncableDoubaoRows(selectedRows, true).length > 0;
+    const message = !forceUpdate && hasSyncedRows
+      ? "所选记录均已同步；如需覆盖，请勾选“强制更新已同步”"
+      : promptRows.length
       ? `所选提示词不属于${selectedCountryName()}·${selectedCountryLanguageName()}，请先按当前国家语言重新生成`
       : "请先勾选已生成提示词的豆包记录";
     notify(message, "error");
@@ -1745,6 +1753,7 @@ async function batchDoubaoSyncPartTime(button = null) {
       body: JSON.stringify({
         record_ids: rows.map((row) => row.record_id),
         country_code: state.doubaoCountryCode,
+        force_update: forceUpdate,
       }),
     });
     notify(`已启动 ${rows.length} 条兼职任务同步：${data.job_id}`);
@@ -1970,7 +1979,9 @@ $("addPrompt").onclick = () => {
 $("doubaoCountry").onchange = () => {
   state.doubaoCountryCode = $("doubaoCountry").value;
   localStorage.setItem("viral-remix-doubao-country", state.doubaoCountryCode);
+  renderDoubaoItems();
 };
+$("forceDoubaoSyncUpdate").onchange = renderDoubaoSelectionState;
 $("promptCountryFilter").onchange = () => {
   state.promptCountryFilter = $("promptCountryFilter").value;
   renderPrompts();

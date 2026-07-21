@@ -93,3 +93,42 @@ test("completed batch with item failures is shown as failed with its reason", ()
   assert.match(html, /download failed: HTTP 403/);
   assert.doesNotMatch(html, /class="status done"/);
 });
+
+test("part-time batch skips synced rows unless force update is enabled", () => {
+  const context = loadApp();
+  const defaultCount = vm.runInContext(`syncableDoubaoRows([
+    {
+      record_id: "record-new",
+      "最终视频生成提示词": "prompt",
+      "目标国家": "马来西亚",
+      "目标语言": "马来语",
+      "兼职同步状态": "未同步"
+    },
+    {
+      record_id: "record-synced",
+      "最终视频生成提示词": "prompt",
+      "目标国家": "马来西亚",
+      "目标语言": "马来语",
+      "兼职同步状态": "已同步"
+    }
+  ]).length`, context);
+  const forcedCount = vm.runInContext(`syncableDoubaoRows([
+    {
+      record_id: "record-new",
+      "最终视频生成提示词": "prompt",
+      "目标国家": "马来西亚",
+      "目标语言": "马来语",
+      "兼职同步状态": "未同步"
+    },
+    {
+      record_id: "record-synced",
+      "最终视频生成提示词": "prompt",
+      "目标国家": "马来西亚",
+      "目标语言": "马来语",
+      "兼职同步状态": "已同步"
+    }
+  ], true).length`, context);
+
+  assert.equal(defaultCount, 1);
+  assert.equal(forcedCount, 2);
+});

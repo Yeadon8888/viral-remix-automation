@@ -52,6 +52,7 @@ class PartTimeSyncService:
         country_code: str = "MY",
         target_records: list[dict[str, Any]] | None = None,
         owner_id: str = "",
+        force_update: bool = False,
     ) -> dict[str, Any]:
         country = get_country(country_code)
         source = self.feishu.get_record(self.settings.doubao_table_id, source_record_id)
@@ -75,6 +76,15 @@ class PartTimeSyncService:
             raise RuntimeError(f"历史提示词未标记语言，请先按{country.language_name}重新生成提示词")
         if prompt_language and prompt_language != country.language_name:
             raise RuntimeError(f"当前提示词语言为{prompt_language}，请先按{country.language_name}重新生成提示词")
+        sync_status = str(field_value(source_fields, "兼职同步状态", "") or "").strip()
+        if sync_status == "已同步" and not force_update:
+            return {
+                "record_id": source_record_id,
+                "target_record_id": str(field_value(source_fields, "兼职同步记录ID", "") or "").strip(),
+                "country_code": country.code,
+                "status": "skipped",
+                "message": "已同步，已跳过重复写入",
+            }
 
         ledger_scope = f"part-time:{source_record_id}:{country.code}:{country.language_name}"
         ledger_owner = owner_id or f"sync-{uuid4().hex}"

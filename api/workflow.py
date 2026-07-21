@@ -783,6 +783,7 @@ class ViralRemixWorkflow:
         country_code: str = "MY",
         job_id: str | None = None,
         target_records: list[dict[str, Any]] | None = None,
+        force_update: bool = False,
     ) -> dict[str, Any]:
         record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
         fields = record.get("fields", {})
@@ -798,6 +799,7 @@ class ViralRemixWorkflow:
                 country.code,
                 target_records=target_records,
                 owner_id=job_id or "",
+                force_update=force_update,
             )
         except Exception as exc:
             self.feishu.update_record(

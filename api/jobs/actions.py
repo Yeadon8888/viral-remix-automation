@@ -26,6 +26,8 @@ def normalize_payload(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         normalized["step"] = str(normalized.get("step") or "").strip()
     if "limit" in normalized:
         normalized["limit"] = max(1, int(normalized.get("limit") or 1))
+    if "force_update" in normalized:
+        normalized["force_update"] = normalized.get("force_update") is True
     return normalized
 
 
@@ -172,9 +174,10 @@ def execute_action(
                 country_code,
                 job_id=job_id,
                 target_records=target_records,
+                force_update=bool(data.get("force_update")),
             ),
         )
-        for status in ("created", "updated", "conflict"):
+        for status in ("created", "updated", "conflict", "skipped"):
             result[status] = sum(1 for item in result["results"] if item.get("status") == status)
         return result
 
