@@ -4,9 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-import time
 from tempfile import TemporaryDirectory
-from threading import Lock
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -21,7 +19,13 @@ from .image_gen import NewTokenImageClient, normalize_styles
 from .logging_bus import add_log
 from .prompting import DEFAULT_IMAGE_PROMPTS, DEFAULT_VIDEO_ANALYSIS_TEMPLATE, STYLE_LABELS, image_prompt_snapshot
 from .r2 import R2Storage
-from .services import DoubaoAssetService, PartTimeSyncService, ViralVideoAssetService, product_id_from_fields
+from .services import (
+    DoubaoAssetService,
+    DoubaoRecordIndex,
+    PartTimeSyncService,
+    ViralVideoAssetService,
+    product_id_from_fields,
+)
 from .services.batch_queue_export import (
     BatchQueueExportError,
     BatchQueueItem,
@@ -47,7 +51,6 @@ PROMPT_EDITABLE_FIELDS = (
     "备注",
 )
 PROMPT_REQUIRED_FIELDS = ("Prompt名称", "版本", "目标地区", "模板内容")
-DOUBAO_INDEX_CACHE_TTL_SECONDS = 300
 
 
 class PromptConflictError(RuntimeError):
@@ -315,10 +318,7 @@ class ViralRemixWorkflow:
             self.gemini,
             self._download_url,
         )
-        self._doubao_index_lock = Lock()
-        self._doubao_record_ids_cache: list[str] = []
-        self._doubao_record_ids_cached_at = 0.0
-        self._doubao_index_redis = None
+        self.doubao_record_index = DoubaoRecordIndex(settings, self.feishu)
 
     def list_prompt_configs(self) -> list[dict[str, Any]]:
         if not self.settings.prompt_table_id:
@@ -700,177 +700,30 @@ class ViralRemixWorkflow:
             "total": 0 if cutoff else page.get("total", 0),
         }
 
-    def _doubao_index_cache_key(self) -> str:
-        return f"viral-remix:doubao-row-ids:{self.settings.doubao_table_id}:v1"
-
-    def _load_doubao_record_ids_cache(self) -> list[str]:
-        memory = getattr(self, "_doubao_record_ids_cache", [])
-        if memory:
-            return list(memory)
-        redis_url = str(getattr(self.settings, "redis_url", "") or "")
-        if not redis_url:
-            return []
-        try:
-            client = getattr(self, "_doubao_index_redis", None)
-            if client is None:
-                import redis
-
-                client = redis.Redis.from_url(redis_url, decode_responses=True)
-                self._doubao_index_redis = client
-            data = json.loads(str(client.get(self._doubao_index_cache_key()) or "[]"))
-            if isinstance(data, dict):
-                raw_ids = data.get("record_ids", [])
-                cached_at = float(data.get("cached_at") or 0)
-            else:
-                raw_ids = data
-                cached_at = 0.0
-            ids = [str(record_id) for record_id in raw_ids if str(record_id)]
-            self._doubao_record_ids_cache = ids
-            self._doubao_record_ids_cached_at = cached_at
-            return list(ids)
-        except Exception:
-            return []
-
-    def _save_doubao_record_ids_cache(self, record_ids: list[str]) -> None:
-        ids = [str(record_id) for record_id in record_ids if str(record_id)]
-        self._doubao_record_ids_cache = ids
-        cached_at = time.time()
-        self._doubao_record_ids_cached_at = cached_at
-        redis_url = str(getattr(self.settings, "redis_url", "") or "")
-        if not redis_url:
-            return
-        try:
-            client = getattr(self, "_doubao_index_redis", None)
-            if client is None:
-                import redis
-
-                client = redis.Redis.from_url(redis_url, decode_responses=True)
-                self._doubao_index_redis = client
-            client.set(
-                self._doubao_index_cache_key(),
-                json.dumps(
-                    {"record_ids": ids, "cached_at": cached_at},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
-                ex=86400,
-            )
-        except Exception:
-            return
-
-    def _invalidate_doubao_record_ids_cache(self) -> None:
-        self._doubao_record_ids_cache = []
-        self._doubao_record_ids_cached_at = 0.0
-        redis_url = str(getattr(self.settings, "redis_url", "") or "")
-        if not redis_url:
-            return
-        try:
-            client = getattr(self, "_doubao_index_redis", None)
-            if client is None:
-                import redis
-
-                client = redis.Redis.from_url(redis_url, decode_responses=True)
-                self._doubao_index_redis = client
-            client.delete(self._doubao_index_cache_key())
-        except Exception:
-            return
-
-    def _doubao_record_ids_snapshot(
-        self,
-        required_end: int = 0,
-        force_refresh: bool = False,
-    ) -> tuple[list[str], int]:
-        lock = getattr(self, "_doubao_index_lock", None)
-        if lock is None:
-            lock = Lock()
-            self._doubao_index_lock = lock
-        with lock:
-            if force_refresh:
-                self._invalidate_doubao_record_ids_cache()
-            cached_ids = self._load_doubao_record_ids_cache()
-            cached_at = float(getattr(self, "_doubao_record_ids_cached_at", 0) or 0)
-            cache_fresh = not cached_at or time.time() - cached_at < DOUBAO_INDEX_CACHE_TTL_SECONDS
-            if cached_ids and cache_fresh and (not required_end or required_end <= len(cached_ids)):
-                return cached_ids, len(cached_ids)
-            first_page = self.feishu.list_records_page(
-                self.settings.doubao_table_id,
-                page_size=500,
-                field_names=["商品名称"],
-            )
-            total = int(first_page.get("total") or 0)
-            record_ids = [
-                str(record.get("record_id") or "")
-                for record in first_page["items"]
-                if str(record.get("record_id") or "")
-            ]
-            page = first_page
-            while page["has_more"]:
-                page_token = str(page.get("page_token") or "")
-                if not page_token:
-                    break
-                page = self.feishu.list_records_page(
-                    self.settings.doubao_table_id,
-                    page_size=500,
-                    page_token=page_token,
-                    field_names=["商品名称"],
-                )
-                record_ids.extend(
-                    str(record.get("record_id") or "")
-                    for record in page["items"]
-                    if str(record.get("record_id") or "")
-                )
-            self._save_doubao_record_ids_cache(record_ids)
-            return record_ids, total or len(record_ids)
-
     def list_doubao_items_range(
         self,
         start_row: int,
         end_row: int,
         force_refresh: bool = False,
     ) -> dict[str, Any]:
-        start = max(1, min(int(start_row), int(end_row)))
-        end = max(int(start_row), int(end_row))
-        record_ids, total = self._doubao_record_ids_snapshot(
-            required_end=end,
+        record_range = self.doubao_record_index.range(
+            start_row,
+            end_row,
             force_refresh=force_refresh,
         )
-        selected_record_ids = record_ids[start - 1:end]
-        row_numbers = {
-            record_id: start + index
-            for index, record_id in enumerate(selected_record_ids)
-        }
-        detail_records: list[dict[str, Any]] = []
-        for index in range(0, len(selected_record_ids), 100):
-            detail_records.extend(
-                self.feishu.batch_get_records(
-                    self.settings.doubao_table_id,
-                    selected_record_ids[index:index + 100],
-                )
-            )
-        records_by_id = {
-            str(record.get("record_id") or ""): record
-            for record in detail_records
-            if str(record.get("record_id") or "")
-        }
-        ordered_records = [
-            records_by_id[record_id]
-            for record_id in selected_record_ids
-            if record_id in records_by_id
-        ]
-        items = self._doubao_items_from_records(ordered_records, include_row_numbers=False)
+        items = self._doubao_items_from_records(
+            record_range.records,
+            include_row_numbers=False,
+        )
         for item in items:
-            item["行号"] = row_numbers.get(str(item.get("record_id") or ""), "")
+            item["行号"] = record_range.row_numbers.get(str(item.get("record_id") or ""), "")
         return {
             "items": items,
-            "total": total,
+            "total": record_range.total,
         }
 
     def list_doubao_row_index(self, force_refresh: bool = False) -> dict[str, int]:
-        record_ids, _total = self._doubao_record_ids_snapshot(force_refresh=force_refresh)
-        return {
-            record_id: index
-            for index, record_id in enumerate(record_ids, start=1)
-        }
+        return self.doubao_record_index.row_numbers(force_refresh=force_refresh)
 
     def list_dola_local_tasks(self, limit: int = 100, include_done: bool = False) -> list[dict[str, Any]]:
         records = self.feishu.list_records(self.settings.doubao_table_id, max_records=limit)
@@ -970,7 +823,7 @@ class ViralRemixWorkflow:
 
     def delete_doubao_face_record(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         result = self.doubao_assets.delete_flagged_record(record_id, job_id=job_id)
-        self._invalidate_doubao_record_ids_cache()
+        self.doubao_record_index.invalidate()
         return result
 
     def generate_doubao_prompt(

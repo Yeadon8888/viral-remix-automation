@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import app as app_module
 from api.feishu import FeishuClient, FeishuError, field_value
 from api.services.doubao_assets import DoubaoAssetService
+from api.services.doubao_record_index import DoubaoRecordRange
 from api.workflow import ViralRemixWorkflow, recent_window_start_ms, record_timestamp_ms
 
 
@@ -221,152 +222,32 @@ class DoubaoWorkflowPaginationTests(unittest.TestCase):
         self.assertEqual(page["page_token"], "")
         self.assertEqual(page["total"], 0)
 
-    def test_original_record_order_builds_exact_feishu_row_index(self):
-        class FakeFeishu:
-            def list_records_page(self, table_id, page_size, page_token="", field_names=None):
-                self.call = (table_id, page_size, page_token, field_names)
-                return {
-                    "items": [{"record_id": "rec-a"}, {"record_id": "rec-c"}],
-                    "has_more": False,
-                    "page_token": "",
-                    "total": 2,
-                }
-
-        workflow = object.__new__(ViralRemixWorkflow)
-        workflow.settings = SimpleNamespace(doubao_table_id="doubao-table")
-        workflow.feishu = FakeFeishu()
-
-        index = workflow.list_doubao_row_index()
-
-        self.assertEqual(index, {"rec-a": 1, "rec-c": 2})
-        self.assertEqual(
-            workflow.feishu.call,
-            ("doubao-table", 500, "", ["商品名称"]),
-        )
-
-    def test_row_range_stops_after_the_page_containing_the_requested_end(self):
-        class FakeFeishu:
-            def __init__(self):
-                self.calls = []
-                self.batch_calls = []
-
-            def list_records_page(self, table_id, page_size, page_token="", field_names=None):
-                self.calls.append((table_id, page_size, page_token, field_names))
-                if not page_token:
-                    return {
-                        "items": [
-                            {"record_id": f"rec-{index}", "fields": {}}
-                            for index in range(1, 501)
-                        ],
-                        "has_more": True,
-                        "page_token": "page-2",
-                        "total": 1000,
-                    }
-                return {
-                    "items": [
-                        {"record_id": f"rec-{index}", "fields": {}}
-                        for index in range(501, 1001)
+    def test_workflow_maps_record_ranges_to_doubao_items(self):
+        class FakeRecordIndex:
+            def range(self, start_row, end_row, force_refresh=False):
+                self.call = (start_row, end_row, force_refresh)
+                return DoubaoRecordRange(
+                    records=[
+                        {"record_id": "rec-501", "fields": {}},
+                        {"record_id": "rec-502", "fields": {}},
                     ],
-                    "has_more": False,
-                    "page_token": "",
-                    "total": 1000,
-                }
-
-            def batch_get_records(self, table_id, record_ids):
-                self.batch_calls.append((table_id, record_ids))
-                return [
-                    {"record_id": record_id, "fields": {}}
-                    for record_id in reversed(record_ids)
-                ]
+                    row_numbers={"rec-501": 501, "rec-502": 502},
+                    total=1000,
+                )
 
         workflow = object.__new__(ViralRemixWorkflow)
-        workflow.settings = SimpleNamespace(doubao_table_id="doubao-table")
-        workflow.feishu = FakeFeishu()
         workflow.r2 = SimpleNamespace(is_managed_url=lambda _url: False)
         workflow.doubao_assets = SimpleNamespace(describe=lambda _fields: {})
+        workflow.doubao_record_index = FakeRecordIndex()
 
-        result = workflow.list_doubao_items_range(501, 502)
+        result = workflow.list_doubao_items_range(501, 502, force_refresh=True)
 
         self.assertEqual(
             [(row["record_id"], row["行号"]) for row in result["items"]],
             [("rec-501", 501), ("rec-502", 502)],
         )
         self.assertEqual(result["total"], 1000)
-        self.assertEqual(
-            workflow.feishu.calls,
-            [
-                ("doubao-table", 500, "", ["商品名称"]),
-                ("doubao-table", 500, "page-2", ["商品名称"]),
-            ],
-        )
-        self.assertEqual(
-            workflow.feishu.batch_calls,
-            [("doubao-table", ["rec-501", "rec-502"])],
-        )
-
-    def test_row_range_reuses_persistent_record_id_index_without_rescanning_feishu(self):
-        class FakeFeishu:
-            def __init__(self):
-                self.page_calls = []
-                self.batch_calls = []
-
-            def list_records_page(self, table_id, page_size, page_token="", field_names=None):
-                self.page_calls.append((table_id, page_size, page_token, field_names))
-                return {
-                    "items": [{"record_id": f"rec-{index}"} for index in range(1, 501)],
-                    "has_more": True,
-                    "page_token": "page-2",
-                    "total": 1000,
-                }
-
-            def batch_get_records(self, table_id, record_ids):
-                self.batch_calls.append((table_id, record_ids))
-                return [{"record_id": record_id, "fields": {}} for record_id in record_ids]
-
-        workflow = object.__new__(ViralRemixWorkflow)
-        workflow.settings = SimpleNamespace(doubao_table_id="doubao-table", redis_url="")
-        workflow.feishu = FakeFeishu()
-        workflow.r2 = SimpleNamespace(is_managed_url=lambda _url: False)
-        workflow.doubao_assets = SimpleNamespace(describe=lambda _fields: {})
-        workflow._doubao_record_ids_cache = [f"rec-{index}" for index in range(1, 1001)]
-
-        result = workflow.list_doubao_items_range(501, 502)
-
-        self.assertEqual(
-            [(row["record_id"], row["行号"]) for row in result["items"]],
-            [("rec-501", 501), ("rec-502", 502)],
-        )
-        self.assertEqual(len(workflow.feishu.page_calls), 0)
-        self.assertEqual(
-            workflow.feishu.batch_calls,
-            [("doubao-table", ["rec-501", "rec-502"])],
-        )
-
-    def test_expired_record_id_index_is_rebuilt_before_serving_row_numbers(self):
-        class FakeFeishu:
-            def __init__(self):
-                self.page_calls = 0
-
-            def list_records_page(self, table_id, page_size, page_token="", field_names=None):
-                self.page_calls += 1
-                return {
-                    "items": [{"record_id": "rec-new"}],
-                    "has_more": False,
-                    "page_token": "",
-                    "total": 1,
-                }
-
-        workflow = object.__new__(ViralRemixWorkflow)
-        workflow.settings = SimpleNamespace(doubao_table_id="doubao-table", redis_url="")
-        workflow.feishu = FakeFeishu()
-        workflow._doubao_record_ids_cache = ["rec-old"]
-        workflow._doubao_record_ids_cached_at = 1
-
-        with patch("api.workflow.time.time", return_value=1000):
-            index = workflow.list_doubao_row_index()
-
-        self.assertEqual(index, {"rec-new": 1})
-        self.assertEqual(workflow.feishu.page_calls, 1)
+        self.assertEqual(workflow.doubao_record_index.call, (501, 502, True))
 
 
 class DoubaoPaginationApiTests(unittest.TestCase):
