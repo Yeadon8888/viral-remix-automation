@@ -1,7 +1,5 @@
 from datetime import datetime, time as datetime_time, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import hashlib
-import json
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
@@ -11,21 +9,24 @@ from zoneinfo import ZoneInfo
 import requests
 
 from .config import Settings
-from .countries import doubao_fallback_prompt, get_country, prompt_regions
+from .countries import doubao_fallback_prompt, get_country
 from .cpa import CpaVideoClient
 from .feishu import FeishuClient, attachment_count, field_value, first_attachment
 from .gemini import GeminiClient, local_language
 from .image_gen import NewTokenImageClient, normalize_styles
 from .logging_bus import add_log
-from .prompting import DEFAULT_IMAGE_PROMPTS, DEFAULT_VIDEO_ANALYSIS_TEMPLATE, STYLE_LABELS, image_prompt_snapshot
+from .prompting import STYLE_LABELS, image_prompt_snapshot
 from .r2 import R2Storage
 from .services import (
     DoubaoAssetService,
     DoubaoRecordIndex,
     PartTimeSyncService,
+    PromptConfigService,
+    PromptConflictError,
     ViralVideoAssetService,
     product_id_from_fields,
 )
+from .services.prompt_configs import DOUBAO_PROMPT_KEY
 from .services.batch_queue_export import (
     BatchQueueExportError,
     BatchQueueItem,
@@ -35,38 +36,11 @@ from .services.batch_queue_export import (
 from .tikhub import TikHubClient
 
 MATERIAL_PROMPT_FIELD = "视频生成Prompt"
-DOUBAO_PROMPT_KEY = "doubao_seedance_video_prompt"
 DOUBAO_FALLBACK_PROMPT = "你是 TikTok 马来西亚带货视频 AI 导演。根据商品图生成适合马来西亚市场的 Seedance 视频生成提示词；中文描述画面，口播和字幕使用马来语，严格保持商品一致性。"
 DOLA_STATUS_FIELD = "Dola生成状态"
 DOLA_VIDEO_FIELD = "Dola视频链接"
 DOLA_ERROR_FIELD = "Dola错误信息"
 DOLA_LOCAL_STATUSES = {"待Dola生成", "准备中", "等待发送", "等待下载", "已完成", "失败"}
-PROMPT_EDITABLE_FIELDS = (
-    "Prompt名称",
-    "版本",
-    "是否启用",
-    "目标地区",
-    "模板内容",
-    "变量说明",
-    "备注",
-)
-PROMPT_REQUIRED_FIELDS = ("Prompt名称", "版本", "目标地区", "模板内容")
-
-
-class PromptConflictError(RuntimeError):
-    pass
-
-
-def prompt_revision(fields: dict[str, Any]) -> str:
-    body = json.dumps(
-        {key: field_value(fields, key, "") for key in PROMPT_EDITABLE_FIELDS},
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return hashlib.sha256(body.encode("utf-8")).hexdigest()
-
-
 def now_ms() -> int:
     return int(datetime.now().timestamp() * 1000)
 
@@ -319,109 +293,13 @@ class ViralRemixWorkflow:
             self._download_url,
         )
         self.doubao_record_index = DoubaoRecordIndex(settings, self.feishu)
+        self.prompt_configs = PromptConfigService(settings, self.feishu)
 
     def list_prompt_configs(self) -> list[dict[str, Any]]:
-        if not self.settings.prompt_table_id:
-            return []
-        records = self.feishu.list_records(self.settings.prompt_table_id)
-        out = []
-        for record in records:
-            out.append(self._prompt_config_row(record))
-        return out
-
-    @staticmethod
-    def _prompt_config_row(record: dict[str, Any]) -> dict[str, Any]:
-        fields = record.get("fields", {})
-        return {
-            "record_id": record.get("record_id"),
-            "Prompt名称": field_value(fields, "Prompt名称", ""),
-            "Prompt类型": field_value(fields, "Prompt类型", ""),
-            "模板Key": field_value(fields, "模板Key", ""),
-            "版本": field_value(fields, "版本", ""),
-            "是否启用": field_value(fields, "是否启用", ""),
-            "目标地区": field_value(fields, "目标地区", ""),
-            "模板内容": field_value(fields, "模板内容", ""),
-            "变量说明": field_value(fields, "变量说明", ""),
-            "备注": field_value(fields, "备注", ""),
-            "revision": prompt_revision(fields),
-        }
-
-    @staticmethod
-    def _prompt_write_fields(values: dict[str, Any], *, creating: bool = False) -> dict[str, str]:
-        fields = {
-            key: str(values.get(key) or "").strip()
-            for key in PROMPT_EDITABLE_FIELDS
-            if key in values
-        }
-        if creating:
-            fields["Prompt类型"] = "豆包视频"
-            fields["模板Key"] = DOUBAO_PROMPT_KEY
-            fields.setdefault("是否启用", "停用")
-        return fields
-
-    @staticmethod
-    def _validate_prompt_config(fields: dict[str, Any]) -> None:
-        for name in PROMPT_REQUIRED_FIELDS:
-            if not str(fields.get(name) or "").strip():
-                raise ValueError(f"{name}不能为空")
-        if fields.get("是否启用") not in {"启用", "停用"}:
-            raise ValueError("是否启用只能是：启用 / 停用")
-        allowed_regions = {"墨西哥", "通用", *prompt_regions()}
-        if fields.get("目标地区") not in allowed_regions:
-            raise ValueError(f"目标地区只能是：{' / '.join(sorted(allowed_regions))}")
-
-    @staticmethod
-    def _ensure_unique_prompt_version(
-        rows: list[dict[str, Any]],
-        key: str,
-        region: str,
-        version: str,
-        *,
-        exclude_record_id: str = "",
-    ) -> None:
-        for row in rows:
-            if row.get("record_id") == exclude_record_id:
-                continue
-            if (
-                str(row.get("模板Key") or "").strip() == key
-                and str(row.get("目标地区") or "").strip() == region
-                and str(row.get("版本") or "").strip().casefold() == version.casefold()
-            ):
-                raise ValueError(f"版本 {version} 在 {region} 已存在，请使用新版本号")
-
-    def _disable_prompt_siblings(
-        self,
-        rows: list[dict[str, Any]],
-        key: str,
-        region: str,
-        *,
-        exclude_record_id: str = "",
-    ) -> None:
-        for row in rows:
-            if row.get("record_id") == exclude_record_id:
-                continue
-            if (
-                str(row.get("模板Key") or "").strip() == key
-                and str(row.get("目标地区") or "").strip() == region
-                and str(row.get("是否启用") or "").strip() == "启用"
-            ):
-                self.feishu.update_record(
-                    self.settings.prompt_table_id,
-                    str(row["record_id"]),
-                    {"是否启用": "停用"},
-                )
+        return self.prompt_configs.list_configs()
 
     def create_prompt_config(self, values: dict[str, Any]) -> dict[str, Any]:
-        fields = self._prompt_write_fields(values, creating=True)
-        self._validate_prompt_config(fields)
-        rows = self.list_prompt_configs()
-        key = fields["模板Key"]
-        region = fields["目标地区"]
-        self._ensure_unique_prompt_version(rows, key, region, fields["版本"])
-        if fields["是否启用"] == "启用":
-            self._disable_prompt_siblings(rows, key, region)
-        created = self.feishu.create_record(self.settings.prompt_table_id, fields)
-        return self._prompt_config_row(created)
+        return self.prompt_configs.create(values)
 
     def update_prompt_config(
         self,
@@ -429,53 +307,17 @@ class ViralRemixWorkflow:
         patch: dict[str, Any],
         expected_revision: str = "",
     ) -> dict[str, Any]:
-        fields = self._prompt_write_fields(patch)
-        if not fields:
-            raise RuntimeError("没有可更新的 Prompt 字段")
-        current = self.feishu.get_record(self.settings.prompt_table_id, record_id)
-        if expected_revision and prompt_revision(current.get("fields", {})) != expected_revision:
-            raise PromptConflictError("Prompt 已被其他人修改，请刷新后重新编辑")
-        current_row = self._prompt_config_row(current)
-        merged = {**current_row, **fields}
-        self._validate_prompt_config(merged)
-        rows = self.list_prompt_configs()
-        key = str(merged.get("模板Key") or "").strip()
-        region = str(merged.get("目标地区") or "").strip()
-        version = str(merged.get("版本") or "").strip()
-        self._ensure_unique_prompt_version(rows, key, region, version, exclude_record_id=record_id)
-        if merged.get("是否启用") == "启用":
-            self._disable_prompt_siblings(rows, key, region, exclude_record_id=record_id)
-        return self.feishu.update_record(self.settings.prompt_table_id, record_id, fields)
+        return self.prompt_configs.update(
+            record_id,
+            patch,
+            expected_revision=expected_revision,
+        )
 
     def _active_prompt_templates(self, region: str) -> tuple[dict[str, str], dict[str, str]]:
-        templates: dict[str, tuple[int, str]] = {
-            "video_analysis": (0, DEFAULT_VIDEO_ANALYSIS_TEMPLATE),
-            **{f"image_{style}": (0, prompt) for style, prompt in DEFAULT_IMAGE_PROMPTS.items()},
-        }
-        versions: dict[str, str] = {key: "default" for key in templates}
-        if not self.settings.prompt_table_id:
-            return {key: value for key, (_, value) in templates.items()}, versions
-
-        for row in self.list_prompt_configs():
-            key = str(row.get("模板Key") or "").strip()
-            content = str(row.get("模板内容") or "").strip()
-            enabled = str(row.get("是否启用") or "").strip()
-            target_region = str(row.get("目标地区") or "").strip()
-            if not key or not content or enabled != "启用":
-                continue
-            rank = 2 if target_region == region else 1 if target_region in ("", "通用") else -1
-            if rank < 0:
-                continue
-            current_rank = templates.get(key, (-1, ""))[0]
-            if rank >= current_rank:
-                templates[key] = (rank, content)
-                version = str(row.get("版本") or "未标版本").strip()
-                versions[key] = f"{key}:{version}"
-        return {key: value for key, (_, value) in templates.items()}, versions
+        return self.prompt_configs.active_templates(region)
 
     def _active_prompt_by_key(self, key: str, region: str, fallback: str) -> tuple[str, str]:
-        templates, versions = self._active_prompt_templates(region)
-        return templates.get(key, fallback), versions.get(key, f"{key}:default")
+        return self.prompt_configs.active_template(key, region, fallback)
 
     def list_materials(self, limit: int = 100) -> list[dict[str, Any]]:
         records = self.feishu.list_records(self.settings.source_table_id, max_records=limit)

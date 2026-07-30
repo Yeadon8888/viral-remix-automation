@@ -1,7 +1,11 @@
 import unittest
 from types import SimpleNamespace
 
-from api.workflow import ViralRemixWorkflow
+from api.services.prompt_configs import (
+    DOUBAO_PROMPT_KEY,
+    PromptConfigService,
+    PromptConflictError,
+)
 
 
 class PromptConcurrencyTests(unittest.TestCase):
@@ -42,27 +46,35 @@ class PromptConcurrencyTests(unittest.TestCase):
                 records.append(row)
                 return {"record_id": row["record_id"], "fields": dict(row["fields"])}
 
-        workflow = object.__new__(ViralRemixWorkflow)
-        workflow.settings = SimpleNamespace(prompt_table_id="prompt-table")
-        workflow.feishu = FakeFeishu()
-        return workflow, fields, updates, records
+        service = PromptConfigService(
+            SimpleNamespace(prompt_table_id="prompt-table"),
+            FakeFeishu(),
+        )
+        return service, fields, updates, records
 
     def test_prompt_list_exposes_revision(self):
         workflow, _, _, _ = self.make_workflow()
 
-        rows = workflow.list_prompt_configs()
+        rows = workflow.list_configs()
 
         self.assertRegex(rows[0]["revision"], r"^[0-9a-f]{64}$")
 
+    def test_active_country_template_overrides_the_fallback(self):
+        workflow, _, _, _ = self.make_workflow()
+
+        template, version = workflow.active_template(
+            DOUBAO_PROMPT_KEY,
+            "墨西哥",
+            "fallback",
+        )
+
+        self.assertEqual(template, "原始模板内容")
+        self.assertEqual(version, f"{DOUBAO_PROMPT_KEY}:mx-v1")
+
     def test_stale_prompt_revision_is_rejected_before_write(self):
         workflow, _, updates, _ = self.make_workflow()
-        try:
-            from api.workflow import PromptConflictError
-        except ImportError as exc:
-            self.fail(f"缺少 Prompt 冲突错误: {exc}")
-
         with self.assertRaises(PromptConflictError):
-            workflow.update_prompt_config(
+            workflow.update(
                 "prompt-1",
                 {"模板内容": "用户 A 的旧页面修改"},
                 expected_revision="stale-revision",
@@ -72,9 +84,9 @@ class PromptConcurrencyTests(unittest.TestCase):
 
     def test_current_prompt_revision_can_be_saved(self):
         workflow, _, updates, _ = self.make_workflow()
-        current = workflow.list_prompt_configs()[0]["revision"]
+        current = workflow.list_configs()[0]["revision"]
 
-        workflow.update_prompt_config(
+        workflow.update(
             "prompt-1",
             {"模板内容": "用户的新模板"},
             expected_revision=current,
@@ -85,7 +97,7 @@ class PromptConcurrencyTests(unittest.TestCase):
     def test_new_prompt_is_saved_as_draft_by_default(self):
         workflow, _, _, records = self.make_workflow()
 
-        created = workflow.create_prompt_config({
+        created = workflow.create({
             "Prompt名称": "豆包视频-墨西哥-方案二",
             "版本": "mx-v2",
             "目标地区": "墨西哥",
@@ -100,7 +112,7 @@ class PromptConcurrencyTests(unittest.TestCase):
     def test_enabling_new_prompt_disables_active_sibling(self):
         workflow, fields, updates, records = self.make_workflow()
 
-        workflow.create_prompt_config({
+        workflow.create({
             "Prompt名称": "豆包视频-墨西哥-方案二",
             "版本": "mx-v2",
             "是否启用": "启用",
@@ -116,7 +128,7 @@ class PromptConcurrencyTests(unittest.TestCase):
         workflow, _, _, records = self.make_workflow()
 
         with self.assertRaisesRegex(ValueError, "版本.*已存在"):
-            workflow.create_prompt_config({
+            workflow.create({
                 "Prompt名称": "重复版本",
                 "版本": "mx-v1",
                 "目标地区": "墨西哥",
@@ -127,14 +139,14 @@ class PromptConcurrencyTests(unittest.TestCase):
 
     def test_enabling_draft_by_edit_disables_active_sibling(self):
         workflow, fields, _, records = self.make_workflow()
-        created = workflow.create_prompt_config({
+        created = workflow.create({
             "Prompt名称": "豆包视频-墨西哥-方案二",
             "版本": "mx-v2",
             "目标地区": "墨西哥",
             "模板内容": "方案二内容",
         })
 
-        workflow.update_prompt_config(
+        workflow.update(
             created["record_id"],
             {"是否启用": "启用"},
             expected_revision=created["revision"],
