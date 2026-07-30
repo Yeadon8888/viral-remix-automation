@@ -1,6 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
+from api.services.publish_sync import PublishSyncService
 from api.workflow import ViralRemixWorkflow
 
 
@@ -22,18 +23,20 @@ class WorkflowRegressionTests(unittest.TestCase):
                 updates.append(dict(fields))
                 return {"record_id": record_id, "fields": fields}
 
-        workflow = object.__new__(ViralRemixWorkflow)
-        workflow.settings = SimpleNamespace(publish_table_id="publish")
-        workflow.feishu = FakeFeishu()
-        workflow.list_tasks = lambda limit: [{
-            "record_id": "task-1",
-            "生成任务名称": "Travel bag - 视频任务 1",
-            "生成视频链接": "https://cdn.example.com/video.mp4",
-            "生成标题": "Travel bag",
-            "生成文案": "Ready to travel",
-            "关键词": "#travel",
-            "关联素材记录IDs": ["source-1"],
-        }]
+        workflow = PublishSyncService(
+            SimpleNamespace(publish_table_id="publish"),
+            FakeFeishu(),
+            SimpleNamespace(),
+            list_tasks=lambda limit: [{
+                "record_id": "task-1",
+                "生成任务名称": "Travel bag - 视频任务 1",
+                "生成视频链接": "https://cdn.example.com/video.mp4",
+                "生成标题": "Travel bag",
+                "生成文案": "Ready to travel",
+                "关键词": "#travel",
+                "关联素材记录IDs": ["source-1"],
+            }],
+        )
 
         result = workflow.sync_publish_items(["task-1"])
 

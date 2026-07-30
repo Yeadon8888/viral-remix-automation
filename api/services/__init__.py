@@ -7,6 +7,7 @@ from .prompt_configs import (
     PromptConfigService,
     PromptConflictError,
 )
+from .publish_sync import PublishSyncService
 
 __all__ = [
     "DoubaoAssetService",
@@ -15,6 +16,7 @@ __all__ = [
     "PartTimeSyncService",
     "PromptConfigService",
     "PromptConflictError",
+    "PublishSyncService",
     "ViralVideoAssetService",
     "product_id_from_fields",
 ]

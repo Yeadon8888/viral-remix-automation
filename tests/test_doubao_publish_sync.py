@@ -3,7 +3,8 @@ from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from api.workflow import ViralRemixWorkflow, recent_window_start_ms
+from api.record_values import recent_window_start_ms
+from api.services.publish_sync import PublishSyncService
 
 
 class DoubaoPublishSyncTests(unittest.TestCase):
@@ -76,18 +77,19 @@ class DoubaoPublishSyncTests(unittest.TestCase):
                 calls["updated"].append((table_id, record_id, dict(fields)))
                 return {"record_id": record_id, "fields": fields}
 
-        workflow = object.__new__(ViralRemixWorkflow)
-        workflow.settings = SimpleNamespace(
-            doubao_table_id="doubao",
-            part_time_table_id="part-time",
-            publish_table_id="publish",
-        )
-        workflow.feishu = FakeFeishu()
-        workflow.doubao_assets = SimpleNamespace(
-            describe=lambda fields: {
-                "人脸检测通过": True,
-                "发布前置条件通过": True,
-            }
+        workflow = PublishSyncService(
+            SimpleNamespace(
+                doubao_table_id="doubao",
+                part_time_table_id="part-time",
+                publish_table_id="publish",
+            ),
+            FakeFeishu(),
+            SimpleNamespace(
+                describe=lambda fields: {
+                    "人脸检测通过": True,
+                    "发布前置条件通过": True,
+                }
+            ),
         )
 
         readiness = workflow.doubao_publish_readiness(["source-1", "source-missing"])
@@ -220,17 +222,18 @@ class PartTimePublishSyncTests(unittest.TestCase):
                 calls["updated"].append((table_id, record_id, dict(fields)))
                 return {"record_id": record_id, "fields": fields}
 
-        workflow = object.__new__(ViralRemixWorkflow)
-        workflow.settings = SimpleNamespace(
-            doubao_table_id="doubao",
-            part_time_table_id="part-time",
-            publish_table_id="publish",
-        )
-        workflow.feishu = FakeFeishu()
-        workflow.doubao_assets = SimpleNamespace(
-            describe=lambda fields: {
-                "发布前置条件通过": fields.get("商品id") == "product-1",
-            }
+        workflow = PublishSyncService(
+            SimpleNamespace(
+                doubao_table_id="doubao",
+                part_time_table_id="part-time",
+                publish_table_id="publish",
+            ),
+            FakeFeishu(),
+            SimpleNamespace(
+                describe=lambda fields: {
+                    "发布前置条件通过": fields.get("商品id") == "product-1",
+                }
+            ),
         )
         return workflow, calls
 
@@ -294,12 +297,14 @@ class PartTimePublishSyncTests(unittest.TestCase):
             def list_records_filtered(self, table_id, **kwargs):
                 return []
 
-        workflow = object.__new__(ViralRemixWorkflow)
-        workflow.settings = SimpleNamespace(
-            part_time_table_id="part-time",
-            publish_table_id="publish",
+        workflow = PublishSyncService(
+            SimpleNamespace(
+                part_time_table_id="part-time",
+                publish_table_id="publish",
+            ),
+            FakeFeishu(),
+            SimpleNamespace(),
         )
-        workflow.feishu = FakeFeishu()
 
         rows = workflow.list_part_time_publish_items()
 
@@ -345,12 +350,14 @@ class PartTimePublishSyncTests(unittest.TestCase):
             def list_records_filtered(self, table_id, **kwargs):
                 return []
 
-        workflow = object.__new__(ViralRemixWorkflow)
-        workflow.settings = SimpleNamespace(
-            part_time_table_id="part-time",
-            publish_table_id="publish",
+        workflow = PublishSyncService(
+            SimpleNamespace(
+                part_time_table_id="part-time",
+                publish_table_id="publish",
+            ),
+            FakeFeishu(),
+            SimpleNamespace(),
         )
-        workflow.feishu = FakeFeishu()
 
         rows = workflow.list_part_time_publish_items(days=2)
 
