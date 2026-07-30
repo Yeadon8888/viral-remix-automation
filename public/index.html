@@ -28,6 +28,10 @@
           <span class="nav-icon" aria-hidden="true">豆</span>
           <span><strong>豆包视频素材表</strong><small>多国家提示词与派单</small></span>
         </button>
+        <button id="pagePartTime" class="tab" type="button" data-page="part-time">
+          <span class="nav-icon" aria-hidden="true">审</span>
+          <span><strong>兼职成片</strong><small>成片审核与发布</small></span>
+        </button>
         <button id="pagePrompts" class="tab" type="button" data-page="prompts">
           <span class="nav-icon" aria-hidden="true">P</span>
           <span><strong>Prompt配置</strong><small>模板、地区与版本</small></span>
@@ -163,17 +167,34 @@
               <div>
                 <span class="section-kicker">DOUBAO / SEEDANCE</span>
                 <h2>豆包视频素材表</h2>
-                <p>按目标国家生成本地化 Seedance Prompt，并衔接兼职成片与发布表。</p>
+                <p>完成图片转存、人脸检测、提示词生成，并将合格素材派发到兼职表。</p>
               </div>
               <div class="actions">
+                <label class="sort-control" for="doubaoDateRange">
+                  <span>时间范围</span>
+                  <select id="doubaoDateRange">
+                    <option value="1">当天</option>
+                    <option value="2" selected>最近 2 天</option>
+                    <option value="7">最近 7 天</option>
+                    <option value="0">全部</option>
+                  </select>
+                </label>
+                <label class="sort-control" for="doubaoSortOrder">
+                  <span>行号顺序</span>
+                  <select id="doubaoSortOrder">
+                    <option value="latest">行号倒序</option>
+                    <option value="oldest">行号正序</option>
+                  </select>
+                </label>
                 <button id="loadDoubao" class="secondary" type="button">读取记录</button>
-                <button id="batchDoubaoStoreImages" class="secondary" type="button">批量转存到对象存储</button>
               </div>
             </div>
             <div class="metric-row compact">
-              <div><small>记录总数</small><span id="metricDoubaoRows">0</span></div>
+              <div><small>当前范围记录</small><span id="metricDoubaoRows">0</span></div>
               <div><small>可用原图</small><span id="metricDoubaoImages">0</span></div>
               <div><small>已入库</small><span id="metricDoubaoStored">0</span></div>
+              <div><small>无人脸</small><span id="metricDoubaoFaceClear">0</span></div>
+              <div><small>含/疑似人脸</small><span id="metricDoubaoFaces">0</span></div>
               <div><small>Prompt就绪</small><span id="metricDoubaoPrompts">0</span></div>
               <div><small>已同步兼职</small><span id="metricDoubaoSynced">0</span></div>
             </div>
@@ -183,15 +204,7 @@
                 <select id="doubaoCountry" aria-describedby="countryHelp"></select>
               </label>
               <p id="countryHelp">国家与语言会共同决定 Prompt 模板、口播语言和兼职任务归属。</p>
-              <div class="actions">
-                <button id="batchDoubaoSyncPublish" class="secondary" type="button">检查并同步到发布表</button>
-                <button id="batchDoubaoPrompts" class="primary" type="button">批量生成提示词</button>
-                <label class="checkline" title="默认跳过已同步记录；只有图片或提示词已修改时才建议开启">
-                  <input id="forceDoubaoSyncUpdate" type="checkbox">
-                  <span>强制更新已同步</span>
-                </label>
-                <button id="batchDoubaoSyncPartTime" class="sync-button" type="button">同步到兼职表</button>
-              </div>
+              <div class="workflow-rule">后端会按当前图片链接校验检测结果；更换图片后必须重新检测。</div>
             </div>
             <div class="batch-bar doubao-batch-bar">
               <label class="checkline">
@@ -208,12 +221,109 @@
               </div>
               <strong id="selectedDoubaoCount">已选 0 条</strong>
               <span class="helper-text">批量操作只处理已勾选记录</span>
+              <button id="batchDoubaoWorkflow" class="sync-button" type="button" title="仅执行步骤 1–3：图片转存、人脸检测、提示词生成、同步兼职表；不包含发布表同步">按流程批量处理</button>
+            </div>
+            <div class="doubao-workflow" aria-label="豆包素材处理流程">
+              <section class="workflow-step">
+                <span class="step-number">1</span>
+                <div><strong>转存对象存储</strong><small>外部链接或飞书附件先转为自有 R2 链接</small></div>
+                <button id="batchDoubaoStoreImages" class="secondary" type="button">批量转存</button>
+              </section>
+              <section class="workflow-step">
+                <span class="step-number">2</span>
+                <div><strong>检测商品图人脸</strong><small>仅检测已转存图片；疑似人脸同样阻断</small></div>
+                <div class="actions">
+                  <button id="batchDoubaoDetectFaces" class="primary" type="button">批量检测</button>
+                  <button id="batchDoubaoDeleteFaceRecords" class="danger" type="button">删除标记记录</button>
+                </div>
+              </section>
+              <section class="workflow-step">
+                <span class="step-number">3</span>
+                <div><strong>生成、导出与派发</strong><small>提示词完成后可导出视频队列，或同步到兼职表</small></div>
+                <div class="actions">
+                  <button id="batchDoubaoPrompts" class="primary" type="button">生成提示词</button>
+                  <button id="exportDoubaoBatchQueue" class="secondary" type="button" title="将已完成前置处理的素材、提示词和参考图打包为 Windows 视频生成队列">导出批量队列 ZIP</button>
+                  <label class="checkline" title="默认跳过已同步记录；只有图片或提示词已修改时才建议开启">
+                    <input id="forceDoubaoSyncUpdate" type="checkbox">
+                    <span>强制更新</span>
+                  </label>
+                  <button id="batchDoubaoSyncPartTime" class="sync-button" type="button">同步兼职表</button>
+                </div>
+              </section>
+              <section class="workflow-step">
+                <span class="step-number">4</span>
+                <div><strong>兼职成片完成后，独立同步到发布表</strong><small>不包含在“按流程批量处理”中；需等待兼职人员完成成片后再操作</small></div>
+                <button id="batchDoubaoSyncPublish" class="sync-button" type="button">同步到发布表</button>
+              </section>
             </div>
             <div class="table-toolbar">
               <span id="doubaoRefreshState">等待读取豆包视频素材表</span>
               <button id="refreshDoubaoTable" class="mini secondary" type="button">刷新表格</button>
             </div>
             <div id="doubaoItems" class="table-wrap"></div>
+          </div>
+        </section>
+
+        <section id="partTimePage" class="page-view">
+          <div class="panel part-time-panel">
+            <div class="panel-head">
+              <div>
+                <span class="section-kicker">PART-TIME REVIEW</span>
+                <h2>兼职成片</h2>
+                <p>读取外部插件已经完成的成片，在这里审核并同步到发布表。</p>
+              </div>
+              <div class="actions">
+                <label class="sort-control" for="partTimeDateRange">
+                  <span>时间范围</span>
+                  <select id="partTimeDateRange">
+                    <option value="1">当天</option>
+                    <option value="2" selected>最近 2 天</option>
+                    <option value="7">最近 7 天</option>
+                    <option value="0">全部</option>
+                  </select>
+                </label>
+                <label class="sort-control" for="partTimeSortOrder">
+                  <span>显示顺序</span>
+                  <select id="partTimeSortOrder">
+                    <option value="latest">行号倒序</option>
+                    <option value="oldest">行号正序</option>
+                  </select>
+                </label>
+                <button id="loadPartTime" class="secondary" type="button">读取成片</button>
+              </div>
+            </div>
+            <div class="review-rule">
+              <strong>当前规则</strong>
+              <span>同步即视为审核通过；后台仍会复核视频链接和豆包素材前置条件，重复同步只更新原发布记录。表格中的行号为兼职表真实行号。</span>
+            </div>
+            <div class="metric-row compact">
+              <div><small>已完成成片</small><span id="metricPartTimeRows">0</span></div>
+              <div><small>待审核</small><span id="metricPartTimePending">0</span></div>
+              <div><small>已同步发布</small><span id="metricPartTimePublished">0</span></div>
+              <div><small>审核拦截</small><span id="metricPartTimeBlocked">0</span></div>
+            </div>
+            <div class="batch-bar">
+              <label class="checkline">
+                <input id="selectAllPartTime" type="checkbox">
+                <span>全选当前可审核成片</span>
+              </label>
+              <div class="range-picker" aria-label="按兼职表真实行号选择成片">
+                <span>行号</span>
+                <input id="partTimeRangeStart" type="number" min="1" inputmode="numeric" aria-label="兼职成片起始行" placeholder="起始">
+                <span>—</span>
+                <input id="partTimeRangeEnd" type="number" min="1" inputmode="numeric" aria-label="兼职成片结束行" placeholder="结束">
+                <button id="selectPartTimeRange" class="mini secondary" type="button">选择</button>
+                <button id="clearPartTimeSelection" class="mini ghost" type="button">清空</button>
+              </div>
+              <strong id="selectedPartTimeCount">已选 0 条</strong>
+              <span class="helper-text">每次最多提交 200 条，后台任务会继续运行</span>
+              <button id="batchPartTimeSyncPublish" class="sync-button" type="button">审核通过并同步发布表</button>
+            </div>
+            <div class="table-toolbar">
+              <span id="partTimeRefreshState">等待读取兼职表已完成成片</span>
+              <button id="refreshPartTimeTable" class="mini secondary" type="button">刷新表格</button>
+            </div>
+            <div id="partTimeItems" class="table-wrap"></div>
           </div>
         </section>
 
@@ -249,13 +359,16 @@
 
         <details class="panel runtime-panel">
           <summary>
-            <span><strong>运行记录</strong><small>后台任务与接口日志</small></span>
+            <span><strong>运行记录</strong><small>最近任务摘要，失败记录可展开查看</small></span>
             <span class="summary-hint">展开查看</span>
           </summary>
           <div class="runtime-body">
-            <div class="actions">
-              <button id="loadJobs" class="secondary" type="button">刷新任务</button>
-              <button id="loadLogs" class="secondary" type="button">刷新日志</button>
+            <div class="runtime-toolbar">
+              <span id="jobSummary" class="runtime-summary">正在读取最近任务…</span>
+              <div class="actions">
+                <button id="loadJobs" class="secondary" type="button">刷新任务</button>
+                <button id="loadLogs" class="secondary" type="button">刷新日志</button>
+              </div>
             </div>
             <div id="jobs" class="jobs"></div>
             <pre id="logs" class="logs"></pre>

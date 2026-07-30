@@ -46,6 +46,18 @@ class FeishuRetryTests(unittest.TestCase):
         self.assertEqual(len(client._session.calls), 2)
 
     @patch("api.feishu.time.sleep", return_value=None)
+    def test_get_retries_data_not_ready_response(self, _sleep):
+        client = self.make_client([
+            FakeResponse(200, {"code": 1254607, "msg": "Data not ready, please try again later"}),
+            FakeResponse(200, {"code": 0, "data": {"ok": True}}),
+        ])
+
+        result = client._request("GET", "/records")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(client._session.calls), 2)
+
+    @patch("api.feishu.time.sleep", return_value=None)
     def test_non_idempotent_post_is_not_retried(self, _sleep):
         client = self.make_client([
             FakeResponse(503, {"code": 503, "msg": "unavailable"}),

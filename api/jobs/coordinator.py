@@ -33,12 +33,14 @@ class MemoryJobBackend:
         self._jobs: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._dedupe: dict[str, str] = {}
         self._resource_locks: dict[str, Lock] = {}
+        self._item_results: dict[str, dict[str, dict[str, Any]]] = {}
 
     def _prune(self) -> None:
         while len(self._jobs) > self.max_jobs:
             for job_id, job in list(self._jobs.items()):
                 if job["status"] not in {"queued", "running"}:
                     self._jobs.pop(job_id, None)
+                    self._item_results.pop(job_id, None)
                     break
             else:
                 break
@@ -71,6 +73,7 @@ class MemoryJobBackend:
                 "started_at": None,
                 "finished_at": None,
                 "dedupe_key": dedupe_key,
+                "cancel_requested": False,
             }
             self._dedupe[dedupe_key] = job_id
             self._prune()
@@ -80,18 +83,26 @@ class MemoryJobBackend:
     def _run(self, job_id: str, action: str, payload: dict[str, Any], operator: str) -> None:
         with self._lock:
             job = self._jobs[job_id]
+            if job["status"] == "cancelled" or job.get("cancel_requested"):
+                return
             job["status"] = "running"
             job["started_at"] = int(time.time() * 1000)
             locks = [self._resource_locks.setdefault(key, Lock()) for key in job["resource_keys"]]
         for lock in locks:
             lock.acquire()
         try:
+            with self._lock:
+                if self._jobs[job_id].get("cancel_requested"):
+                    self._jobs[job_id]["status"] = "cancelled"
+                    return
             result = self.executor(action, payload, job_id, operator)
             with self._lock:
-                self._jobs[job_id].update({"status": "done", "result": result})
+                status = "cancelled" if self._jobs[job_id].get("cancel_requested") else "done"
+                self._jobs[job_id].update({"status": status, "result": result})
         except Exception as exc:
             with self._lock:
-                self._jobs[job_id].update({"status": "failed", "error": str(exc)})
+                status = "cancelled" if self._jobs[job_id].get("cancel_requested") else "failed"
+                self._jobs[job_id].update({"status": status, "error": str(exc)})
         finally:
             for lock in reversed(locks):
                 lock.release()
@@ -101,6 +112,41 @@ class MemoryJobBackend:
                 if self._dedupe.get(job["dedupe_key"]) == job_id:
                     self._dedupe.pop(job["dedupe_key"], None)
                 self._prune()
+
+    def cancel(self, job_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+            if job["status"] not in {"queued", "running"}:
+                return dict(job)
+            job["cancel_requested"] = True
+            if job["status"] == "queued":
+                job["status"] = "cancelled"
+                job["finished_at"] = int(time.time() * 1000)
+                if self._dedupe.get(job["dedupe_key"]) == job_id:
+                    self._dedupe.pop(job["dedupe_key"], None)
+            return dict(job)
+
+    def is_cancel_requested(self, job_id: str) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            return bool(job and job.get("cancel_requested"))
+
+    def save_item_result(self, job_id: str, record_id: str, result: dict[str, Any]) -> None:
+        with self._lock:
+            if job_id not in self._jobs:
+                return
+            self._item_results.setdefault(job_id, {})[record_id] = dict(result)
+
+    def item_results(self, job_id: str) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            if job_id not in self._jobs:
+                return {}
+            return {
+                record_id: dict(result)
+                for record_id, result in self._item_results.get(job_id, {}).items()
+            }
 
     @contextmanager
     def lock_resources(self, resource_keys: list[str]):
@@ -129,7 +175,7 @@ class MemoryJobBackend:
             running = sum(1 for item in self._jobs.values() if item["status"] == "running")
         return {"backend": "memory", "persistent": False, "queued": queued, "running": running}
 
-    def shutdown(self) -> None:
+    def shutdown(self, wait_timeout_seconds: float | None = None) -> None:
         self._pool.shutdown(wait=True)
 
 
@@ -141,9 +187,11 @@ class _RedisLease:
         self.wait_seconds = wait_seconds
         self.token = uuid4().hex
 
-    def acquire(self) -> bool:
+    def acquire(self, should_stop=None) -> bool:
         deadline = time.time() + self.wait_seconds
         while time.time() < deadline:
+            if should_stop and should_stop():
+                return False
             if self.redis.set(self.key, self.token, nx=True, ex=self.ttl_seconds):
                 return True
             time.sleep(0.05)
@@ -205,6 +253,10 @@ class RedisJobBackend:
         self.recovery_interval_seconds = max(0.01, recovery_interval_seconds)
         self._stop = Event()
         self._threads: list[Thread] = []
+        self._worker_error_lock = Lock()
+        self._worker_error_count = 0
+        self._last_worker_error = ""
+        self._last_worker_error_at: int | None = None
         if start_workers:
             self._recover_stale_jobs()
             self.start_workers()
@@ -230,6 +282,9 @@ class RedisJobBackend:
     def _dedupe_key(self, digest: str) -> str:
         return self._key(f"dedupe:{digest}")
 
+    def _item_results_key(self, job_id: str) -> str:
+        return self._key(f"job:{job_id}:item-results")
+
     def _recover_stale_jobs(self) -> int:
         recovery_key = self._key("jobs:recovery-lock")
         recovery_token = uuid4().hex
@@ -245,6 +300,14 @@ class RedisJobBackend:
                 job = self.get(job_id)
                 if not job:
                     self.redis.lrem(self.processing_key, 0, job_id)
+                    continue
+                if job.get("cancel_requested"):
+                    with self.redis.pipeline() as pipe:
+                        pipe.lrem(self.processing_key, 0, job_id)
+                        pipe.lrem(self.queue_key, 0, job_id)
+                        pipe.execute()
+                    self._finish_cancelled(job_id)
+                    recovered += 1
                     continue
                 lease_until = int(job.get("lease_until") or 0)
                 queued_without_lease = job["status"] == "queued" and (
@@ -325,6 +388,7 @@ class RedisJobBackend:
             "finished_at": "",
             "dedupe_key": digest,
             "lease_until": "",
+            "cancel_requested": "",
         })
         self.redis.expire(self._job_key(job_id), 7 * 86400)
         self.redis.zadd(self.history_key, {job_id: created_at})
@@ -333,18 +397,39 @@ class RedisJobBackend:
 
     def _worker_loop(self) -> None:
         while not self._stop.is_set():
-            job_id = self.redis.brpoplpush(self.queue_key, self.processing_key, timeout=1)
+            try:
+                job_id = self.redis.brpoplpush(self.queue_key, self.processing_key, timeout=1)
+            except Exception as exc:
+                self._record_worker_error(exc)
+                self._stop.wait(0.25)
+                continue
             if not job_id:
                 continue
             job_id = str(job_id)
             try:
                 self._execute_job(job_id)
+            except Exception as exc:
+                self._record_worker_error(exc)
+                self._stop.wait(0.25)
             finally:
-                self.redis.lrem(self.processing_key, 0, job_id)
+                try:
+                    self.redis.lrem(self.processing_key, 0, job_id)
+                except Exception as exc:
+                    self._record_worker_error(exc)
+                    self._stop.wait(0.25)
+
+    def _record_worker_error(self, exc: Exception) -> None:
+        with self._worker_error_lock:
+            self._worker_error_count += 1
+            self._last_worker_error = str(exc)[:500]
+            self._last_worker_error_at = int(time.time() * 1000)
 
     def _execute_job(self, job_id: str) -> None:
         job = self.get(job_id)
         if not job or job["status"] != "queued":
+            return
+        if job.get("cancel_requested"):
+            self._finish_cancelled(job_id)
             return
         locks = [
             _RedisLease(
@@ -361,11 +446,17 @@ class RedisJobBackend:
         heartbeat = None
         try:
             for lock in locks:
-                if not lock.acquire():
+                if not lock.acquire(lambda: self.is_cancel_requested(job_id)):
+                    if self.is_cancel_requested(job_id):
+                        self._finish_cancelled(job_id)
+                        return
                     self.redis.lpush(self.queue_key, job_id)
                     requeued = True
                     return
                 acquired.append(lock)
+            if self.is_cancel_requested(job_id):
+                self._finish_cancelled(job_id)
+                return
             started_at = int(time.time() * 1000)
             self.redis.hset(self._job_key(job_id), mapping={
                 "status": "running",
@@ -380,15 +471,17 @@ class RedisJobBackend:
             )
             heartbeat.start()
             result = self.executor(job["action"], job["payload"], job_id, job["operator"])
+            final_status = "cancelled" if self.is_cancel_requested(job_id) else "done"
             self.redis.hset(self._job_key(job_id), mapping={
-                "status": "done",
+                "status": final_status,
                 "result": json.dumps(result, ensure_ascii=False, default=str),
                 "finished_at": str(int(time.time() * 1000)),
                 "lease_until": "",
             })
         except Exception as exc:
+            final_status = "cancelled" if self.is_cancel_requested(job_id) else "failed"
             self.redis.hset(self._job_key(job_id), mapping={
-                "status": "failed",
+                "status": final_status,
                 "error": str(exc),
                 "finished_at": str(int(time.time() * 1000)),
                 "lease_until": "",
@@ -405,6 +498,57 @@ class RedisJobBackend:
             digest = str(job.get("dedupe_key") or "")
             if not requeued and digest and str(self.redis.get(self._dedupe_key(digest)) or "") == job_id:
                 self.redis.delete(self._dedupe_key(digest))
+
+    def _finish_cancelled(self, job_id: str) -> None:
+        self.redis.hset(self._job_key(job_id), mapping={
+            "status": "cancelled",
+            "finished_at": str(int(time.time() * 1000)),
+            "lease_until": "",
+        })
+        job = self.get(job_id) or {}
+        digest = str(job.get("dedupe_key") or "")
+        if digest and str(self.redis.get(self._dedupe_key(digest)) or "") == job_id:
+            self.redis.delete(self._dedupe_key(digest))
+
+    def cancel(self, job_id: str) -> dict[str, Any] | None:
+        job = self.get(job_id)
+        if not job:
+            return None
+        if job["status"] not in {"queued", "running"}:
+            return job
+        self.redis.hset(self._job_key(job_id), "cancel_requested", "1")
+        if job["status"] == "queued":
+            with self.redis.pipeline() as pipe:
+                pipe.lrem(self.queue_key, 0, job_id)
+                pipe.lrem(self.processing_key, 0, job_id)
+                pipe.hset(self._job_key(job_id), mapping={
+                    "status": "cancelled",
+                    "finished_at": str(int(time.time() * 1000)),
+                    "lease_until": "",
+                })
+                pipe.execute()
+            digest = str(job.get("dedupe_key") or "")
+            if digest and str(self.redis.get(self._dedupe_key(digest)) or "") == job_id:
+                self.redis.delete(self._dedupe_key(digest))
+        return self.get(job_id)
+
+    def is_cancel_requested(self, job_id: str) -> bool:
+        return str(self.redis.hget(self._job_key(job_id), "cancel_requested") or "") == "1"
+
+    def save_item_result(self, job_id: str, record_id: str, result: dict[str, Any]) -> None:
+        if not self.redis.exists(self._job_key(job_id)):
+            return
+        key = self._item_results_key(job_id)
+        self.redis.hset(key, record_id, json.dumps(result, ensure_ascii=False, default=str))
+        self.redis.expire(key, 7 * 86400)
+
+    def item_results(self, job_id: str) -> dict[str, dict[str, Any]]:
+        if not self.redis.exists(self._job_key(job_id)):
+            return {}
+        return {
+            str(record_id): json.loads(value)
+            for record_id, value in self.redis.hgetall(self._item_results_key(job_id)).items()
+        }
 
     def _renew_job_lease(self, job_id: str, locks: list[_RedisLease], stop: Event) -> None:
         interval = max(1.0, self.lock_ttl_seconds / 3)
@@ -470,6 +614,7 @@ class RedisJobBackend:
             "finished_at": number("finished_at"),
             "dedupe_key": raw.get("dedupe_key", ""),
             "lease_until": number("lease_until"),
+            "cancel_requested": str(raw.get("cancel_requested") or "") == "1",
         }
 
     def list(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -479,15 +624,32 @@ class RedisJobBackend:
     def health(self) -> dict[str, Any]:
         self.redis.ping()
         jobs = self.list(limit=200)
+        worker_threads = [
+            thread
+            for thread in self._threads
+            if thread.name.startswith("redis-job-") and thread.name != "redis-job-recovery"
+        ]
+        recovery_threads = [thread for thread in self._threads if thread.name == "redis-job-recovery"]
+        with self._worker_error_lock:
+            worker_error_count = self._worker_error_count
+            last_worker_error = self._last_worker_error
+            last_worker_error_at = self._last_worker_error_at
         return {
             "backend": "redis",
             "persistent": True,
             "queued": sum(1 for item in jobs if item["status"] == "queued"),
             "running": sum(1 for item in jobs if item["status"] == "running"),
+            "expected_workers": self.max_workers,
+            "alive_workers": sum(1 for thread in worker_threads if thread.is_alive()),
+            "recovery_worker_alive": any(thread.is_alive() for thread in recovery_threads),
+            "worker_error_count": worker_error_count,
+            "last_worker_error": last_worker_error or None,
+            "last_worker_error_at": last_worker_error_at,
         }
 
-    def shutdown(self) -> None:
+    def shutdown(self, wait_timeout_seconds: float | None = 2) -> None:
         self._stop.set()
+        deadline = time.time() + max(0, float(wait_timeout_seconds or 0))
         for thread in self._threads:
-            thread.join(timeout=2)
+            thread.join(timeout=max(0, deadline - time.time()))
         self._threads.clear()

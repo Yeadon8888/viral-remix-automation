@@ -1,5 +1,6 @@
 import base64
 import json
+import random
 import re
 import time
 from threading import BoundedSemaphore, Lock
@@ -11,10 +12,7 @@ from .config import Settings
 from .prompting import DEFAULT_VIDEO_ANALYSIS_TEMPLATE, render_template
 
 GEMINI_MAX_RETRIES = 4
-GEMINI_MIN_INTERVAL_SECONDS = 2.0
-_gemini_lock = Lock()
-_gemini_slots = BoundedSemaphore(2)
-_last_gemini_request_at = 0.0
+GEMINI_RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 
 
 REGION_LANGUAGE = {
@@ -89,43 +87,150 @@ def _normalize_doubao_result(text: str, product_name: str) -> dict[str, str]:
     }
 
 
+def _normalize_face_result(text: str) -> dict[str, Any]:
+    data = _parse_json_object(text)
+    if not data:
+        raise RuntimeError("人脸检测没有返回有效 JSON")
+
+    raw_status = str(data.get("status") or data.get("result") or "").strip().lower()
+    status_aliases = {
+        "face": "face",
+        "present": "face",
+        "detected": "face",
+        "true": "face",
+        "clear": "clear",
+        "absent": "clear",
+        "none": "clear",
+        "no_face": "clear",
+        "false": "clear",
+        "uncertain": "uncertain",
+        "review": "uncertain",
+        "unknown": "uncertain",
+    }
+    status = status_aliases.get(raw_status)
+    if not status and isinstance(data.get("contains_face"), bool):
+        status = "face" if data["contains_face"] else "clear"
+    if not status:
+        raise RuntimeError("人脸检测返回了不支持的状态")
+
+    has_subject_contract = any(
+        key in data
+        for key in ("subject_type", "face_kind", "human_face_count", "visibility")
+    )
+    subject_type = str(
+        data.get("subject_type")
+        or data.get("face_kind")
+        or ""
+    ).strip().lower().replace("-", "_").replace(" ", "_")
+    human_subjects = {"human", "real_human", "photorealistic_human"}
+    non_human_subjects = {
+        "cartoon",
+        "anime",
+        "animal",
+        "doll",
+        "emoji",
+        "mascot",
+        "game_character",
+        "non_human",
+        "none",
+        "object",
+    }
+    visibility = str(data.get("visibility") or "").strip().lower()
+
+    raw_count = (
+        data.get("human_face_count")
+        if "human_face_count" in data
+        else data.get("face_count")
+    )
+    try:
+        face_count = max(0, int(raw_count or 0))
+    except (TypeError, ValueError):
+        face_count = 0
+    try:
+        confidence = min(1.0, max(0.0, float(data.get("confidence") or 0)))
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    if has_subject_contract:
+        clearly_human = subject_type in human_subjects
+        clearly_visible = visibility in {"", "clear", "obvious", "recognizable"}
+        if (
+            status != "face"
+            or not clearly_human
+            or subject_type in non_human_subjects
+            or not clearly_visible
+            or face_count < 1
+            or confidence < 0.85
+        ):
+            status = "clear"
+            face_count = 0
+
+    return {
+        "status": status,
+        "face_count": face_count,
+        "confidence": confidence,
+        "reason": str(data.get("reason") or data.get("detail") or "").strip(),
+    }
+
+
 class GeminiClient:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self._slots = BoundedSemaphore(max(
+            1,
+            int(getattr(settings, "gemini_request_concurrency", 6)),
+        ))
+        self._rate_lock = Lock()
+        self._last_request_at = 0.0
 
     def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
-        global _last_gemini_request_at
-
         last_error = ""
         for attempt in range(GEMINI_MAX_RETRIES + 1):
-            with _gemini_slots:
-                with _gemini_lock:
-                    wait = GEMINI_MIN_INTERVAL_SECONDS - (time.time() - _last_gemini_request_at)
-                    if wait > 0:
-                        time.sleep(wait)
-                    _last_gemini_request_at = time.time()
-                resp = requests.post(
-                    f"{self.settings.gemini_base_url}/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.settings.gemini_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                    timeout=300,
-                )
+            try:
+                with self._slots:
+                    with self._rate_lock:
+                        min_interval = max(
+                            0.0,
+                            float(getattr(self.settings, "gemini_min_interval_seconds", 0.25)),
+                        )
+                        wait = min_interval - (time.time() - self._last_request_at)
+                        if wait > 0:
+                            time.sleep(wait)
+                        self._last_request_at = time.time()
+                    resp = requests.post(
+                        f"{self.settings.gemini_base_url}/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self.settings.gemini_api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                        timeout=300,
+                    )
+            except requests.RequestException as exc:
+                last_error = str(exc)
+                if attempt >= GEMINI_MAX_RETRIES:
+                    raise RuntimeError(
+                        f"Gemini request failed after retries: {last_error}"
+                    ) from exc
+                delay = min(30.0, 1.5 * (2**attempt)) + random.uniform(0.0, 0.25)
+                time.sleep(delay)
+                continue
 
             if resp.status_code < 400:
                 return resp.json()
 
             last_error = resp.text[:500]
-            if resp.status_code != 429 or attempt >= GEMINI_MAX_RETRIES:
+            if (
+                resp.status_code not in GEMINI_RETRYABLE_STATUS_CODES
+                or attempt >= GEMINI_MAX_RETRIES
+            ):
                 raise RuntimeError(f"Gemini HTTP {resp.status_code}: {last_error}")
 
             retry_after = resp.headers.get("Retry-After", "")
             try:
-                delay = float(retry_after)
+                delay = max(0.0, float(retry_after))
             except ValueError:
-                delay = min(60.0, 5.0 * (attempt + 1))
+                delay = min(30.0, 1.5 * (2**attempt)) + random.uniform(0.0, 0.25)
             time.sleep(delay)
 
         raise RuntimeError(f"Gemini request failed after retries: {last_error}")
@@ -225,3 +330,46 @@ class GeminiClient:
             raise RuntimeError("Gemini returned empty final_video_prompt")
         result["analysis_prompt"] = prompt
         return result
+
+    def detect_human_faces(self, *, image_bytes: bytes, image_mime: str) -> dict[str, Any]:
+        prompt = """
+你是商品素材合规检测器。只检测明确、可辨认的人类脸部。
+
+判定规则：
+- 只有明确、可辨认的人类脸部才判为 face，包括真人或逼真的写实生成人脸；印刷品、屏幕和倒影中的人脸也必须足够清晰。
+- 正脸、清晰侧脸或清晰局部脸可以判为 face，但必须具有连贯的人类面部结构，并能稳定辨认至少两个关键部位（眼睛、鼻子、嘴巴）。
+- 卡通、动漫、游戏角色、吉祥物、玩偶、动物脸、Emoji、商品装饰图案一律判为 clear。
+- 单独的眼睛、嘴唇、皮肤局部、手、人体轮廓，以及看起来“像脸”的物体图案一律判为 clear。
+- 模糊、过小、严重遮挡、五官不可辨认或不确定是否为人类脸部时，一律判为 clear；不要因为疑似或联想而拦截。
+- status=face 时，subject_type 必须为 human、visibility 必须为 clear、human_face_count 必须大于 0、confidence 必须至少为 0.85。
+
+只输出一个 JSON 对象，不要 Markdown：
+{
+  "status": "face | clear",
+  "subject_type": "human | non_human | none",
+  "visibility": "clear | not_clear",
+  "human_face_count": 0,
+  "confidence": 0.0,
+  "reason": "简短中文理由"
+}
+""".strip()
+        data = self._post_chat(
+            {
+                "model": self.settings.gemini_model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": _data_url(image_mime, image_bytes)}},
+                        ],
+                    }
+                ],
+                "temperature": 0,
+                "max_tokens": 512,
+            }
+        )
+        text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        if not text:
+            raise RuntimeError("Gemini 人脸检测返回空内容")
+        return _normalize_face_result(text)

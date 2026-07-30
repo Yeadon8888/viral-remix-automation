@@ -1,3 +1,4 @@
+import atexit
 from threading import Lock
 
 from api.logging_bus import add_log
@@ -86,6 +87,22 @@ def get_job(job_id: str):
     return get_backend().get(job_id)
 
 
+def cancel_job(job_id: str):
+    return get_backend().cancel(job_id)
+
+
+def job_cancel_requested(job_id: str) -> bool:
+    return get_backend().is_cancel_requested(job_id)
+
+
+def save_job_item_result(job_id: str, record_id: str, result: dict) -> None:
+    get_backend().save_item_result(job_id, record_id, result)
+
+
+def job_item_results(job_id: str) -> dict[str, dict]:
+    return get_backend().item_results(job_id)
+
+
 def list_jobs(limit: int = 100):
     return get_backend().list(limit=limit)
 
@@ -106,14 +123,31 @@ def reset_backend_for_tests() -> None:
         _backend = None
 
 
+def _shutdown_backend_at_exit() -> None:
+    if _backend is None:
+        return
+    from api.config import settings
+
+    _backend.shutdown(
+        wait_timeout_seconds=max(2, getattr(settings, "job_shutdown_grace_seconds", 110))
+    )
+
+
+atexit.register(_shutdown_backend_at_exit)
+
+
 __all__ = [
     "enqueue_job",
     "audited_executor",
+    "cancel_job",
     "coordinated_resources",
     "get_backend",
     "get_job",
     "job_health",
+    "job_item_results",
+    "job_cancel_requested",
     "list_jobs",
     "reset_backend_for_tests",
     "run_job",
+    "save_job_item_result",
 ]

@@ -1,6 +1,7 @@
 import time
 import unittest
 from threading import Lock
+from unittest.mock import patch
 
 
 class JobActionContractTests(unittest.TestCase):
@@ -16,11 +17,128 @@ class JobActionContractTests(unittest.TestCase):
 
         payload = normalize_payload(
             "doubao.batch_generate_prompts",
-            {"record_ids": ["rec-2", "rec-1", "rec-2", ""], "country_code": "mx"},
+            {
+                "record_ids": ["rec-2", "rec-1", "rec-2", ""],
+                "row_numbers": {"rec-1": 101, "rec-2": "102", "other": 999},
+                "country_code": "mx",
+            },
         )
 
         self.assertEqual(payload["record_ids"], ["rec-1", "rec-2"])
+        self.assertEqual(payload["row_numbers"], {"rec-1": 101, "rec-2": 102})
         self.assertEqual(payload["country_code"], "MX")
+
+    def test_batch_failure_keeps_doubao_row_number_context(self):
+        from api.jobs.actions import _batch
+
+        result = _batch(
+            ["rec-failed"],
+            lambda record_id: {
+                "record_id": record_id,
+                "status": "failed",
+                "stage": "提示词生成",
+                "error": "上游数据尚未准备好",
+            },
+            row_numbers={"rec-failed": 5480},
+        )
+
+        self.assertEqual(result["results"][0]["row_number"], 5480)
+        self.assertEqual(result["results"][0]["source_table"], "豆包素材表")
+
+    def test_batch_stop_skips_records_that_have_not_started(self):
+        from api.jobs.actions import _batch
+
+        handled = []
+        cancel_checks = iter([False, True, True])
+        with patch("api.jobs.job_cancel_requested", side_effect=lambda job_id: next(cancel_checks)):
+            result = _batch(
+                ["rec-1", "rec-2", "rec-3"],
+                lambda record_id: handled.append(record_id) or {"record_id": record_id},
+                max_workers=1,
+                job_id="job-stop",
+                label="测试停止",
+            )
+
+        self.assertEqual(handled, ["rec-1"])
+        self.assertEqual(result["selected"], 3)
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(result["cancelled"], 2)
+        self.assertEqual(result["failed"], 0)
+
+    def test_batch_resume_keeps_checkpointed_failures_without_retrying_them(self):
+        from api.jobs.actions import _batch
+
+        handled = []
+        checkpointed = {
+            "rec-done": {"record_id": "rec-done", "status": "created"},
+            "rec-failed": {"record_id": "rec-failed", "status": "failed", "error": "HTTP 502"},
+        }
+        with (
+            patch("api.jobs.job_cancel_requested", return_value=False),
+            patch("api.jobs.job_item_results", return_value=checkpointed, create=True),
+            patch("api.jobs.save_job_item_result", create=True) as save_result,
+        ):
+            result = _batch(
+                ["rec-done", "rec-failed", "rec-new"],
+                lambda record_id: handled.append(record_id) or {"record_id": record_id, "status": "created"},
+                max_workers=1,
+                job_id="job-resume",
+                label="恢复测试",
+            )
+
+        self.assertEqual(handled, ["rec-new"])
+        self.assertEqual(result["processed"], 3)
+        self.assertEqual(result["failed"], 1)
+        save_result.assert_called_once_with(
+            "job-resume",
+            "rec-new",
+            {"record_id": "rec-new", "status": "created"},
+        )
+
+    def test_batch_does_not_automatically_retry_failed_record(self):
+        from api.jobs.actions import _batch
+
+        handled = []
+        with (
+            patch("api.jobs.job_cancel_requested", return_value=False),
+            patch("api.jobs.job_item_results", return_value={}, create=True),
+            patch("api.jobs.save_job_item_result", create=True),
+        ):
+            result = _batch(
+                ["rec-failed"],
+                lambda record_id: handled.append(record_id) or {
+                    "record_id": record_id,
+                    "status": "failed",
+                    "error": "模型请求失败",
+                },
+                max_workers=1,
+                job_id="job-failed",
+            )
+
+        self.assertEqual(handled, ["rec-failed"])
+        self.assertEqual(result["failed"], 1)
+
+    def test_checkpoint_write_failure_does_not_turn_success_into_failure(self):
+        from api.jobs.actions import _batch
+
+        with (
+            patch("api.jobs.job_cancel_requested", return_value=False),
+            patch("api.jobs.job_item_results", return_value={}, create=True),
+            patch(
+                "api.jobs.save_job_item_result",
+                side_effect=RuntimeError("redis unavailable"),
+                create=True,
+            ),
+        ):
+            result = _batch(
+                ["rec-done"],
+                lambda record_id: {"record_id": record_id, "status": "created"},
+                max_workers=1,
+                job_id="job-checkpoint-error",
+            )
+
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(result["failed"], 0)
 
     def test_doubao_country_variants_share_the_same_record_lock(self):
         _, resource_keys_for = self.helpers()
@@ -90,6 +208,54 @@ class JobActionContractTests(unittest.TestCase):
         )
 
         self.assertEqual(calls, ["rec-1", "rec-2"])
+        self.assertEqual(result["processed"], 2)
+        self.assertEqual(result["failed"], 0)
+
+    def test_face_detection_batch_uses_bounded_model_concurrency(self):
+        from api.jobs.actions import execute_action
+
+        calls = []
+
+        class FakeWorkflow:
+            settings = type("Settings", (), {"batch_face_concurrency": 2})()
+
+            def detect_doubao_face(self, record_id, job_id=None):
+                calls.append((record_id, job_id))
+                return {"record_id": record_id, "status": "无人脸"}
+
+        result = execute_action(
+            "doubao.batch_detect_faces",
+            {"record_ids": ["rec-2", "rec-1"]},
+            "job-face",
+            "alice",
+            workflow=FakeWorkflow(),
+        )
+
+        self.assertEqual({item[0] for item in calls}, {"rec-1", "rec-2"})
+        self.assertEqual(result["processed"], 2)
+        self.assertEqual(result["failed"], 0)
+
+    def test_flagged_record_deletion_batch_deletes_each_selected_record(self):
+        from api.jobs.actions import execute_action
+
+        calls = []
+
+        class FakeWorkflow:
+            settings = type("Settings", (), {"batch_image_concurrency": 2})()
+
+            def delete_doubao_face_record(self, record_id, job_id=None):
+                calls.append((record_id, job_id))
+                return {"record_id": record_id, "status": "已删除", "deleted": True}
+
+        result = execute_action(
+            "doubao.batch_delete_face_records",
+            {"record_ids": ["rec-2", "rec-1"]},
+            "job-delete",
+            "alice",
+            workflow=FakeWorkflow(),
+        )
+
+        self.assertEqual({item[0] for item in calls}, {"rec-1", "rec-2"})
         self.assertEqual(result["processed"], 2)
         self.assertEqual(result["failed"], 0)
 
@@ -198,6 +364,213 @@ class JobActionContractTests(unittest.TestCase):
         self.assertEqual(calls, [("rec-1", True)])
         self.assertEqual(result["skipped"], 1)
 
+    def test_part_time_batch_uses_bounded_concurrency(self):
+        from api.jobs.actions import execute_action
+
+        active = 0
+        max_active = 0
+        lock = Lock()
+
+        class FakeFeishu:
+            def list_records(self, table_id):
+                return []
+
+        class FakeWorkflow:
+            settings = type(
+                "Settings",
+                (),
+                {"part_time_table_id": "target-table", "batch_sync_concurrency": 2},
+            )()
+            feishu = FakeFeishu()
+
+            def sync_doubao_to_part_time(
+                self,
+                record_id,
+                country_code,
+                job_id=None,
+                target_records=None,
+                force_update=False,
+            ):
+                nonlocal active, max_active
+                with lock:
+                    active += 1
+                    max_active = max(max_active, active)
+                time.sleep(0.05)
+                with lock:
+                    active -= 1
+                return {"record_id": record_id, "status": "created"}
+
+        result = execute_action(
+            "doubao.batch_sync_part_time",
+            {"record_ids": ["rec-1", "rec-2", "rec-3", "rec-4"], "country_code": "PH"},
+            "job-1",
+            "alice",
+            workflow=FakeWorkflow(),
+        )
+
+        self.assertGreater(max_active, 1)
+        self.assertLessEqual(max_active, 2)
+        self.assertEqual(result["created"], 4)
+
+    def test_part_time_batch_counts_protected_target_conflicts_as_failed(self):
+        from api.jobs.actions import execute_action
+
+        class FakeFeishu:
+            def list_records(self, table_id):
+                return []
+
+        class FakeWorkflow:
+            settings = type("Settings", (), {"part_time_table_id": "target-table"})()
+            feishu = FakeFeishu()
+
+            def sync_doubao_to_part_time(
+                self,
+                record_id,
+                country_code,
+                job_id=None,
+                target_records=None,
+                force_update=False,
+            ):
+                return {
+                    "record_id": record_id,
+                    "status": "conflict",
+                    "message": "目标兼职任务状态为已完成，已保护现有任务，未覆盖",
+                }
+
+        result = execute_action(
+            "doubao.batch_sync_part_time",
+            {"record_ids": ["rec-conflict"], "country_code": "PH", "force_update": True},
+            "job-1",
+            "alice",
+            workflow=FakeWorkflow(),
+        )
+
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["conflict"], 1)
+
+    def test_doubao_workflow_batch_continues_other_records_and_counts_outcomes(self):
+        from api.jobs.actions import execute_action
+
+        calls = []
+
+        class FakeFeishu:
+            def list_records(self, table_id):
+                return []
+
+        class FakeWorkflow:
+            settings = type(
+                "Settings",
+                (),
+                {"part_time_table_id": "target-table", "batch_sync_concurrency": 2},
+            )()
+            feishu = FakeFeishu()
+
+            def process_doubao_workflow_record(
+                self,
+                record_id,
+                country_code,
+                job_id=None,
+                target_records=None,
+                force_update=False,
+            ):
+                calls.append((record_id, country_code, force_update))
+                if record_id == "rec-blocked":
+                    return {
+                        "record_id": record_id,
+                        "status": "blocked",
+                        "stage": "人脸审核拦截",
+                        "message": "商品图包含人脸",
+                    }
+                if record_id == "rec-failed":
+                    return {
+                        "record_id": record_id,
+                        "status": "failed",
+                        "stage": "图片转存",
+                        "error": "HTTP 403",
+                    }
+                return {"record_id": record_id, "status": "created", "stage": "同步兼职表"}
+
+        result = execute_action(
+            "doubao.batch_workflow",
+            {
+                "record_ids": ["rec-ready", "rec-blocked", "rec-failed"],
+                "country_code": "MX",
+                "force_update": True,
+            },
+            "job-workflow",
+            "alice",
+            workflow=FakeWorkflow(),
+        )
+
+        self.assertEqual({item[0] for item in calls}, {"rec-ready", "rec-blocked", "rec-failed"})
+        self.assertTrue(all(item[1:] == ("MX", True) for item in calls))
+        self.assertEqual(result["processed"], 3)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["blocked"], 1)
+        self.assertEqual(result["created"], 1)
+
+    def test_doubao_workflow_record_runs_each_required_stage_in_order(self):
+        from api.workflow import ViralRemixWorkflow
+
+        calls = []
+        current = {"next_action": "store_image"}
+        fields = {}
+
+        class FakeFeishu:
+            def get_record(self, table_id, record_id):
+                return {"record_id": record_id, "fields": fields}
+
+        class FakeAssets:
+            def describe(self, fields):
+                return {
+                    "素材下一步": current["next_action"],
+                    "流程阶段": current["next_action"],
+                    "素材阻塞原因": "",
+                    "可执行生成提示词": True,
+                }
+
+        class FakeWorkflow:
+            settings = type("Settings", (), {"doubao_table_id": "doubao-table"})()
+            feishu = FakeFeishu()
+            doubao_assets = FakeAssets()
+
+            def store_doubao_image(self, record_id, job_id=None):
+                calls.append("store")
+                current["next_action"] = "detect_face"
+
+            def detect_doubao_face(self, record_id, job_id=None):
+                calls.append("face")
+                current["next_action"] = "generate_prompt"
+
+            def generate_doubao_prompt(self, record_id, country_code, job_id=None):
+                calls.append("prompt")
+                fields.update({"目标国家": "墨西哥", "目标语言": "西班牙语"})
+                current["next_action"] = "sync_part_time"
+
+            def sync_doubao_to_part_time(
+                self,
+                record_id,
+                country_code,
+                job_id=None,
+                target_records=None,
+                force_update=False,
+            ):
+                calls.append("sync")
+                return {"record_id": record_id, "status": "created"}
+
+        result = ViralRemixWorkflow.process_doubao_workflow_record(
+            FakeWorkflow(),
+            "rec-1",
+            "MX",
+            job_id="job-workflow",
+            target_records=[],
+        )
+
+        self.assertEqual(calls, ["store", "face", "prompt", "sync"])
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(result["steps"], ["图片转存", "人脸检测", "提示词生成", "同步兼职表"])
+
     def test_doubao_publish_action_invokes_joined_sync(self):
         from api.jobs.actions import execute_action
 
@@ -218,6 +591,57 @@ class JobActionContractTests(unittest.TestCase):
 
         self.assertEqual(result, {"created": 1})
         self.assertEqual(calls, [(["source-1", "source-2"], 200, "job-1")])
+
+    def test_part_time_publish_action_invokes_selected_sync(self):
+        from api.jobs.actions import execute_action
+
+        calls = []
+
+        class FakeWorkflow:
+            def sync_part_time_publish_items(self, record_ids, limit=100, job_id=None):
+                calls.append((record_ids, limit, job_id))
+                return {"created": 1, "failed": 0}
+
+        result = execute_action(
+            "publish.sync_part_time",
+            {"record_ids": ["part-2", "part-1"], "limit": 200},
+            "job-1",
+            "alice",
+            workflow=FakeWorkflow(),
+        )
+
+        self.assertEqual(result, {"created": 1, "failed": 0})
+        self.assertEqual(calls, [(["part-1", "part-2"], 200, "job-1")])
+
+    def test_part_time_publish_action_keeps_real_row_number_in_failure(self):
+        from api.jobs.actions import execute_action
+
+        class FakeWorkflow:
+            def sync_part_time_publish_items(self, record_ids, limit=100, job_id=None):
+                return {
+                    "processed": 1,
+                    "failed": 1,
+                    "results": [{
+                        "record_id": "part-1",
+                        "status": "failed",
+                        "message": "视频链接无效",
+                    }],
+                }
+
+        result = execute_action(
+            "publish.sync_part_time",
+            {
+                "record_ids": ["part-1"],
+                "row_numbers": {"part-1": 4923},
+                "limit": 200,
+            },
+            "job-1",
+            "alice",
+            workflow=FakeWorkflow(),
+        )
+
+        self.assertEqual(result["results"][0]["row_number"], 4923)
+        self.assertEqual(result["results"][0]["source_table"], "兼职表")
 
     def test_unknown_action_is_rejected(self):
         try:

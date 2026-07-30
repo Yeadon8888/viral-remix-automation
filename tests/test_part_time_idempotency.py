@@ -63,7 +63,7 @@ class PartTimeIdempotencyTests(unittest.TestCase):
         created = []
         source_fields = {
             "商品名称": "Test product",
-            "商品图链接": "https://cdn.example/product.jpg",
+            "商品图存储链接": "https://storage.example/product.jpg",
             "最终视频生成提示词": "Mexican Spanish prompt",
             "目标国家": "墨西哥",
             "目标语言": "西班牙语",

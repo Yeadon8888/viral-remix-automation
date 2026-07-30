@@ -63,7 +63,14 @@ class CountryAwareDoubaoPromptTests(unittest.TestCase):
         workflow.settings = SimpleNamespace(doubao_table_id="doubao-table")
         workflow.feishu = FakeFeishu()
         workflow.gemini = FakeGemini()
-        workflow._resolve_doubao_image = lambda fields, prefer_stored=True: (b"image", "image/png", "image.png")
+        workflow.doubao_assets = SimpleNamespace(
+            require_prompt_generation_ready=lambda fields: "https://assets.example.com/image.png",
+            download_managed_image=lambda fields: (
+                b"image",
+                "image/png",
+                "https://assets.example.com/image.png",
+            ),
+        )
 
         def active_prompt(key, region, fallback):
             captured["selection"] = (key, region, fallback)
@@ -84,6 +91,9 @@ class CountryAwareDoubaoPromptTests(unittest.TestCase):
 
 class PartTimeSyncServiceTests(unittest.TestCase):
     def make_service(self, source_fields, target_records=None):
+        source_fields = dict(source_fields)
+        if "商品图存储链接" not in source_fields and source_fields.get("商品图链接"):
+            source_fields["商品图存储链接"] = source_fields["商品图链接"]
         calls = {"created": [], "updated": [], "listed": 0}
 
         class FakeFeishu:

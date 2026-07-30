@@ -1,6 +1,7 @@
 .env
 .venv/
 .railway/
+.wrangler/
 __pycache__/
 api/__pycache__/
 *.pyc

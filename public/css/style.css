@@ -381,11 +381,14 @@ main {
   padding: 11px 14px;
 }
 
+.status-strip > div { min-width: 0; }
+.status-strip > button { flex: 0 0 auto; }
+
 .status-strip .eyebrow { margin-bottom: 2px; }
 
 #configLine {
   display: block;
-  max-width: min(1100px, 75vw);
+  max-width: 100%;
   overflow: hidden;
   color: #43514b;
   font-size: 11px;
@@ -458,10 +461,26 @@ main {
   gap: 8px;
 }
 
+.sort-control {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.sort-control select {
+  min-height: 36px;
+  padding-block: 6px;
+  font-size: 12px;
+}
+
 .metric-row,
 .metric-row.compact {
   display: grid;
-  grid-template-columns: repeat(5, minmax(110px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 9px;
   max-width: none;
   margin-bottom: 16px;
@@ -540,6 +559,79 @@ main {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.5;
+}
+
+.workflow-rule {
+  align-self: center;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.doubao-workflow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 11px;
+}
+
+.workflow-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px 10px;
+  border: 1px solid #dbe5e0;
+  border-radius: 10px;
+  background: #fbfcfb;
+  padding: 12px;
+}
+
+.workflow-step > button,
+.workflow-step > .actions {
+  grid-column: 2;
+  justify-content: flex-start;
+}
+
+.workflow-step small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.step-number {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--dark);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.review-rule {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 11px;
+  border: 1px solid #dbe5e0;
+  border-radius: 10px;
+  background: #f7faf8;
+  padding: 10px 12px;
+}
+
+.review-rule span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+button.danger {
+  border-color: #e5b7b0;
+  background: #fff5f3;
+  color: #a33e31;
 }
 
 .sync-button { background: var(--green); }
@@ -671,7 +763,7 @@ table {
 
 #materials table { min-width: 1240px; }
 #tasks table { min-width: 1320px; }
-#doubaoItems table { min-width: 1320px; }
+#doubaoItems table { min-width: 1480px; }
 #prompts table { min-width: 1080px; }
 
 th, td {
@@ -982,6 +1074,7 @@ code {
 .status.已创建任务,
 .status.已生成Prompt,
 .status.已同步,
+.status.无人脸,
 .status.启用,
 .status.done {
   background: var(--green-soft);
@@ -991,7 +1084,11 @@ code {
 .status.失败,
 .status.failed,
 .status.fail,
+.status.cancelled,
 .status.同步失败,
+.status.检测失败,
+.status.含人脸,
+.status.疑似人脸,
 .status.同步冲突 {
   background: var(--danger-soft);
   color: var(--danger);
@@ -1003,6 +1100,7 @@ code {
 .status.组图生成中,
 .status.任务创建中,
 .status.视频生成中,
+.status.检测中,
 .status.running {
   background: var(--warm-soft);
   color: var(--warm);
@@ -1031,19 +1129,167 @@ code {
 
 .jobs {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }
 
 .job {
   display: flex;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  gap: 9px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--soft);
-  padding: 10px;
+  padding: 12px;
+  font-size: 12px;
+}
+
+.job-header,
+.runtime-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.job-title {
+  display: block;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.job-id,
+.job-times {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.job-id { margin-top: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.job-times { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+
+.job-target {
+  border-radius: 6px;
+  background: #eef4f1;
+  padding: 6px 8px;
+  color: var(--ink);
+  line-height: 1.45;
+}
+
+.job-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.job-success { color: #087046; }
+.job-failed { color: var(--danger); }
+.job-cancelled { color: #966200; }
+.job-protected { color: #966200; }
+
+.status.protected {
+  background: #fff4d9;
+  color: #7d5100;
+}
+
+.job-failures,
+.job-conflicts {
+  border-top: 1px solid #f1d5da;
+  padding-top: 8px;
+  color: var(--danger);
+}
+
+.job-failures summary,
+.job-conflicts summary {
+  cursor: pointer;
+  font-weight: 800;
+  list-style-position: inside;
+}
+
+.job-conflicts {
+  border-top-color: #eadcb5;
+  color: #7d5100;
+}
+
+.job-failure-actions {
+  margin-top: 8px;
+}
+
+.job-header-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.job-cancel {
+  border-color: #efb8c1;
+  background: #fff7f8;
+  color: var(--danger);
+}
+
+.job-retry {
+  border-color: #efb8c1;
+  background: #fff7f8;
+  color: var(--danger);
+}
+
+.job-failures ol,
+.job-conflicts ol {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 0 0 0 18px;
+}
+
+.job-failures li,
+.job-conflicts li {
+  display: grid;
+  gap: 2px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.job-failures code,
+.job-conflicts code {
+  color: var(--ink);
+  font-size: 10px;
+  word-break: break-all;
+}
+
+.flow-stage {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border-radius: 999px;
+  background: #eef4f1;
+  padding: 3px 8px;
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.flow-lock-reason {
+  display: block;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.runtime-toolbar {
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.runtime-summary {
+  color: var(--muted);
   font-size: 12px;
 }
 
@@ -1112,6 +1358,7 @@ code {
 .toast.error { border-left-color: var(--danger); }
 
 @media (max-width: 1180px) {
+  .doubao-workflow { grid-template-columns: 1fr; }
   .app-shell { grid-template-columns: 84px minmax(0, 1fr); }
   .sidebar { padding: 20px 12px; }
   .sidebar .brand { justify-content: center; padding-inline: 0; }

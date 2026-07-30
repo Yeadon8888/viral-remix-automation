@@ -9,7 +9,7 @@ from api.gemini import GeminiClient
 
 
 class GeminiRequestConcurrencyTests(unittest.TestCase):
-    def test_gemini_requests_can_overlap(self):
+    def test_configured_gemini_requests_can_overlap(self):
         active = 0
         max_active = 0
         lock = Lock()
@@ -31,15 +31,54 @@ class GeminiRequestConcurrencyTests(unittest.TestCase):
                 active -= 1
             return FakeResponse()
 
-        client = GeminiClient(Settings(gemini_api_key="test-key"))
+        client = GeminiClient(Settings(
+            gemini_api_key="test-key",
+            gemini_request_concurrency=4,
+            gemini_min_interval_seconds=0,
+        ))
         with (
-            patch("api.gemini.GEMINI_MIN_INTERVAL_SECONDS", 0),
             patch("api.gemini.requests.post", side_effect=fake_post),
-            ThreadPoolExecutor(max_workers=2) as pool,
+            ThreadPoolExecutor(max_workers=4) as pool,
         ):
-            list(pool.map(lambda _: client._post_chat({}), range(2)))
+            list(pool.map(lambda _: client._post_chat({}), range(4)))
 
-        self.assertEqual(max_active, 2)
+        self.assertEqual(max_active, 4)
+
+    def test_bad_gateway_is_retried(self):
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, status_code, text="", payload=None):
+                self.status_code = status_code
+                self.text = text
+                self.headers = {}
+                self._payload = payload or {}
+
+            def json(self):
+                return self._payload
+
+        responses = [
+            FakeResponse(502, "<html><h1>502 Bad Gateway</h1></html>"),
+            FakeResponse(200, payload={"choices": []}),
+        ]
+
+        def fake_post(*args, **kwargs):
+            calls.append((args, kwargs))
+            return responses.pop(0)
+
+        client = GeminiClient(Settings(
+            gemini_api_key="test-key",
+            gemini_request_concurrency=1,
+            gemini_min_interval_seconds=0,
+        ))
+        with (
+            patch("api.gemini.requests.post", side_effect=fake_post),
+            patch("api.gemini.time.sleep"),
+        ):
+            result = client._post_chat({})
+
+        self.assertEqual(result, {"choices": []})
+        self.assertEqual(len(calls), 2)
 
 
 if __name__ == "__main__":

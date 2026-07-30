@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from api.r2 import R2Storage
+from api.services.doubao_assets import DoubaoAssetService
 from api.workflow import ViralRemixWorkflow
 
 
@@ -50,6 +51,13 @@ def make_workflow(feishu, storage=None):
     workflow.feishu = feishu
     workflow.r2 = storage or FakeStorage()
     workflow._download_url = lambda url: (b"image-bytes", "image/png")
+    workflow.doubao_assets = DoubaoAssetService(
+        workflow.settings,
+        workflow.feishu,
+        workflow.r2,
+        SimpleNamespace(),
+        workflow._download_url,
+    )
     return workflow
 
 
@@ -97,7 +105,8 @@ class DoubaoImageStorageTests(unittest.TestCase):
         result = make_workflow(feishu, FakeStorage(managed_url)).store_doubao_image("record-1")
 
         self.assertEqual(result["stored_image_url"], managed_url)
-        self.assertEqual(feishu.updates, [{"商品图存储链接": {"text": managed_url, "link": managed_url}}])
+        self.assertEqual(feishu.updates[0]["商品图存储链接"], {"text": managed_url, "link": managed_url})
+        self.assertEqual(feishu.updates[0]["人脸检测状态"], "待检测")
 
     def test_managed_storage_url_is_skipped_without_reuploading(self):
         managed_url = f"{MANAGED_ORIGIN}doubao/record-1.png"
@@ -109,6 +118,21 @@ class DoubaoImageStorageTests(unittest.TestCase):
 
         self.assertEqual(result, {"record_id": "record-1", "stored_image_url": managed_url, "skipped": True})
         self.assertEqual(feishu.updates, [])
+
+    def test_new_attachment_replaces_an_old_managed_image(self):
+        old_url = f"{MANAGED_ORIGIN}doubao/old.png"
+        new_url = f"{MANAGED_ORIGIN}doubao/new.png"
+        feishu = FakeFeishu({
+            "商品名称": "Updated product",
+            "商品图存储链接": old_url,
+            "商品图": [{"file_token": "new-file", "name": "new-product.png"}],
+        })
+
+        result = make_workflow(feishu, FakeStorage(new_url)).store_doubao_image("record-1")
+
+        self.assertEqual(result["stored_image_url"], new_url)
+        self.assertEqual(feishu.updates[0]["商品图存储链接"]["link"], new_url)
+        self.assertEqual(feishu.updates[0]["人脸检测状态"], "待检测")
 
     def test_uploaded_attachment_still_transfers_to_managed_storage(self):
         managed_url = f"{MANAGED_ORIGIN}doubao/attachment.png"

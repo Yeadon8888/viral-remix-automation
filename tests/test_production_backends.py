@@ -40,6 +40,12 @@ class ProductionBackendIntegrationTests(unittest.TestCase):
         namespace = f"integration-{uuid4().hex}"
         client = redis.Redis.from_url(redis_url, decode_responses=True)
         backend = RedisJobBackend(client, lambda action, payload, job_id, operator: payload, namespace=namespace)
+        observer = RedisJobBackend(
+            client,
+            lambda *args: None,
+            namespace=namespace,
+            start_workers=False,
+        )
         try:
             job_id = backend.enqueue(
                 "integration-job",
@@ -56,9 +62,20 @@ class ProductionBackendIntegrationTests(unittest.TestCase):
                 time.sleep(0.05)
             else:
                 self.fail("Redis integration job did not complete")
+            checkpoint = {
+                "record_id": "integration-record",
+                "status": "failed",
+                "error": "integration failure must remain manual",
+            }
+            backend.save_item_result(job_id, "integration-record", checkpoint)
+            self.assertEqual(
+                observer.item_results(job_id),
+                {"integration-record": checkpoint},
+            )
             self.assertTrue(backend.health()["persistent"])
         finally:
             backend.shutdown()
+            observer.shutdown()
             keys = list(client.scan_iter(f"{namespace}:*"))
             if keys:
                 client.delete(*keys)

@@ -16,6 +16,16 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_float(name: str, default: float) -> float:
+    raw = env(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def env_bool(name: str, default: bool = False) -> bool:
     raw = env(name)
     if not raw:
@@ -33,8 +43,12 @@ class Settings:
     coordination_required: bool = env_bool("COORDINATION_REQUIRED", False)
     job_worker_concurrency: int = env_int("JOB_WORKER_CONCURRENCY", 2)
     job_lock_ttl_seconds: int = env_int("JOB_LOCK_TTL_SECONDS", 300)
+    job_shutdown_grace_seconds: int = env_int("JOB_SHUTDOWN_GRACE_SECONDS", 110)
     batch_image_concurrency: int = env_int("BATCH_IMAGE_CONCURRENCY", 4)
     batch_prompt_concurrency: int = env_int("BATCH_PROMPT_CONCURRENCY", 2)
+    batch_face_concurrency: int = env_int("BATCH_FACE_CONCURRENCY", 6)
+    batch_sync_concurrency: int = env_int("BATCH_SYNC_CONCURRENCY", 2)
+    face_image_max_bytes: int = env_int("FACE_IMAGE_MAX_BYTES", 20 * 1024 * 1024)
 
     feishu_app_id: str = env("FEISHU_APP_ID")
     feishu_app_secret: str = env("FEISHU_APP_SECRET")
@@ -51,6 +65,8 @@ class Settings:
     gemini_base_url: str = env("GEMINI_BASE_URL", "https://yunwu.ai").rstrip("/")
     gemini_api_key: str = env("GEMINI_API_KEY")
     gemini_model: str = env("GEMINI_MODEL", "gemini-3.1-flash-lite")
+    gemini_request_concurrency: int = env_int("GEMINI_REQUEST_CONCURRENCY", 6)
+    gemini_min_interval_seconds: float = env_float("GEMINI_MIN_INTERVAL_SECONDS", 0.25)
 
     newtoken_base_url: str = env("NEWTOKEN_IMAGE_BASE_URL", "https://api.newtoken.club").rstrip("/")
     newtoken_api_key: str = env("NEWTOKEN_IMAGE_API_KEY")

@@ -3,6 +3,7 @@
 __pycache__/
 *.pyc
 .railway/
+.wrangler/
 tmp/
 logs/
 .DS_Store

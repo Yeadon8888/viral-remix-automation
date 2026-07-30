@@ -1,10 +1,14 @@
-from datetime import datetime
+from datetime import datetime, time as datetime_time, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 from pathlib import Path
 import re
+import time
 from tempfile import TemporaryDirectory
+from threading import Lock
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -17,7 +21,13 @@ from .image_gen import NewTokenImageClient, normalize_styles
 from .logging_bus import add_log
 from .prompting import DEFAULT_IMAGE_PROMPTS, DEFAULT_VIDEO_ANALYSIS_TEMPLATE, STYLE_LABELS, image_prompt_snapshot
 from .r2 import R2Storage
-from .services import PartTimeSyncService, ViralVideoAssetService
+from .services import DoubaoAssetService, PartTimeSyncService, ViralVideoAssetService, product_id_from_fields
+from .services.batch_queue_export import (
+    BatchQueueExportError,
+    BatchQueueItem,
+    BatchQueuePackage,
+    build_batch_queue_package,
+)
 from .tikhub import TikHubClient
 
 MATERIAL_PROMPT_FIELD = "视频生成Prompt"
@@ -37,6 +47,7 @@ PROMPT_EDITABLE_FIELDS = (
     "备注",
 )
 PROMPT_REQUIRED_FIELDS = ("Prompt名称", "版本", "目标地区", "模板内容")
+DOUBAO_INDEX_CACHE_TTL_SECONDS = 300
 
 
 class PromptConflictError(RuntimeError):
@@ -55,6 +66,40 @@ def prompt_revision(fields: dict[str, Any]) -> str:
 
 def now_ms() -> int:
     return int(datetime.now().timestamp() * 1000)
+
+
+def recent_window_start_ms(days: int, now: datetime | None = None) -> int:
+    days = max(0, int(days))
+    if not days:
+        return 0
+    timezone = ZoneInfo("Asia/Shanghai")
+    current = now or datetime.now(timezone)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone)
+    else:
+        current = current.astimezone(timezone)
+    first_day = current.date() - timedelta(days=days - 1)
+    return int(datetime.combine(first_day, datetime_time.min, tzinfo=timezone).timestamp() * 1000)
+
+
+def _timestamp_ms(value: Any) -> int:
+    try:
+        timestamp = int(float(value))
+    except (TypeError, ValueError):
+        return 0
+    if timestamp <= 0:
+        return 0
+    return timestamp * 1000 if timestamp < 100_000_000_000 else timestamp
+
+
+def record_timestamp_ms(record: dict[str, Any], preferred_fields: tuple[str, ...]) -> int:
+    fields = record.get("fields", {})
+    for name in preferred_fields:
+        value = field_value(fields, name, None) if name in fields else record.get(name)
+        timestamp = _timestamp_ms(value)
+        if timestamp:
+            return timestamp
+    return 0
 
 
 def safe_int(value: Any, default: int = 1) -> int:
@@ -263,6 +308,17 @@ class ViralRemixWorkflow:
         self.cpa = CpaVideoClient(settings)
         self.video_assets = ViralVideoAssetService(settings, self.feishu, self.r2, self.tikhub)
         self.part_time_sync = PartTimeSyncService(settings, self.feishu, ledger=ledger)
+        self.doubao_assets = DoubaoAssetService(
+            settings,
+            self.feishu,
+            self.r2,
+            self.gemini,
+            self._download_url,
+        )
+        self._doubao_index_lock = Lock()
+        self._doubao_record_ids_cache: list[str] = []
+        self._doubao_record_ids_cached_at = 0.0
+        self._doubao_index_redis = None
 
     def list_prompt_configs(self) -> list[dict[str, Any]]:
         if not self.settings.prompt_table_id:
@@ -550,6 +606,7 @@ class ViralRemixWorkflow:
         self,
         records: list[dict[str, Any]],
         start_index: int = 1,
+        include_row_numbers: bool = True,
     ) -> list[dict[str, Any]]:
         out = []
         for index, record in enumerate(records, start=start_index):
@@ -561,12 +618,13 @@ class ViralRemixWorkflow:
             image_can_transfer = not image_is_managed and bool(
                 attachment or image_url.startswith("http") or stored_image_url.startswith("http")
             )
+            asset_state = self.doubao_assets.describe(fields)
             video_url = first_available_field(fields, (DOLA_VIDEO_FIELD, "视频生成链接", "视频链接"), "")
             dola_status = str(field_value(fields, DOLA_STATUS_FIELD, "") or "").strip()
             if not dola_status:
                 dola_status = "已完成" if str(video_url or "").startswith("http") else "待Dola生成"
             out.append({
-                "行号": index,
+                "行号": index if include_row_numbers else "",
                 "record_id": record.get("record_id"),
                 "商品名称": field_value(fields, "商品名称", ""),
                 "商品链接": field_value(fields, "商品链接", ""),
@@ -579,6 +637,7 @@ class ViralRemixWorkflow:
                 ) else "",
                 "商品图数量": len(fields.get("商品图") or []),
                 "商品图文件名": (attachment or {}).get("name", ""),
+                **asset_state,
                 "最终视频生成提示词": field_value(fields, "最终视频生成提示词", ""),
                 "标题": field_value(fields, "标题", ""),
                 "文案": field_value(fields, "文案", ""),
@@ -608,16 +667,209 @@ class ViralRemixWorkflow:
         page_size: int = 100,
         page_token: str = "",
         start_index: int = 1,
+        order: str = "latest",
+        days: int = 0,
     ) -> dict[str, Any]:
+        sort = ["后台创建时间 DESC"] if order == "latest" else ["后台创建时间 ASC"]
         page = self.feishu.list_records_page(
             self.settings.doubao_table_id,
             page_size=page_size,
             page_token=page_token,
+            sort=sort,
         )
+        records = page["items"]
+        cutoff = recent_window_start_ms(days)
+        reached_cutoff = False
+        if cutoff:
+            filtered_records = []
+            for record in records:
+                timestamp = record_timestamp_ms(record, ("后台创建时间", "created_time"))
+                if not timestamp or timestamp >= cutoff:
+                    filtered_records.append(record)
+                elif order == "latest":
+                    reached_cutoff = True
+            records = filtered_records
         return {
-            "items": self._doubao_items_from_records(page["items"], start_index=start_index),
-            "has_more": page["has_more"],
-            "page_token": page["page_token"],
+            "items": self._doubao_items_from_records(
+                records,
+                start_index=start_index,
+                include_row_numbers=False,
+            ),
+            "has_more": bool(page["has_more"] and not reached_cutoff),
+            "page_token": "" if reached_cutoff else page["page_token"],
+            "total": 0 if cutoff else page.get("total", 0),
+        }
+
+    def _doubao_index_cache_key(self) -> str:
+        return f"viral-remix:doubao-row-ids:{self.settings.doubao_table_id}:v1"
+
+    def _load_doubao_record_ids_cache(self) -> list[str]:
+        memory = getattr(self, "_doubao_record_ids_cache", [])
+        if memory:
+            return list(memory)
+        redis_url = str(getattr(self.settings, "redis_url", "") or "")
+        if not redis_url:
+            return []
+        try:
+            client = getattr(self, "_doubao_index_redis", None)
+            if client is None:
+                import redis
+
+                client = redis.Redis.from_url(redis_url, decode_responses=True)
+                self._doubao_index_redis = client
+            data = json.loads(str(client.get(self._doubao_index_cache_key()) or "[]"))
+            if isinstance(data, dict):
+                raw_ids = data.get("record_ids", [])
+                cached_at = float(data.get("cached_at") or 0)
+            else:
+                raw_ids = data
+                cached_at = 0.0
+            ids = [str(record_id) for record_id in raw_ids if str(record_id)]
+            self._doubao_record_ids_cache = ids
+            self._doubao_record_ids_cached_at = cached_at
+            return list(ids)
+        except Exception:
+            return []
+
+    def _save_doubao_record_ids_cache(self, record_ids: list[str]) -> None:
+        ids = [str(record_id) for record_id in record_ids if str(record_id)]
+        self._doubao_record_ids_cache = ids
+        cached_at = time.time()
+        self._doubao_record_ids_cached_at = cached_at
+        redis_url = str(getattr(self.settings, "redis_url", "") or "")
+        if not redis_url:
+            return
+        try:
+            client = getattr(self, "_doubao_index_redis", None)
+            if client is None:
+                import redis
+
+                client = redis.Redis.from_url(redis_url, decode_responses=True)
+                self._doubao_index_redis = client
+            client.set(
+                self._doubao_index_cache_key(),
+                json.dumps(
+                    {"record_ids": ids, "cached_at": cached_at},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                ex=86400,
+            )
+        except Exception:
+            return
+
+    def _invalidate_doubao_record_ids_cache(self) -> None:
+        self._doubao_record_ids_cache = []
+        self._doubao_record_ids_cached_at = 0.0
+        redis_url = str(getattr(self.settings, "redis_url", "") or "")
+        if not redis_url:
+            return
+        try:
+            client = getattr(self, "_doubao_index_redis", None)
+            if client is None:
+                import redis
+
+                client = redis.Redis.from_url(redis_url, decode_responses=True)
+                self._doubao_index_redis = client
+            client.delete(self._doubao_index_cache_key())
+        except Exception:
+            return
+
+    def _doubao_record_ids_snapshot(
+        self,
+        required_end: int = 0,
+        force_refresh: bool = False,
+    ) -> tuple[list[str], int]:
+        lock = getattr(self, "_doubao_index_lock", None)
+        if lock is None:
+            lock = Lock()
+            self._doubao_index_lock = lock
+        with lock:
+            if force_refresh:
+                self._invalidate_doubao_record_ids_cache()
+            cached_ids = self._load_doubao_record_ids_cache()
+            cached_at = float(getattr(self, "_doubao_record_ids_cached_at", 0) or 0)
+            cache_fresh = not cached_at or time.time() - cached_at < DOUBAO_INDEX_CACHE_TTL_SECONDS
+            if cached_ids and cache_fresh and (not required_end or required_end <= len(cached_ids)):
+                return cached_ids, len(cached_ids)
+            first_page = self.feishu.list_records_page(
+                self.settings.doubao_table_id,
+                page_size=500,
+                field_names=["商品名称"],
+            )
+            total = int(first_page.get("total") or 0)
+            record_ids = [
+                str(record.get("record_id") or "")
+                for record in first_page["items"]
+                if str(record.get("record_id") or "")
+            ]
+            page = first_page
+            while page["has_more"]:
+                page_token = str(page.get("page_token") or "")
+                if not page_token:
+                    break
+                page = self.feishu.list_records_page(
+                    self.settings.doubao_table_id,
+                    page_size=500,
+                    page_token=page_token,
+                    field_names=["商品名称"],
+                )
+                record_ids.extend(
+                    str(record.get("record_id") or "")
+                    for record in page["items"]
+                    if str(record.get("record_id") or "")
+                )
+            self._save_doubao_record_ids_cache(record_ids)
+            return record_ids, total or len(record_ids)
+
+    def list_doubao_items_range(
+        self,
+        start_row: int,
+        end_row: int,
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        start = max(1, min(int(start_row), int(end_row)))
+        end = max(int(start_row), int(end_row))
+        record_ids, total = self._doubao_record_ids_snapshot(
+            required_end=end,
+            force_refresh=force_refresh,
+        )
+        selected_record_ids = record_ids[start - 1:end]
+        row_numbers = {
+            record_id: start + index
+            for index, record_id in enumerate(selected_record_ids)
+        }
+        detail_records: list[dict[str, Any]] = []
+        for index in range(0, len(selected_record_ids), 100):
+            detail_records.extend(
+                self.feishu.batch_get_records(
+                    self.settings.doubao_table_id,
+                    selected_record_ids[index:index + 100],
+                )
+            )
+        records_by_id = {
+            str(record.get("record_id") or ""): record
+            for record in detail_records
+            if str(record.get("record_id") or "")
+        }
+        ordered_records = [
+            records_by_id[record_id]
+            for record_id in selected_record_ids
+            if record_id in records_by_id
+        ]
+        items = self._doubao_items_from_records(ordered_records, include_row_numbers=False)
+        for item in items:
+            item["行号"] = row_numbers.get(str(item.get("record_id") or ""), "")
+        return {
+            "items": items,
+            "total": total,
+        }
+
+    def list_doubao_row_index(self, force_refresh: bool = False) -> dict[str, int]:
+        record_ids, _total = self._doubao_record_ids_snapshot(force_refresh=force_refresh)
+        return {
+            record_id: index
+            for index, record_id in enumerate(record_ids, start=1)
         }
 
     def list_dola_local_tasks(self, limit: int = 100, include_done: bool = False) -> list[dict[str, Any]]:
@@ -711,23 +963,15 @@ class ViralRemixWorkflow:
         raise RuntimeError("缺少商品图：请上传商品图附件，或填写商品图链接")
 
     def store_doubao_image(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
-        record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
-        fields = record.get("fields", {})
-        product_name = str(field_value(fields, "商品名称", record_id) or record_id).strip()
-        stored_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
-        if self.r2.is_managed_url(stored_url):
-            add_log("info", f"豆包商品图已在对象存储，跳过重复入库: {product_name}", "workflow", job_id)
-            return {"record_id": record_id, "stored_image_url": stored_url, "skipped": True}
-        add_log("info", f"开始豆包商品图入库: {product_name}", "workflow", job_id)
-        data, mime, filename = self._resolve_doubao_image(fields, prefer_stored=False)
-        stored = self.r2.upload_bytes(data, filename or "doubao-product-image", mime)
-        self.feishu.update_record(
-            self.settings.doubao_table_id,
-            record_id,
-            {"商品图存储链接": url_cell(stored["url"])},
-        )
-        add_log("success", f"豆包商品图入库完成: {stored['url']}", "workflow", job_id)
-        return {"record_id": record_id, "stored_image_url": stored["url"]}
+        return self.doubao_assets.store_image(record_id, job_id=job_id)
+
+    def detect_doubao_face(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
+        return self.doubao_assets.detect_face(record_id, force=True, job_id=job_id)
+
+    def delete_doubao_face_record(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
+        result = self.doubao_assets.delete_flagged_record(record_id, job_id=job_id)
+        self._invalidate_doubao_record_ids_cache()
+        return result
 
     def generate_doubao_prompt(
         self,
@@ -740,7 +984,9 @@ class ViralRemixWorkflow:
         fields = record.get("fields", {})
         product_name = str(field_value(fields, "商品名称", "") or "").strip()
         product_link = str(field_value(fields, "商品链接", "") or "").strip()
-        image_bytes, image_mime, filename = self._resolve_doubao_image(fields, prefer_stored=True)
+        self.doubao_assets.require_prompt_generation_ready(fields)
+        image_bytes, image_mime, stored_url = self.doubao_assets.download_managed_image(fields)
+        filename = stored_url.rsplit("/", 1)[-1] or "doubao-product-image"
         prompt_rules, prompt_version = self._active_prompt_by_key(
             DOUBAO_PROMPT_KEY,
             country.prompt_region,
@@ -777,6 +1023,127 @@ class ViralRemixWorkflow:
             "has_prompt": True,
         }
 
+    def process_doubao_workflow_record(
+        self,
+        record_id: str,
+        country_code: str = "MY",
+        job_id: str | None = None,
+        target_records: list[dict[str, Any]] | None = None,
+        force_update: bool = False,
+    ) -> dict[str, Any]:
+        country = get_country(country_code)
+        completed_steps: list[str] = []
+        stage = "读取素材"
+        add_log("info", f"开始按流程处理豆包记录: {record_id} / {country.name}", "workflow", job_id)
+        try:
+            for _ in range(8):
+                record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
+                fields = record.get("fields", {})
+                state = self.doubao_assets.describe(fields)
+                next_action = str(state.get("素材下一步") or "")
+                sync_state = str(field_value(fields, "兼职同步状态", "") or "").strip()
+
+                if next_action == "store_image":
+                    stage = "图片转存"
+                    self.store_doubao_image(record_id, job_id=job_id)
+                    completed_steps.append(stage)
+                    continue
+
+                if next_action == "detect_face":
+                    stage = "人脸检测"
+                    self.detect_doubao_face(record_id, job_id=job_id)
+                    completed_steps.append(stage)
+                    continue
+
+                if next_action == "generate_prompt":
+                    stage = "提示词生成"
+                    self.generate_doubao_prompt(record_id, country.code, job_id=job_id)
+                    completed_steps.append(stage)
+                    continue
+
+                if next_action == "sync_part_time":
+                    prompt_country = str(field_value(fields, "目标国家", "") or "").strip()
+                    prompt_language = str(field_value(fields, "目标语言", "") or "").strip()
+                    prompt_mismatch = (
+                        (prompt_country and prompt_country != country.name)
+                        or (prompt_language and prompt_language != country.language_name)
+                        or (not prompt_country and not country.legacy_default)
+                        or (not prompt_language and not country.legacy_default)
+                    )
+                    if prompt_mismatch:
+                        if not state.get("可执行生成提示词"):
+                            return {
+                                "record_id": record_id,
+                                "status": "blocked",
+                                "stage": "提示词国家校验",
+                                "message": str(state.get("流程锁定原因") or "当前提示词国家与目标国家不一致，且记录已锁定"),
+                                "steps": completed_steps,
+                            }
+                        stage = "提示词生成"
+                        self.generate_doubao_prompt(record_id, country.code, job_id=job_id)
+                        completed_steps.append(stage)
+                        continue
+
+                    stage = "同步兼职表"
+                    result = self.sync_doubao_to_part_time(
+                        record_id,
+                        country.code,
+                        job_id=job_id,
+                        target_records=target_records,
+                        force_update=force_update,
+                    )
+                    completed_steps.append(stage)
+                    result.update({"stage": stage, "steps": completed_steps})
+                    return result
+
+                if next_action == "wait_video":
+                    if force_update and sync_state == "已同步":
+                        stage = "同步兼职表"
+                        result = self.sync_doubao_to_part_time(
+                            record_id,
+                            country.code,
+                            job_id=job_id,
+                            target_records=target_records,
+                            force_update=True,
+                        )
+                        completed_steps.append(stage)
+                        result.update({"stage": stage, "steps": completed_steps})
+                        return result
+                    return {
+                        "record_id": record_id,
+                        "status": "skipped",
+                        "stage": "已完成",
+                        "message": "记录已同步兼职表，已跳过重复处理",
+                        "steps": completed_steps,
+                    }
+
+                if next_action == "review_sync_conflict":
+                    return {
+                        "record_id": record_id,
+                        "status": "conflict",
+                        "stage": str(state.get("流程阶段") or "同步冲突"),
+                        "message": str(state.get("素材阻塞原因") or "兼职任务受保护，未覆盖"),
+                        "steps": completed_steps,
+                    }
+
+                return {
+                    "record_id": record_id,
+                    "status": "blocked",
+                    "stage": str(state.get("流程阶段") or stage),
+                    "message": str(state.get("素材阻塞原因") or "当前记录不满足下一步处理条件"),
+                    "steps": completed_steps,
+                }
+            raise RuntimeError("流程状态未能在预期步骤内完成")
+        except Exception as exc:
+            add_log("error", f"按流程处理豆包记录失败: {record_id} / {stage} / {exc}", "workflow", job_id)
+            return {
+                "record_id": record_id,
+                "status": "failed",
+                "stage": stage,
+                "error": str(exc),
+                "steps": completed_steps,
+            }
+
     def sync_doubao_to_part_time(
         self,
         record_id: str,
@@ -787,10 +1154,7 @@ class ViralRemixWorkflow:
     ) -> dict[str, Any]:
         record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
         fields = record.get("fields", {})
-        stored_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
-        image_url = str(field_value(fields, "商品图链接", "") or "").strip()
-        if not stored_url.startswith("http") and not image_url.startswith("http") and first_attachment(fields, "商品图"):
-            self.store_doubao_image(record_id, job_id=job_id)
+        self.doubao_assets.require_part_time_ready(fields)
         country = get_country(country_code)
         add_log("info", f"开始同步豆包记录到兼职表: {record_id} / {country.name}", "workflow", job_id)
         try:
@@ -1095,7 +1459,9 @@ class ViralRemixWorkflow:
 
         try:
             task_total = len(image_urls)
-            existing_tasks: dict[str, str] = {}
+            existing_tasks_by_url: dict[str, str] = {}
+            existing_tasks_by_index: dict[int, str] = {}
+            existing_task_ids: list[str] = []
             for task_record in self.feishu.list_records(self.settings.task_table_id):
                 task_fields = task_record.get("fields", {})
                 source_ids = linked_record_ids(task_fields.get("关联复刻素材"))
@@ -1103,26 +1469,44 @@ class ViralRemixWorkflow:
                 if source_text and source_text not in source_ids:
                     source_ids.append(source_text)
                 if record_id in source_ids:
+                    task_id = str(task_record.get("record_id") or "")
+                    if not task_id:
+                        continue
+                    existing_task_ids.append(task_id)
                     existing_url = str(field_value(task_fields, "首帧/参考图链接", "") or "").strip()
                     if existing_url:
-                        existing_tasks[existing_url] = str(task_record.get("record_id") or "")
+                        existing_tasks_by_url.setdefault(existing_url, task_id)
+                    try:
+                        task_index = int(field_value(task_fields, "任务序号", 0) or 0)
+                    except (TypeError, ValueError):
+                        task_index = 0
+                    if task_index > 0:
+                        existing_tasks_by_index.setdefault(task_index, task_id)
             created_task_ids = []
             updated_task_ids = []
             for index, image_url in enumerate(image_urls, start=1):
                 style = selected_styles[(index - 1) % len(selected_styles)] if selected_styles else ""
                 visual_angle = STYLE_LABELS.get(style, "") if style else ""
                 prompt = build_video_prompt(base_prompt, region, index, task_total, visual_angle)
-                existing_task_id = existing_tasks.get(image_url)
+                existing_task_id = (
+                    existing_tasks_by_url.get(image_url)
+                    or existing_tasks_by_index.get(index)
+                    or (existing_task_ids[0] if task_total == 1 and existing_task_ids else "")
+                )
                 if existing_task_id:
                     self.feishu.update_record(
                         self.settings.task_table_id,
                         existing_task_id,
                         {
+                            "生成任务名称": f"{product_name} - 视频任务 {index}",
+                            "来源素材记录ID": record_id,
                             "关联复刻素材": [record_id],
+                            "任务序号": index,
                             "视频拆解脚本": base_prompt,
                             "生成标题": publish_title or product_name,
                             "生成文案": publish_caption,
                             "关键词": keywords,
+                            "首帧/参考图链接": url_cell(image_url),
                             "视频生成Prompt": prompt,
                         },
                     )
@@ -1367,8 +1751,6 @@ class ViralRemixWorkflow:
                 "标签": str(row.get("关键词") or "").strip(),
                 "商品标题": product_title,
                 "视频链接": video_url,
-                "生成时间": now_ms(),
-                "发布状态": "待发布",
             }
             if source_ids:
                 fields["关联复刻素材"] = source_ids[:1]
@@ -1382,11 +1764,16 @@ class ViralRemixWorkflow:
                         self.feishu.update_record(self.settings.publish_table_id, existing_id, fields)
                     updated += 1
                 else:
+                    create_fields = {
+                        **fields,
+                        "生成时间": now_ms(),
+                        "发布状态": "待发布",
+                    }
                     try:
-                        created_record = self.feishu.create_record(self.settings.publish_table_id, fields)
+                        created_record = self.feishu.create_record(self.settings.publish_table_id, create_fields)
                     except Exception:
-                        fields.pop("关联复刻素材", None)
-                        created_record = self.feishu.create_record(self.settings.publish_table_id, fields)
+                        create_fields.pop("关联复刻素材", None)
+                        created_record = self.feishu.create_record(self.settings.publish_table_id, create_fields)
                     existing_by_video[video_url] = str(created_record.get("record_id") or "")
                     created += 1
             except Exception as exc:
@@ -1403,7 +1790,7 @@ class ViralRemixWorkflow:
         part_time_rows: list[tuple[dict[str, Any], str, str]] = []
         part_time_records = self.feishu.list_records_filtered(
             self.settings.part_time_table_id,
-            field_names=["来源记录ID", "视频地址", "任务状态", "审核"],
+            field_names=["来源记录ID", "视频地址", "任务状态", "审核", "目标国家", "目标语言"],
             filter_config={
                 "logic": "and",
                 "conditions": [
@@ -1427,14 +1814,329 @@ class ViralRemixWorkflow:
                 part_time_rows.append((record, source_id, video_url))
         return allowed_sources, part_time_rows
 
+    def _completed_part_time_records(self, limit: int | None = None) -> list[dict[str, Any]]:
+        return self.feishu.list_records_filtered(
+            self.settings.part_time_table_id,
+            field_names=[
+                "来源记录ID",
+                "文本",
+                "任务状态",
+                "审核",
+                "视频地址",
+                "目标国家",
+                "目标语言",
+            ],
+            filter_config={
+                "logic": "and",
+                "conditions": [
+                    ["任务状态", "intersects", ["已完成"]],
+                    ["视频地址", "non_empty"],
+                ],
+            },
+            max_records=limit,
+        )
+
+    def _publish_record_indexes(self) -> tuple[dict[str, tuple[str, str]], dict[str, tuple[str, str]]]:
+        by_part_time: dict[str, tuple[str, str]] = {}
+        by_video: dict[str, tuple[str, str]] = {}
+        records = self.feishu.list_records_filtered(
+            self.settings.publish_table_id,
+            field_names=["豆包兼职记录ID", "视频链接", "发布状态"],
+            filter_config={
+                "logic": "and",
+                "conditions": [["视频链接", "non_empty"]],
+            },
+        )
+        for record in records:
+            fields = record.get("fields", {})
+            record_id = str(record.get("record_id") or "")
+            publish_status = str(field_value(fields, "发布状态", "") or "").strip() or "待发布"
+            part_time_id = str(field_value(fields, "豆包兼职记录ID", "") or "").strip()
+            video_url = first_http_url(field_value(fields, "视频链接", ""))
+            if part_time_id:
+                by_part_time[part_time_id] = (record_id, publish_status)
+            if video_url:
+                by_video[video_url] = (record_id, publish_status)
+        return by_part_time, by_video
+
+    def list_part_time_publish_items(self, limit: int | None = None, days: int = 0) -> list[dict[str, Any]]:
+        if not self.settings.publish_table_id:
+            raise RuntimeError("缺少 FEISHU_PUBLISH_TABLE_ID")
+        max_records = max(1, int(limit)) if limit is not None else None
+        records = self.feishu.list_records(self.settings.part_time_table_id, max_records=max_records)
+        existing_by_part_time, existing_by_video = self._publish_record_indexes()
+        cutoff = recent_window_start_ms(days)
+        rows: list[dict[str, Any]] = []
+        for row_number, record in enumerate(records, start=1):
+            timestamp = record_timestamp_ms(
+                record,
+                (
+                    "完成时间",
+                    "接单时间",
+                    "last_modified_time",
+                    "modified_time",
+                    "updated_time",
+                    "created_time",
+                ),
+            )
+            if cutoff and (not timestamp or timestamp < cutoff):
+                continue
+            fields = record.get("fields", {})
+            task_status = str(field_value(fields, "任务状态", "") or "").strip()
+            part_time_id = str(record.get("record_id") or "")
+            video_url = first_http_url(field_value(fields, "视频地址", ""))
+            if task_status != "已完成" or not video_url:
+                continue
+            review = str(field_value(fields, "审核", "") or "").strip()
+            existing = existing_by_part_time.get(part_time_id) or existing_by_video.get(video_url)
+            blocked_reason = ""
+            if review in {"无效链接", "未去水印"}:
+                blocked_reason = f"兼职表审核标记为{review}"
+            elif not video_url:
+                blocked_reason = "兼职表缺少有效视频链接"
+            rows.append({
+                "行号": row_number,
+                "record_id": part_time_id,
+                "来源记录ID": str(field_value(fields, "来源记录ID", "") or "").strip(),
+                "文本": str(field_value(fields, "文本", "") or "").strip(),
+                "任务状态": task_status,
+                "审核": review,
+                "视频地址": video_url,
+                "目标国家": str(field_value(fields, "目标国家", "") or "").strip(),
+                "目标语言": str(field_value(fields, "目标语言", "") or "").strip(),
+                "已同步发布": bool(existing),
+                "发布记录ID": existing[0] if existing else "",
+                "发布状态": existing[1] if existing else "待审核",
+                "可同步发布": not blocked_reason and not existing,
+                "发布阻断原因": blocked_reason,
+            })
+        return rows
+
+    def export_doubao_batch_queue(self, record_ids: list[str]) -> BatchQueuePackage:
+        selected_ids = list(dict.fromkeys(str(item).strip() for item in record_ids if str(item).strip()))
+        selected_ids = selected_ids[:200]
+        if not selected_ids:
+            raise BatchQueueExportError("请先选择要导出的豆包素材")
+
+        records_by_id: dict[str, dict[str, Any]] = {}
+        fetch_errors: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=min(4, len(selected_ids))) as executor:
+            futures = {
+                executor.submit(
+                    self.feishu.get_record,
+                    self.settings.doubao_table_id,
+                    record_id,
+                ): record_id
+                for record_id in selected_ids
+            }
+            for future in as_completed(futures):
+                record_id = futures[future]
+                try:
+                    records_by_id[record_id] = future.result()
+                except Exception as exc:
+                    fetch_errors[record_id] = str(exc)
+        items: list[BatchQueueItem] = []
+        invalid: list[str] = []
+        for record_id in selected_ids:
+            if record_id in fetch_errors:
+                invalid.append(f"{record_id}: 读取豆包素材失败（{fetch_errors[record_id]}）")
+                continue
+            record = records_by_id.get(record_id)
+            if not record:
+                invalid.append(f"{record_id}: 豆包素材记录不存在")
+                continue
+            fields = record.get("fields", {})
+            try:
+                image_url = self.doubao_assets.require_part_time_ready(fields)
+            except Exception as exc:
+                invalid.append(f"{record_id}: {exc}")
+                continue
+            prompt = str(field_value(fields, "最终视频生成提示词", "") or "").strip()
+            items.append(BatchQueueItem(
+                record_id=record_id,
+                source_record_id=record_id,
+                prompt=prompt,
+                image_url=image_url,
+            ))
+        if invalid:
+            detail = "；".join(invalid[:8])
+            suffix = f"；另有 {len(invalid) - 8} 条" if len(invalid) > 8 else ""
+            raise BatchQueueExportError(f"有 {len(invalid)} 条不能导出：{detail}{suffix}")
+
+        template_path = Path(__file__).resolve().parent / "assets" / "批量队列模板.xlsx"
+        return build_batch_queue_package(
+            items,
+            download_url=self._download_url,
+            template_path=template_path,
+        )
+
+    def sync_part_time_publish_items(
+        self,
+        record_ids: list[str],
+        limit: int = 200,
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        if not self.settings.publish_table_id:
+            raise RuntimeError("缺少 FEISHU_PUBLISH_TABLE_ID")
+        selected_ids = list(dict.fromkeys(str(item).strip() for item in record_ids if str(item).strip()))
+        selected_ids = selected_ids[:max(1, min(int(limit), 200))]
+        if not selected_ids:
+            raise ValueError("请先选择要审核通过并同步发布表的兼职记录")
+
+        selected_set = set(selected_ids)
+        part_time_by_id = {
+            str(record.get("record_id") or ""): record
+            for record in self._completed_part_time_records()
+            if str(record.get("record_id") or "") in selected_set
+        }
+        source_ids = {
+            str(field_value(record.get("fields", {}), "来源记录ID", "") or "").strip()
+            for record in part_time_by_id.values()
+        }
+        source_by_id = {
+            str(record.get("record_id") or ""): record.get("fields", {})
+            for record in self.feishu.list_records(self.settings.doubao_table_id)
+            if str(record.get("record_id") or "") in source_ids
+        }
+        existing_by_part_time, existing_by_video = self._publish_record_indexes()
+
+        created = 0
+        updated = 0
+        results: list[dict[str, Any]] = []
+        for part_time_id in selected_ids:
+            part_time_record = part_time_by_id.get(part_time_id)
+            if not part_time_record:
+                results.append({
+                    "record_id": part_time_id,
+                    "status": "failed",
+                    "message": "兼职记录不存在，或尚未完成/缺少视频",
+                })
+                continue
+            part_time_fields = part_time_record.get("fields", {})
+            review = str(field_value(part_time_fields, "审核", "") or "").strip()
+            if review in {"无效链接", "未去水印"}:
+                results.append({
+                    "record_id": part_time_id,
+                    "status": "failed",
+                    "message": f"兼职表审核标记为{review}",
+                })
+                continue
+            video_url = first_http_url(field_value(part_time_fields, "视频地址", ""))
+            source_id = str(field_value(part_time_fields, "来源记录ID", "") or "").strip()
+            source_fields = source_by_id.get(source_id)
+            if not source_fields:
+                results.append({
+                    "record_id": part_time_id,
+                    "status": "failed",
+                    "message": f"找不到豆包素材记录 {source_id or '（空）'}",
+                })
+                continue
+            if not self.doubao_assets.describe(source_fields)["发布前置条件通过"]:
+                results.append({
+                    "record_id": part_time_id,
+                    "status": "failed",
+                    "message": "豆包素材前置条件未通过，请先完成图片转存、人脸检测、商品 ID 和提示词",
+                })
+                continue
+
+            product_title = str(field_value(source_fields, "商品名称", "") or "").strip()
+            target_country = (
+                str(field_value(part_time_fields, "目标国家", "") or "").strip()
+                or str(field_value(source_fields, "目标国家", "") or "").strip()
+            )
+            if not target_country:
+                results.append({
+                    "record_id": part_time_id,
+                    "status": "failed",
+                    "message": "兼职表和豆包素材表均缺少目标国家，不能同步发布表",
+                })
+                continue
+            publish_fields = {
+                "标题": str(field_value(source_fields, "标题", product_title) or product_title).strip(),
+                "商品标题": product_title,
+                "商品ID": product_id_from_fields(source_fields),
+                "目标国家": target_country,
+                "视频链接": video_url,
+                "文案": str(field_value(source_fields, "文案", "") or "").strip(),
+                "标签": str(field_value(source_fields, "标签", "") or "").strip(),
+                "豆包素材记录ID": source_id,
+                "豆包兼职记录ID": part_time_id,
+            }
+            try:
+                existing = existing_by_part_time.get(part_time_id) or existing_by_video.get(video_url)
+                if existing:
+                    self.feishu.update_record(self.settings.publish_table_id, existing[0], publish_fields)
+                    updated += 1
+                    results.append({"record_id": part_time_id, "status": "updated"})
+                else:
+                    created_record = self.feishu.create_record(
+                        self.settings.publish_table_id,
+                        {**publish_fields, "发布状态": "待发布", "生成时间": now_ms()},
+                    )
+                    publish_id = str(created_record.get("record_id") or "")
+                    existing_by_part_time[part_time_id] = (publish_id, "待发布")
+                    existing_by_video[video_url] = (publish_id, "待发布")
+                    created += 1
+                    results.append({"record_id": part_time_id, "status": "created"})
+            except Exception as exc:
+                results.append({"record_id": part_time_id, "status": "failed", "message": str(exc)})
+
+        failed = sum(1 for item in results if item["status"] == "failed")
+        result = {
+            "processed": len(selected_ids),
+            "eligible": created + updated,
+            "created": created,
+            "updated": updated,
+            "failed": failed,
+            "results": results,
+        }
+        add_log(
+            "success" if not failed else "error",
+            f"兼职成片审核发布完成: 新增 {created} / 更新 {updated} / 失败 {failed}",
+            "workflow",
+            job_id,
+        )
+        return result
+
     def doubao_publish_readiness(self, record_ids: list[str]) -> dict[str, int]:
         allowed_sources, part_time_rows = self._doubao_publish_part_time_rows(record_ids)
-        ready_sources = {source_id for _, source_id, _ in part_time_rows}
+        source_by_id = {
+            str(record.get("record_id") or ""): record.get("fields", {})
+            for record in self.feishu.list_records(self.settings.doubao_table_id)
+            if str(record.get("record_id") or "") in allowed_sources
+        }
+        face_safe_sources = {
+            source_id
+            for source_id, fields in source_by_id.items()
+            if self.doubao_assets.describe(fields)["人脸检测通过"]
+        }
+        product_id_sources = {
+            source_id
+            for source_id, fields in source_by_id.items()
+            if product_id_from_fields(fields)
+        }
+        prompt_sources = {
+            source_id
+            for source_id, fields in source_by_id.items()
+            if str(field_value(fields, "最终视频生成提示词", "") or "").strip()
+        }
+        publishable_sources = {
+            source_id
+            for source_id, fields in source_by_id.items()
+            if self.doubao_assets.describe(fields)["发布前置条件通过"]
+        }
+        eligible_rows = [row for row in part_time_rows if row[1] in publishable_sources]
+        video_ready_sources = {source_id for _, source_id, _ in part_time_rows}
+        ready_sources = {source_id for _, source_id, _ in eligible_rows}
         return {
             "selected_sources": len(allowed_sources),
             "ready_sources": len(ready_sources),
-            "eligible_videos": len(part_time_rows),
+            "eligible_videos": len(eligible_rows),
             "pending_sources": len(allowed_sources - ready_sources),
+            "blocked_face_sources": len(allowed_sources - face_safe_sources),
+            "missing_product_id_sources": len(allowed_sources - product_id_sources),
+            "missing_prompt_sources": len(allowed_sources - prompt_sources),
+            "missing_video_sources": len(allowed_sources - video_ready_sources),
         }
 
     def sync_doubao_publish_items(
@@ -1446,7 +2148,9 @@ class ViralRemixWorkflow:
         if not self.settings.publish_table_id:
             raise RuntimeError("缺少 FEISHU_PUBLISH_TABLE_ID")
 
-        allowed_sources, part_time_rows = self._doubao_publish_part_time_rows(record_ids)
+        selected_ids = list(dict.fromkeys(str(item).strip() for item in record_ids if str(item).strip()))
+        selected_ids = selected_ids[:max(1, min(int(limit), 200))]
+        allowed_sources, part_time_rows = self._doubao_publish_part_time_rows(selected_ids)
         part_time_rows = part_time_rows[:max(1, min(int(limit), 200))]
 
         source_by_id = {
@@ -1454,6 +2158,19 @@ class ViralRemixWorkflow:
             for record in self.feishu.list_records(self.settings.doubao_table_id)
             if str(record.get("record_id") or "") in allowed_sources
         }
+        publishable_sources = {
+            source_id
+            for source_id, fields in source_by_id.items()
+            if self.doubao_assets.describe(fields)["发布前置条件通过"]
+        }
+        rows_by_source: dict[str, list[tuple[dict[str, Any], str]]] = {}
+        for part_time_record, source_id, video_url in part_time_rows:
+            rows_by_source.setdefault(source_id, []).append((part_time_record, video_url))
+        eligible_rows = [
+            row
+            for row in part_time_rows
+            if row[1] in publishable_sources
+        ]
 
         existing_by_part_time: dict[str, str] = {}
         existing_by_video: dict[str, str] = {}
@@ -1470,44 +2187,117 @@ class ViralRemixWorkflow:
         created = 0
         updated = 0
         skipped = 0
-        for part_time_record, source_id, video_url in part_time_rows:
-            part_time_id = str(part_time_record.get("record_id") or "")
+        results: list[dict[str, Any]] = []
+        for source_id in selected_ids:
             source_fields = source_by_id.get(source_id)
             if not source_fields:
-                skipped += 1
-                add_log("error", f"发布表同步跳过：找不到豆包素材 {source_id}", "workflow", job_id)
+                message = "在豆包素材表中找不到该记录，可能已被删除或行号已变化"
+                results.append({
+                    "record_id": source_id,
+                    "status": "failed",
+                    "stage": "读取素材",
+                    "message": message,
+                })
+                add_log("error", f"发布表同步失败({source_id})：{message}", "workflow", job_id)
+                continue
+            if source_id not in publishable_sources:
+                message = "素材发布前置条件未通过，请先完成图片转存、人脸检测、商品 ID 和提示词"
+                results.append({
+                    "record_id": source_id,
+                    "status": "failed",
+                    "stage": "素材前置检查",
+                    "message": message,
+                })
+                add_log("error", f"发布表同步失败({source_id})：{message}", "workflow", job_id)
+                continue
+
+            source_rows = rows_by_source.get(source_id) or []
+            if not source_rows:
+                message = "对应兼职成片尚未完成，或视频链接无效"
+                results.append({
+                    "record_id": source_id,
+                    "status": "failed",
+                    "stage": "兼职成片检查",
+                    "message": message,
+                })
+                add_log("error", f"发布表同步失败({source_id})：{message}", "workflow", job_id)
                 continue
 
             product_title = str(field_value(source_fields, "商品名称", "") or "").strip()
-            fields = {
-                "标题": str(field_value(source_fields, "标题", product_title) or product_title).strip(),
-                "商品标题": product_title,
-                "视频链接": video_url,
-                "文案": str(field_value(source_fields, "文案", "") or "").strip(),
-                "标签": str(field_value(source_fields, "标签", "") or "").strip(),
-                "豆包素材记录ID": source_id,
-                "豆包兼职记录ID": part_time_id,
-            }
-            try:
-                existing_id = existing_by_part_time.get(part_time_id) or existing_by_video.get(video_url)
-                if existing_id:
-                    self.feishu.update_record(self.settings.publish_table_id, existing_id, fields)
-                    updated += 1
-                else:
-                    create_fields = {**fields, "发布状态": "待发布", "生成时间": now_ms()}
-                    created_record = self.feishu.create_record(self.settings.publish_table_id, create_fields)
-                    publish_id = str(created_record.get("record_id") or "")
-                    existing_by_part_time[part_time_id] = publish_id
-                    existing_by_video[video_url] = publish_id
-                    created += 1
-            except Exception as exc:
-                skipped += 1
-                add_log("error", f"发布表同步失败({part_time_id}): {exc}", "workflow", job_id)
+            product_id = product_id_from_fields(source_fields)
+            source_created = 0
+            source_updated = 0
+            source_errors: list[str] = []
+            for part_time_record, video_url in source_rows:
+                part_time_id = str(part_time_record.get("record_id") or "")
+                part_time_fields = part_time_record.get("fields", {})
+                target_country = str(
+                    field_value(part_time_fields, "目标国家", "")
+                    or field_value(source_fields, "目标国家", "")
+                    or ""
+                ).strip()
+                fields = {
+                    "标题": str(field_value(source_fields, "标题", product_title) or product_title).strip(),
+                    "商品标题": product_title,
+                    "商品ID": product_id,
+                    "目标国家": target_country,
+                    "视频链接": video_url,
+                    "文案": str(field_value(source_fields, "文案", "") or "").strip(),
+                    "标签": str(field_value(source_fields, "标签", "") or "").strip(),
+                    "豆包素材记录ID": source_id,
+                    "豆包兼职记录ID": part_time_id,
+                }
+                try:
+                    existing_id = existing_by_part_time.get(part_time_id) or existing_by_video.get(video_url)
+                    if existing_id:
+                        self.feishu.update_record(self.settings.publish_table_id, existing_id, fields)
+                        updated += 1
+                        source_updated += 1
+                    else:
+                        create_fields = {**fields, "发布状态": "待发布", "生成时间": now_ms()}
+                        created_record = self.feishu.create_record(self.settings.publish_table_id, create_fields)
+                        publish_id = str(created_record.get("record_id") or "")
+                        existing_by_part_time[part_time_id] = publish_id
+                        existing_by_video[video_url] = publish_id
+                        created += 1
+                        source_created += 1
+                except Exception as exc:
+                    skipped += 1
+                    source_errors.append(f"兼职记录 {part_time_id}: {exc}")
+                    add_log("error", f"发布表同步失败({part_time_id}): {exc}", "workflow", job_id)
 
-        result = {"eligible": len(part_time_rows), "created": created, "updated": updated, "skipped": skipped}
+            if source_errors:
+                results.append({
+                    "record_id": source_id,
+                    "status": "failed",
+                    "stage": "写入发布表",
+                    "message": "；".join(source_errors),
+                    "created": source_created,
+                    "updated": source_updated,
+                })
+            else:
+                results.append({
+                    "record_id": source_id,
+                    "status": "created" if source_created else "updated",
+                    "created": source_created,
+                    "updated": source_updated,
+                    "message": f"对应 {len(source_rows)} 条已完成兼职成片已同步",
+                })
+
+        failed = sum(1 for item in results if item.get("status") == "failed")
+        result = {
+            "selected": len(selected_ids),
+            "processed": len(selected_ids),
+            "eligible": len(eligible_rows),
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+            "failed": failed,
+            "results": results,
+        }
         add_log(
-            "success",
-            f"豆包发布表同步完成: 新增 {created} / 更新 {updated} / 跳过 {skipped}",
+            "success" if failed == 0 else "error",
+            f"豆包发布表同步完成: 素材 {len(selected_ids)} 条 / 新增 {created} / 更新 {updated} / 失败 {failed}",
             "workflow",
             job_id,
         )

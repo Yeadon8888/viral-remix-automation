@@ -54,7 +54,7 @@ class FeishuClient:
         method = method.upper()
         headers = kwargs.pop("headers", self.headers())
         timeout = kwargs.pop("timeout", 60)
-        attempts = 3 if method in {"GET", "PUT", "DELETE"} else 1
+        attempts = 5 if method == "GET" else (3 if method in {"PUT", "DELETE"} else 1)
         last_data: dict[str, Any] = {}
         for attempt in range(attempts):
             resp = self._session.request(
@@ -71,16 +71,33 @@ class FeishuClient:
             if resp.status_code < 400 and data.get("code", 0) == 0:
                 return data.get("data", data)
             last_data = data
-            transient = resp.status_code == 429 or resp.status_code >= 500 or data.get("code") == 1254291
+            message = str(data.get("msg") or "")
+            transient = (
+                resp.status_code == 429
+                or resp.status_code >= 500
+                or data.get("code") == 1254291
+                or "data not ready" in message.lower()
+            )
             if not transient or attempt + 1 >= attempts:
                 break
-            time.sleep(0.25 * (2 ** attempt))
+            time.sleep(0.5 * (2 ** attempt))
         raise FeishuError(last_data.get("msg") or str(last_data)[:500])
 
-    def list_records_page(self, table_id: str, page_size: int = 100, page_token: str = "") -> dict[str, Any]:
+    def list_records_page(
+        self,
+        table_id: str,
+        page_size: int = 100,
+        page_token: str = "",
+        sort: list[str] | None = None,
+        field_names: list[str] | None = None,
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {"page_size": page_size}
         if page_token:
             params["page_token"] = page_token
+        if sort:
+            params["sort"] = json.dumps(sort, ensure_ascii=False)
+        if field_names:
+            params["field_names"] = json.dumps(field_names, ensure_ascii=False)
         data = self._request(
             "GET",
             f"/bitable/v1/apps/{self.settings.feishu_app_token}/tables/{table_id}/records",
@@ -90,13 +107,25 @@ class FeishuClient:
             "items": data.get("items", []),
             "has_more": bool(data.get("has_more")),
             "page_token": data.get("page_token", ""),
+            "total": int(data.get("total") or 0),
         }
 
-    def list_records(self, table_id: str, page_size: int = 100, max_records: int | None = None) -> list[dict[str, Any]]:
+    def list_records(
+        self,
+        table_id: str,
+        page_size: int = 100,
+        max_records: int | None = None,
+        field_names: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         page_token = ""
         while True:
-            page = self.list_records_page(table_id, page_size=page_size, page_token=page_token)
+            page = self.list_records_page(
+                table_id,
+                page_size=page_size,
+                page_token=page_token,
+                field_names=field_names,
+            )
             items.extend(page["items"])
             if max_records and len(items) >= max_records:
                 return items[:max_records]
@@ -106,6 +135,19 @@ class FeishuClient:
             if not page_token:
                 break
         return items
+
+    def batch_get_records(self, table_id: str, record_ids: list[str]) -> list[dict[str, Any]]:
+        ids = [str(record_id).strip() for record_id in record_ids if str(record_id).strip()]
+        if not ids:
+            return []
+        if len(ids) > 100:
+            raise ValueError("batch_get_records supports at most 100 record IDs")
+        data = self._request(
+            "POST",
+            f"/bitable/v1/apps/{self.settings.feishu_app_token}/tables/{table_id}/records/batch_get",
+            json={"record_ids": ids},
+        )
+        return data.get("records", [])
 
     def list_records_filtered(
         self,
@@ -171,6 +213,13 @@ class FeishuClient:
         )
         return data.get("record", data)
 
+    def delete_record(self, table_id: str, record_id: str) -> dict[str, Any]:
+        self._request(
+            "DELETE",
+            f"/bitable/v1/apps/{self.settings.feishu_app_token}/tables/{table_id}/records/{record_id}",
+        )
+        return {"record_id": record_id, "deleted": True}
+
     def download_media(self, file_token: str, output_path: Path) -> tuple[Path, str]:
         resp = requests.get(
             f"{self.base_url}/drive/v1/medias/{file_token}/download",
@@ -233,6 +282,12 @@ def field_value(fields: dict[str, Any], name: str, default: Any = "") -> Any:
     value = fields.get(name, default)
     if isinstance(value, list) and len(value) == 1 and isinstance(value[0], str):
         return value[0]
+    if (
+        isinstance(value, list)
+        and value
+        and all(isinstance(item, dict) and isinstance(item.get("text"), str) for item in value)
+    ):
+        return "".join(str(item["text"]) for item in value)
     if isinstance(value, dict) and isinstance(value.get("link"), str):
         return value["link"]
     return value

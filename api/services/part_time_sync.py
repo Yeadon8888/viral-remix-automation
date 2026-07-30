@@ -60,12 +60,10 @@ class PartTimeSyncService:
         product_name = str(field_value(source_fields, "商品名称", "") or "").strip() or source_record_id
         prompt = str(field_value(source_fields, "最终视频生成提示词", "") or "").strip()
         image_url = str(field_value(source_fields, "商品图存储链接", "") or "").strip()
-        if not image_url.startswith("http"):
-            image_url = str(field_value(source_fields, "商品图链接", "") or "").strip()
         if not prompt:
             raise RuntimeError("缺少最终视频生成提示词，请先生成提示词")
         if not image_url.startswith("http"):
-            raise RuntimeError("缺少可同步的商品图片链接，请先完成图片入库")
+            raise RuntimeError("缺少自有对象存储商品图，请先完成步骤 1“转存对象存储”")
         prompt_country = str(field_value(source_fields, "目标国家", "") or "").strip()
         if not prompt_country and not country.legacy_default:
             raise RuntimeError(f"历史提示词未标记国家，请先按{country.name}重新生成提示词")

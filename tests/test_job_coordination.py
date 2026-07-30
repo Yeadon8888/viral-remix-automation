@@ -190,6 +190,79 @@ class JobCoordinationTests(unittest.TestCase):
         finally:
             backend.shutdown()
 
+    def test_queued_job_can_be_cancelled_before_execution(self):
+        MemoryJobBackend = self.backend_class()
+        first_started = threading.Event()
+        release_first = threading.Event()
+        executed = []
+
+        def execute(action, payload, job_id, operator):
+            executed.append(payload["record_id"])
+            if payload["record_id"] == "rec-running":
+                first_started.set()
+                release_first.wait(1)
+            return payload
+
+        backend = MemoryJobBackend(execute, max_workers=1)
+        try:
+            running_id = backend.enqueue(
+                "running",
+                "test.execute",
+                {"record_id": "rec-running"},
+                ["record:running"],
+                "alice",
+            )
+            self.assertTrue(first_started.wait(1))
+            queued_id = backend.enqueue(
+                "queued",
+                "test.execute",
+                {"record_id": "rec-queued"},
+                ["record:queued"],
+                "alice",
+            )
+
+            cancelled = backend.cancel(queued_id)
+            self.assertEqual(cancelled["status"], "cancelled")
+            self.assertTrue(cancelled["cancel_requested"])
+            release_first.set()
+            self.wait_for(backend, running_id)
+            self.assertEqual(self.wait_for(backend, queued_id)["status"], "cancelled")
+            self.assertEqual(executed, ["rec-running"])
+        finally:
+            release_first.set()
+            backend.shutdown()
+
+    def test_running_job_finishes_as_cancelled_after_cooperative_stop(self):
+        MemoryJobBackend = self.backend_class()
+        started = threading.Event()
+        backend = None
+
+        def execute(action, payload, job_id, operator):
+            started.set()
+            deadline = time.time() + 1
+            while time.time() < deadline and not backend.is_cancel_requested(job_id):
+                time.sleep(0.01)
+            return {"processed": 1}
+
+        backend = MemoryJobBackend(execute, max_workers=1)
+        try:
+            job_id = backend.enqueue(
+                "running",
+                "test.execute",
+                {"record_id": "rec-running"},
+                ["record:running"],
+                "alice",
+            )
+            self.assertTrue(started.wait(1))
+            requested = backend.cancel(job_id)
+            self.assertEqual(requested["status"], "running")
+            self.assertTrue(requested["cancel_requested"])
+            stopped = self.wait_for(backend, job_id)
+            self.assertEqual(stopped["status"], "cancelled")
+            self.assertEqual(stopped["result"], {"processed": 1})
+        finally:
+            backend.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

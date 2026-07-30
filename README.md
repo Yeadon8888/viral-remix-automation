@@ -1,6 +1,6 @@
 # 短视频带货全链路自动化工作后台
 
-围绕飞书多维表格搭建的短视频运营后台。前台分为「视频复刻」「豆包视频」「Prompt配置」三个工作区；Dola 本地工作台已从前台退役，后端兼容接口暂时保留。
+围绕飞书多维表格搭建的短视频运营后台。前台分为「视频复刻」「豆包视频」「兼职成片」「Prompt配置」四个工作区；Dola 本地工作台已从前台退役，后端兼容接口暂时保留。
 
 ## 数据流
 
@@ -30,6 +30,10 @@ python app.py
 必填：
 
 ```bash
+ADMIN_TOKEN=
+REDIS_URL=
+DATABASE_URL=
+COORDINATION_REQUIRED=1
 FEISHU_APP_ID=
 FEISHU_APP_SECRET=
 FEISHU_APP_TOKEN=H3RybjMFqabStts0zFUcWrz9nvb
@@ -50,9 +54,11 @@ UPLOAD_API_KEY=
 常用可选项：
 
 ```bash
-ADMIN_TOKEN=
 GEMINI_BASE_URL=https://yunwu.ai
 GEMINI_MODEL=gemini-3.1-flash-lite
+GEMINI_REQUEST_CONCURRENCY=6
+GEMINI_MIN_INTERVAL_SECONDS=0.25
+BATCH_FACE_CONCURRENCY=6
 NEWTOKEN_IMAGE_BASE_URL=https://api.newtoken.club
 NEWTOKEN_IMAGE_MODEL=gpt-image-2-1K
 IMAGE_SCENE_STYLES=viral_first_frame,lifestyle,model,detail,flatlay,outdoor,studio
@@ -84,9 +90,14 @@ R2_PREFIX=viral-remix-7d
 - `POST /api/tasks/batch-generate-video`：批量生成视频。
 - `POST /api/tasks/sync-publish`：把已完成任务的标题、文案、标签、商品标题和视频链接同步到发布表。
 - `GET /api/doubao-items/page`：按飞书游标读取全部豆包记录，不受 500 条限制。
+- `POST /api/doubao-items/batch-operation`：豆包素材统一批量入口，支持 `process_workflow`（按流程自动执行）、`store_images`、`detect_faces`、`delete_face_records`、`generate_prompts`、`sync_part_time`、`sync_publish`。
 - `POST /api/doubao-items/<record_id>/generate-prompt`：按 `country_code` 生成单条国家化 Prompt。
 - `POST /api/doubao-items/batch-generate-prompts`：用一个后台任务批量生成国家化 Prompt。
 - `POST /api/doubao-items/<record_id>/sync-part-time`：幂等同步单条记录到兼职表。
 - `POST /api/doubao-items/batch-sync-part-time`：批量同步已选记录，并汇总创建、更新、冲突和失败数。
+
+豆包素材按固定顺序处理：先把附件或外部图片链接转存到自有对象存储，再使用配置的 Gemini 模型检测人脸，只有“无人脸”的当前图片才能生成提示词和同步兼职表。图片链接发生变化后，旧检测结果自动失效；“含人脸”与“疑似人脸”的豆包素材记录可在后台确认后整条删除。发布表同步会携带豆包素材表中的 `商品id`，写入发布表 `商品ID` 字段，并继续按兼职记录 ID / 视频链接幂等更新。
+
+豆包素材表需要以下字段：`商品id`、`后台创建时间`（自动创建时间）、`人脸检测状态`、`人脸检测说明`、`人脸检测时间`、`人脸检测图片链接`、`人脸检测模型`。发布表需要文本字段 `商品ID`。豆包页面默认按 `后台创建时间 DESC` 从飞书服务端读取，全部游标页和真实行号加载完成后统一显示；也可以切换为最早优先。页面显示的“行”来自独立的飞书原始顺序索引（`record_id → 行号`），不使用排序后序号或总数倒推，因此中间删除过记录时仍与多维表格当前行号一致。兼职成片页面支持按真实行号正序或倒序查看。
 
 如果设置了 `ADMIN_TOKEN`，所有 `/api/*` 请求都需要带 `X-Admin-Token` 请求头。

@@ -1,10 +1,12 @@
 import os
 import time
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Lock
+from uuid import uuid4
 
-from flask import Flask, g, has_request_context, jsonify, request, send_from_directory
+from flask import Flask, g, has_request_context, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 from werkzeug.exceptions import ServiceUnavailable
 
@@ -18,11 +20,12 @@ except ModuleNotFoundError:
 from api.config import settings
 from api.countries import get_country, list_countries
 from api.auth import Operator, resolve_operator
-from api.feishu import field_value
+from api.feishu import FeishuError, field_value
 from api.image_gen import STYLE_LABELS
-from api.jobs import coordinated_resources, enqueue_job, get_job, job_health, list_jobs
+from api.jobs import cancel_job, coordinated_resources, enqueue_job, get_job, job_health, list_jobs
 from api.logging_bus import recent_logs
 from api.persistence import get_persistence
+from api.services.batch_queue_export import BatchQueueExportError
 from api.workflow import MATERIAL_PROMPT_FIELD, PromptConflictError, ViralRemixWorkflow
 
 
@@ -33,12 +36,16 @@ cache_lock = Lock()
 list_cache = {}
 
 
+def force_refresh_requested() -> bool:
+    return str(request.args.get("force") or "").lower() in ("1", "true", "yes")
+
+
 def get_workflow() -> ViralRemixWorkflow:
     return workflow
 
 
 def cached_list(key: str, loader, ttl_seconds: int = 20):
-    force = str(request.args.get("force") or "").lower() in ("1", "true", "yes")
+    force = force_refresh_requested()
     now = time.time()
     with cache_lock:
         cached = list_cache.get(key)
@@ -52,7 +59,10 @@ def cached_list(key: str, loader, ttl_seconds: int = 20):
 
 def clear_list_cache() -> None:
     with cache_lock:
+        row_index = list_cache.get("doubao-row-index")
         list_cache.clear()
+        if row_index:
+            list_cache["doubao-row-index"] = row_index
 
 
 def current_operator() -> Operator:
@@ -81,6 +91,16 @@ def service_unavailable(exc):
     return jsonify({"success": False, "message": str(exc.description)}), 503
 
 
+@app.errorhandler(FeishuError)
+def feishu_service_error(exc):
+    message = str(exc)
+    if "data not ready" in message.lower():
+        message = "飞书数据暂未准备好，后台已自动重试，请稍后刷新"
+    else:
+        message = f"飞书服务请求失败：{message}"
+    return jsonify({"success": False, "message": message}), 503
+
+
 def request_limit(default: int = 500, maximum: int = 1000) -> int:
     try:
         value = int(request.args.get("limit", default))
@@ -99,6 +119,14 @@ def query_int(name: str, default: int, maximum: int) -> int:
     except (TypeError, ValueError):
         value = default
     return max(1, min(value, maximum))
+
+
+def query_days(default: int = 2) -> int:
+    try:
+        value = int(request.args.get("days", default))
+    except (TypeError, ValueError):
+        value = default
+    return value if value in {0, 1, 2, 7} else default
 
 
 def compact_material_rows(rows: list[dict]) -> list[dict]:
@@ -128,6 +156,124 @@ def compact_material_rows(rows: list[dict]) -> list[dict]:
             item.pop(field, None)
         compact_rows.append(item)
     return compact_rows
+
+
+def publish_readiness_error_message(readiness: dict) -> str:
+    return (
+        "没有符合条件的视频："
+        f"图片或人脸未通过 {int(readiness.get('blocked_face_sources') or 0)} 条，"
+        f"缺少商品 ID {int(readiness.get('missing_product_id_sources') or 0)} 条，"
+        f"缺少最终提示词 {int(readiness.get('missing_prompt_sources') or 0)} 条，"
+        f"没有已完成有效视频 {int(readiness.get('missing_video_sources') or 0)} 条。"
+        "以上分类可能重叠。"
+    )
+
+
+def compact_job_for_list(job: dict, failure_limit: int = 20) -> dict:
+    compact = {
+        key: job.get(key)
+        for key in (
+            "id",
+            "name",
+            "action",
+            "operator",
+            "status",
+            "cancel_requested",
+            "error",
+            "created_at",
+            "started_at",
+            "finished_at",
+        )
+    }
+    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    record_ids = payload.get("record_ids") if isinstance(payload.get("record_ids"), list) else []
+    target_labels = {
+        "doubao.batch_store_images": "豆包素材图片",
+        "doubao.batch_detect_faces": "豆包素材人脸检测",
+        "doubao.batch_delete_face_records": "含人脸豆包素材",
+        "doubao.batch_generate_prompts": "豆包素材提示词",
+        "doubao.batch_sync_part_time": "豆包素材兼职同步",
+        "doubao.batch_workflow": "豆包素材全流程",
+        "publish.sync_doubao": "豆包成片发布同步",
+        "publish.sync_part_time": "兼职成片发布同步",
+    }
+    target_label = str(payload.get("selection_label") or "").strip()[:120]
+    if record_ids:
+        compact["target"] = {
+            "label": target_label or target_labels.get(str(job.get("action") or ""), "批量记录"),
+            "record_count": len(record_ids),
+        }
+        country_code = str(payload.get("country_code") or "").strip()
+        if country_code:
+            compact["target"]["country_code"] = country_code
+
+    result = job.get("result")
+    if not isinstance(result, dict):
+        compact["result"] = result
+        compact["outcome"] = "failed" if job.get("status") == "failed" else str(job.get("status") or "")
+        return compact
+
+    summary = {
+        key: value
+        for key, value in result.items()
+        if key != "results" and not isinstance(value, (dict, list))
+    }
+    result_items = result.get("results", [])
+    failures = [
+        {
+            key: item.get(key)
+            for key in ("record_id", "row_number", "source_table", "error", "status", "stage", "message")
+            if item.get(key) not in (None, "")
+        }
+        for item in result_items
+        if isinstance(item, dict)
+        and (item.get("error") or item.get("status") == "failed")
+    ]
+    conflicts = [
+        {
+            key: item.get(key)
+            for key in ("record_id", "row_number", "source_table", "status", "stage", "message")
+            if item.get(key) not in (None, "")
+        }
+        for item in result_items
+        if isinstance(item, dict) and item.get("status") == "conflict"
+    ]
+    blocked = [
+        {
+            key: item.get(key)
+            for key in ("record_id", "row_number", "source_table", "status", "stage", "message")
+            if item.get(key) not in (None, "")
+        }
+        for item in result_items
+        if isinstance(item, dict) and item.get("status") == "blocked"
+    ]
+    if isinstance(result_items, list):
+        reported_failed = int(summary.get("failed") or 0)
+        unclassified_failed = max(0, reported_failed - len(failures) - len(conflicts))
+        summary["failed"] = len(failures) + unclassified_failed
+        summary["conflicts"] = len(conflicts)
+    if failures:
+        summary["failures"] = failures[:max(1, failure_limit)]
+        summary["failure_items_total"] = len(failures)
+    if conflicts:
+        summary["conflict_items"] = conflicts[:max(1, failure_limit)]
+        summary["conflict_items_total"] = len(conflicts)
+    if blocked:
+        summary["blocked_items"] = blocked[:max(1, failure_limit)]
+        summary["blocked_items_total"] = len(blocked)
+    compact["result"] = summary
+    failed = int(summary.get("failed") or 0)
+    conflicts_count = int(summary.get("conflicts") or 0)
+    processed = int(summary.get("processed") or 0)
+    if job.get("status") == "failed" or (failed and processed and failed >= processed):
+        compact["outcome"] = "failed"
+    elif failed:
+        compact["outcome"] = "partial_failed"
+    elif conflicts_count:
+        compact["outcome"] = "protected"
+    else:
+        compact["outcome"] = str(job.get("status") or "")
+    return compact
 
 
 def require_admin():
@@ -167,6 +313,15 @@ def healthz():
         persistence = get_persistence(settings).health()
     except Exception as exc:
         return jsonify({"status": "unavailable", "message": str(exc)}), 503
+    expected_workers = int(coordination.get("expected_workers") or 0)
+    alive_workers = int(coordination.get("alive_workers") or 0)
+    if expected_workers and alive_workers < expected_workers:
+        return jsonify({
+            "status": "unavailable",
+            "message": f"后台任务 Worker 异常：存活 {alive_workers}/{expected_workers}",
+            "coordination": coordination,
+            "persistence": persistence,
+        }), 503
     return jsonify({"status": "ok", "coordination": coordination, "persistence": persistence})
 
 
@@ -261,9 +416,121 @@ def job_status(job_id):
     return jsonify({"success": True, "data": job})
 
 
+RETRYABLE_BATCH_ACTIONS = {
+    "doubao.batch_store_images",
+    "doubao.batch_detect_faces",
+    "doubao.batch_generate_prompts",
+    "doubao.batch_sync_part_time",
+    "doubao.batch_workflow",
+    "publish.sync_doubao",
+    "publish.sync_part_time",
+}
+
+
+CANCELLABLE_BATCH_ACTIONS = {
+    *RETRYABLE_BATCH_ACTIONS,
+    "doubao.batch_delete_face_records",
+    "material.batch_step",
+    "material.batch_prepare",
+    "task.batch_generate_video",
+    "task.batch_sync_reference_images",
+    "task.batch_store_manual_videos",
+}
+
+
+@app.route("/api/jobs/<job_id>/cancel", methods=["POST"])
+def cancel_active_job(job_id):
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"success": False, "message": "job not found"}), 404
+    if str(job.get("action") or "") not in CANCELLABLE_BATCH_ACTIONS:
+        return jsonify({"success": False, "message": "该任务类型不支持停止"}), 400
+    if job.get("status") not in {"queued", "running"}:
+        return jsonify({"success": False, "message": "任务已经结束，无需停止"}), 409
+    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    batch_group_id = str(payload.get("batch_group_id") or "").strip()
+    targets = [job]
+    if batch_group_id:
+        targets.extend(
+            candidate
+            for candidate in list_jobs(limit=100)
+            if str((candidate.get("payload") or {}).get("batch_group_id") or "").strip() == batch_group_id
+        )
+    active_targets = {
+        str(candidate.get("id") or ""): candidate
+        for candidate in targets
+        if candidate.get("status") in {"queued", "running"}
+        and str(candidate.get("action") or "") in CANCELLABLE_BATCH_ACTIONS
+        and str(candidate.get("id") or "")
+    }
+    updated_jobs = [cancel_job(target_id) or candidate for target_id, candidate in active_targets.items()]
+    updated = next((item for item in updated_jobs if item.get("id") == job_id), job)
+    immediate = updated.get("status") == "cancelled"
+    return jsonify({
+        "success": True,
+        "job_id": job_id,
+        "job_ids": list(active_targets),
+        "cancelled_job_count": len(active_targets),
+        "status": updated.get("status"),
+        "cancel_requested": True,
+        "message": (
+            f"本批次 {len(active_targets)} 个任务已停止"
+            if immediate and len(active_targets) > 1
+            else "任务已停止"
+            if immediate
+            else f"已请求停止本批次 {len(active_targets)} 个任务，正在完成当前处理中的记录"
+            if len(active_targets) > 1
+            else "已请求停止，正在完成当前处理中的记录"
+        ),
+    })
+
+
+@app.route("/api/jobs/<job_id>/retry-failures", methods=["POST"])
+def retry_job_failures(job_id):
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"success": False, "message": "job not found"}), 404
+    action = str(job.get("action") or "")
+    if action not in RETRYABLE_BATCH_ACTIONS:
+        return jsonify({"success": False, "message": "该任务类型不支持失败重试"}), 400
+    if job.get("status") in {"queued", "running"}:
+        return jsonify({"success": False, "message": "任务仍在处理中，请完成后再重试"}), 409
+
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    failed_ids = [
+        str(item.get("record_id") or "").strip()
+        for item in result.get("results", [])
+        if isinstance(item, dict)
+        and (item.get("error") or item.get("status") == "failed")
+        and str(item.get("record_id") or "").strip()
+    ]
+    if not failed_ids and job.get("status") == "failed":
+        payload_ids = (job.get("payload") or {}).get("record_ids")
+        failed_ids = payload_ids if isinstance(payload_ids, list) else []
+    failed_ids = list(dict.fromkeys(failed_ids))[:200]
+    if not failed_ids:
+        return jsonify({"success": False, "message": "该任务没有可重试的失败记录"}), 400
+
+    payload = dict(job.get("payload") or {})
+    payload["record_ids"] = failed_ids
+    payload["retry_of"] = job_id
+    label = str(payload.get("selection_label") or "").strip()
+    payload["selection_label"] = f"{label} · 失败重试" if label else "失败记录重试"
+    retry_id = enqueue_workflow_action(
+        f"{str(job.get('name') or action)}-retry",
+        action,
+        payload,
+    )
+    return jsonify({"success": True, "job_id": retry_id, "retry_count": len(failed_ids)})
+
+
 @app.route("/api/jobs")
 def job_list():
-    return jsonify({"success": True, "data": list_jobs()})
+    limit = query_int("limit", 30, 100)
+    return jsonify({
+        "success": True,
+        "data": [compact_job_for_list(job) for job in list_jobs(limit=limit)],
+    })
 
 
 @app.route("/api/materials")
@@ -393,21 +660,136 @@ def list_doubao_items():
     return jsonify({"success": True, "data": data})
 
 
+@app.route("/api/part-time-items")
+def list_part_time_items():
+    workflow = get_workflow()
+    days = query_days()
+    data = cached_list(
+        f"part-time-publish:{days}",
+        lambda: workflow.list_part_time_publish_items(limit=None, days=days),
+        ttl_seconds=60,
+    )
+    return jsonify({"success": True, "data": data})
+
+
+@app.route("/api/part-time-items/batch-sync-publish", methods=["POST"])
+def batch_sync_part_time_publish():
+    body = request.get_json(silent=True) or {}
+    record_ids = body.get("record_ids")
+    if not isinstance(record_ids, list):
+        return jsonify({"success": False, "message": "record_ids is required"}), 400
+    ids = list(dict.fromkeys(str(item).strip() for item in record_ids if str(item).strip()))
+    if not ids:
+        return jsonify({"success": False, "message": "record_ids is required"}), 400
+    batch_size = 200
+    selection_limit = 1000
+    if len(ids) > selection_limit:
+        return jsonify({
+            "success": False,
+            "message": f"单次最多选择 {selection_limit} 条，请缩小行号范围后重试",
+            "selected_count": len(ids),
+            "selection_limit": selection_limit,
+        }), 400
+
+    raw_row_numbers = body.get("row_numbers")
+    row_numbers: dict[str, int] = {}
+    if isinstance(raw_row_numbers, dict):
+        for record_id in ids:
+            try:
+                row_number = int(raw_row_numbers.get(record_id))
+            except (TypeError, ValueError):
+                continue
+            if row_number > 0:
+                row_numbers[record_id] = row_number
+
+    selection_label = str(body.get("selection_label") or "").strip()[:120]
+    chunks = [ids[index:index + batch_size] for index in range(0, len(ids), batch_size)]
+    batch_group_id = uuid4().hex[:16] if len(chunks) > 1 else ""
+    job_ids = []
+    for index, chunk in enumerate(chunks, start=1):
+        payload = {
+            "record_ids": chunk,
+            "limit": batch_size,
+        }
+        chunk_row_numbers = {
+            record_id: row_numbers[record_id]
+            for record_id in chunk
+            if record_id in row_numbers
+        }
+        if chunk_row_numbers:
+            payload["row_numbers"] = chunk_row_numbers
+        if batch_group_id:
+            payload["batch_group_id"] = batch_group_id
+        if selection_label:
+            if len(chunks) == 1:
+                payload["selection_label"] = selection_label
+            else:
+                suffix = f"第 {index}/{len(chunks)} 批（{len(chunk)} 条）"
+                prefix = selection_label[:max(0, 120 - len(suffix) - 3)]
+                payload["selection_label"] = f"{prefix} · {suffix}"
+        job_ids.append(enqueue_workflow_action(
+            "part-time-batch-sync-publish",
+            "publish.sync_part_time",
+            payload,
+        ))
+
+    return jsonify({
+        "success": True,
+        "job_id": job_ids[0],
+        "job_ids": job_ids,
+        "batch_count": len(job_ids),
+        "batch_group_id": batch_group_id,
+        "selected_count": len(ids),
+        "submitted_count": len(ids),
+    })
+
+
+@app.route("/api/doubao-items/export-batch-queue", methods=["POST"])
+def export_doubao_batch_queue():
+    body = request.get_json(silent=True) or {}
+    record_ids = body.get("record_ids")
+    if not isinstance(record_ids, list):
+        return jsonify({"success": False, "message": "record_ids is required"}), 400
+    ids = list(dict.fromkeys(str(item).strip() for item in record_ids if str(item).strip()))[:200]
+    if not ids:
+        return jsonify({"success": False, "message": "请先选择要导出的豆包素材"}), 400
+    try:
+        package = get_workflow().export_doubao_batch_queue(ids)
+    except BatchQueueExportError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 422
+    response = send_file(
+        BytesIO(package.content),
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=package.filename,
+        max_age=0,
+    )
+    response.headers["X-Exported-Items"] = str(package.item_count)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.route("/api/doubao-items/page")
 def list_doubao_items_page():
     workflow = get_workflow()
     page_size = query_int("page_size", 100, 100)
+    days = query_days()
     page_token = str(request.args.get("page_token") or "").strip()
+    order = str(request.args.get("order") or "latest").strip().lower()
+    if order not in {"latest", "oldest"}:
+        return jsonify({"success": False, "message": "order must be latest or oldest"}), 400
     try:
         offset = max(0, int(request.args.get("offset", 0)))
     except (TypeError, ValueError):
         offset = 0
     data = cached_list(
-        f"doubao-page:{page_size}:{page_token}:{offset}",
+        f"doubao-page:{order}:{days}:{page_size}:{page_token}:{offset}",
         lambda: workflow.list_doubao_items_page(
             page_size=page_size,
             page_token=page_token,
             start_index=offset + 1,
+            order=order,
+            days=days,
         ),
         ttl_seconds=120,
     )
@@ -416,7 +798,47 @@ def list_doubao_items_page():
         "data": data["items"],
         "has_more": data["has_more"],
         "page_token": data["page_token"],
+        "total": data.get("total", 0),
     })
+
+
+@app.route("/api/doubao-items/range")
+def list_doubao_items_range():
+    start_row = query_int("start_row", 1, 100000)
+    end_row = query_int("end_row", start_row, 100000)
+    start = min(start_row, end_row)
+    end = max(start_row, end_row)
+    if end - start + 1 > 1000:
+        return jsonify({
+            "success": False,
+            "message": "单次最多按行号读取 1000 条，请缩小范围后重试",
+        }), 400
+    data = cached_list(
+        f"doubao-range:{start}:{end}",
+        lambda: get_workflow().list_doubao_items_range(
+            start,
+            end,
+            force_refresh=force_refresh_requested(),
+        ),
+        ttl_seconds=120,
+    )
+    return jsonify({
+        "success": True,
+        "data": data["items"],
+        "total": data.get("total", 0),
+    })
+
+
+@app.route("/api/doubao-items/row-index")
+def list_doubao_row_index():
+    data = cached_list(
+        "doubao-row-index",
+        lambda: get_workflow().list_doubao_row_index(
+            force_refresh=force_refresh_requested(),
+        ),
+        ttl_seconds=300,
+    )
+    return jsonify({"success": True, "data": data, "total": len(data)})
 
 
 @app.route("/api/doubao-items/<record_id>/generate-prompt", methods=["POST"])
@@ -542,6 +964,108 @@ def batch_store_doubao_images():
     return jsonify({"success": True, "job_id": job_id})
 
 
+@app.route("/api/doubao-items/batch-operation", methods=["POST"])
+def batch_doubao_operation():
+    body = request.get_json(silent=True) or {}
+    operation = str(body.get("operation") or "").strip()
+    record_ids = body.get("record_ids")
+    if not isinstance(record_ids, list):
+        return jsonify({"success": False, "message": "record_ids is required"}), 400
+    ids = list(dict.fromkeys(str(item).strip() for item in record_ids if str(item).strip()))
+    if not ids:
+        return jsonify({"success": False, "message": "record_ids is required"}), 400
+    raw_row_numbers = body.get("row_numbers")
+    row_numbers: dict[str, int] = {}
+    if isinstance(raw_row_numbers, dict):
+        for record_id in ids:
+            try:
+                row_number = int(raw_row_numbers.get(record_id))
+            except (TypeError, ValueError):
+                continue
+            if row_number > 0:
+                row_numbers[record_id] = row_number
+    batch_size = 200
+    selection_limit = 1000
+    if len(ids) > selection_limit:
+        return jsonify({
+            "success": False,
+            "message": f"单次最多选择 {selection_limit} 条，请缩小行号范围后重试",
+            "selected_count": len(ids),
+            "selection_limit": selection_limit,
+        }), 400
+
+    action_map = {
+        "store_images": ("doubao.batch_store_images", "doubao-batch-store-images", "图片转存"),
+        "detect_faces": ("doubao.batch_detect_faces", "doubao-batch-detect-faces", "人脸检测"),
+        "delete_face_records": ("doubao.batch_delete_face_records", "doubao-batch-delete-face-records", "删除含人脸记录"),
+        "remove_face_images": ("doubao.batch_delete_face_records", "doubao-batch-delete-face-records", "删除含人脸记录"),
+        "generate_prompts": ("doubao.batch_generate_prompts", "doubao-batch-generate-prompts", "提示词生成"),
+        "sync_part_time": ("doubao.batch_sync_part_time", "doubao-batch-sync-part-time", "兼职表同步"),
+        "process_workflow": ("doubao.batch_workflow", "doubao-batch-workflow", "按流程批量处理"),
+        "sync_publish": ("publish.sync_doubao", "doubao-batch-sync-publish", "发布表同步"),
+    }
+    selected = action_map.get(operation)
+    if not selected:
+        return jsonify({"success": False, "message": f"不支持的批量操作：{operation}"}), 400
+
+    selection_label = str(body.get("selection_label") or "").strip()[:120]
+    country = None
+    if operation in {"generate_prompts", "sync_part_time", "process_workflow"}:
+        try:
+            country = get_country(body.get("country_code"))
+        except ValueError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+    readiness = None
+    if operation == "sync_publish":
+        readiness = get_workflow().doubao_publish_readiness(ids)
+
+    action, job_name, label = selected
+    chunks = [ids[index:index + batch_size] for index in range(0, len(ids), batch_size)]
+    batch_group_id = uuid4().hex[:16] if len(chunks) > 1 else ""
+    job_ids = []
+    for index, chunk in enumerate(chunks, start=1):
+        payload = {"record_ids": chunk}
+        chunk_row_numbers = {
+            record_id: row_numbers[record_id]
+            for record_id in chunk
+            if record_id in row_numbers
+        }
+        if chunk_row_numbers:
+            payload["row_numbers"] = chunk_row_numbers
+        if batch_group_id:
+            payload["batch_group_id"] = batch_group_id
+        if selection_label:
+            if len(chunks) == 1:
+                payload["selection_label"] = selection_label
+            else:
+                suffix = f"第 {index}/{len(chunks)} 批（{len(chunk)} 条）"
+                prefix = selection_label[:max(0, 120 - len(suffix) - 3)]
+                payload["selection_label"] = f"{prefix} · {suffix}"
+        if country:
+            payload["country_code"] = country.code
+        if operation in {"sync_part_time", "process_workflow"}:
+            payload["force_update"] = body.get("force_update") is True
+        if operation == "sync_publish":
+            payload["limit"] = min(max(int(body.get("limit", 200)), 1), 200)
+        job_ids.append(enqueue_workflow_action(job_name, action, payload))
+
+    response = {
+        "success": True,
+        "job_id": job_ids[0],
+        "job_ids": job_ids,
+        "batch_count": len(job_ids),
+        "batch_group_id": batch_group_id or None,
+        "batch_size": batch_size,
+        "selected_count": len(ids),
+        "submitted_count": sum(len(chunk) for chunk in chunks),
+        "operation": operation,
+        "label": label,
+    }
+    if readiness is not None:
+        response["readiness"] = readiness
+    return jsonify(response)
+
+
 def validated_doubao_batch_request():
     body = request.get_json(silent=True) or {}
     record_ids = body.get("record_ids")
@@ -600,7 +1124,7 @@ def batch_sync_doubao_publish():
     if not readiness["eligible_videos"]:
         return jsonify({
             "success": False,
-            "message": "所选素材在兼职表中还没有可同步的视频：需要任务状态为已完成、视频地址已填写，且审核未标记为无效或未去水印。",
+            "message": publish_readiness_error_message(readiness),
             "readiness": readiness,
         }), 409
     job_id = enqueue_workflow_action(

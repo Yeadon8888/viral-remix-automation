@@ -37,7 +37,14 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
         workflow.settings = SimpleNamespace(doubao_table_id="doubao-table")
         workflow.feishu = FakeFeishu()
         workflow.gemini = FakeGemini()
-        workflow._resolve_doubao_image = lambda fields, prefer_stored=True: (b"image", "image/png", "image.png")
+        workflow.doubao_assets = SimpleNamespace(
+            require_prompt_generation_ready=lambda fields: "https://assets.example.com/image.png",
+            download_managed_image=lambda fields: (
+                b"image",
+                "image/png",
+                "https://assets.example.com/image.png",
+            ),
+        )
 
         def active_prompt(key, region, fallback):
             captured["selection"] = (key, region, fallback)

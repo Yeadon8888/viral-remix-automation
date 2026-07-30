@@ -3,26 +3,38 @@ const state = {
   materials: [],
   tasks: [],
   doubaoItems: [],
+  partTimeItems: [],
   prompts: [],
   countries: [],
   jobs: [],
   pendingJobs: new Set(),
+  submittedJobIds: new Set(),
+  stalePages: new Set(),
   collapsedMaterialDateGroups: new Set(),
   seenMaterialDateGroups: new Set(),
   collapsedTaskDateGroups: new Set(),
   seenTaskDateGroups: new Set(),
-  collapsedDoubaoDateGroups: new Set(),
-  seenDoubaoDateGroups: new Set(),
   editingPromptId: "",
   creatingPrompt: false,
   selectedMaterialId: localStorage.getItem("viral-remix-selected-material") || "",
   selectedMaterialIds: new Set(),
   selectedTaskIds: new Set(),
   selectedDoubaoIds: new Set(),
+  selectedPartTimeIds: new Set(),
   doubaoCountryCode: localStorage.getItem("viral-remix-doubao-country") || "MY",
+  doubaoSortOrder: localStorage.getItem("viral-remix-doubao-sort") || "latest",
+  partTimeSortOrder: localStorage.getItem("viral-remix-part-time-sort") || "latest",
+  doubaoDateRange: normalizeDateRange(localStorage.getItem("viral-remix-doubao-date-range")),
+  partTimeDateRange: normalizeDateRange(localStorage.getItem("viral-remix-part-time-date-range")),
+  doubaoTotal: 0,
+  doubaoLoadVersion: 0,
+  doubaoLoadedRange: null,
+  partTimeLoadVersion: 0,
+  doubaoRowIndex: {},
   promptCountryFilter: "",
   activePage: localStorage.getItem("viral-remix-active-page") || "materials",
   loadedPages: new Set(),
+  pageLoadPromises: new Map(),
   lastActiveJobNames: "",
   pollTick: 0,
   pollBusy: false,
@@ -35,6 +47,8 @@ const state = {
   taskPageSize: 20,
   doubaoPage: 1,
   doubaoPageSize: 20,
+  partTimePage: 1,
+  partTimePageSize: 20,
   imageStyles: ["viral_first_frame", "lifestyle", "model", "detail", "flatlay", "outdoor", "studio"],
   imageStyleLabels: {
     viral_first_frame: "爆款首帧",
@@ -49,6 +63,10 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+function normalizeDateRange(value) {
+  return ["0", "1", "2", "7"].includes(String(value || "")) ? String(value) : "2";
+}
+
 function headers() {
   return state.token
     ? { "X-Admin-Token": state.token, "Content-Type": "application/json" }
@@ -57,9 +75,51 @@ function headers() {
 
 async function api(path, options = {}) {
   const res = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
-  const data = await res.json();
+  const contentType = String(res.headers?.get?.("content-type") || "").toLowerCase();
+  if (contentType && !contentType.includes("application/json")) {
+    const status = Number(res.status) || 0;
+    throw new Error(status ? `服务暂时不可用（HTTP ${status}），请稍后重试` : "服务暂时不可用，请稍后重试");
+  }
+  let data;
+  try {
+    data = await res.json();
+  } catch (_error) {
+    throw new Error("服务返回格式异常，请稍后重试");
+  }
   if (!res.ok || data.success === false) throw new Error(data.message || data.error || "请求失败");
+  const submittedIds = Array.isArray(data.job_ids) && data.job_ids.length
+    ? data.job_ids
+    : (data.job_id ? [data.job_id] : []);
+  submittedIds.forEach((jobId) => state.submittedJobIds.add(String(jobId)));
   return data;
+}
+
+async function downloadApi(path, options = {}) {
+  const res = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
+  if (!res.ok) {
+    const contentType = String(res.headers.get("content-type") || "");
+    if (contentType.includes("application/json")) {
+      const data = await res.json();
+      throw new Error(data.message || data.error || "导出失败");
+    }
+    throw new Error((await res.text()) || "导出失败");
+  }
+  const disposition = String(res.headers.get("content-disposition") || "");
+  const utf8Name = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  const plainName = disposition.match(/filename="?([^";]+)"?/i);
+  const filename = utf8Name
+    ? decodeURIComponent(utf8Name[1])
+    : (plainName ? plainName[1] : "批量视频队列.zip");
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+  return filename;
 }
 
 function notify(message, type = "success") {
@@ -197,6 +257,7 @@ function pageRows(rows, page, pageSize) {
 function pagerState(key) {
   if (key === "materials") return { pageKey: "materialPage", sizeKey: "materialPageSize" };
   if (key === "tasks") return { pageKey: "taskPage", sizeKey: "taskPageSize" };
+  if (key === "part-time") return { pageKey: "partTimePage", sizeKey: "partTimePageSize" };
   return { pageKey: "doubaoPage", sizeKey: "doubaoPageSize" };
 }
 
@@ -281,11 +342,6 @@ function materialDateGroup(row) {
   return dateGroupFromTimestamp(row["自动化处理时间"]);
 }
 
-function doubaoDateGroup(row) {
-  const group = dateGroupFromTimestamp(row["更新时间"] || row["创建时间"]);
-  return group.key === "unknown" ? { key: "done", label: "已生成记录" } : group;
-}
-
 function groupRowsByDate(rows, getGroup) {
   const groups = new Map();
   rows.forEach((row) => {
@@ -322,14 +378,44 @@ function selectedDoubaoRows() {
   return state.doubaoItems.filter((row) => state.selectedDoubaoIds.has(row.record_id));
 }
 
+function selectedPartTimeRows() {
+  return state.partTimeItems.filter((row) => state.selectedPartTimeIds.has(row.record_id));
+}
+
+function partTimeRowsInRange(rows, start, end) {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 1 || end < 1) return [];
+  const from = Math.min(start, end);
+  const to = Math.max(start, end);
+  return rows.filter((row) => {
+    const line = rowNumber(row);
+    return line >= from && line <= to && row.record_id && row["可同步发布"];
+  });
+}
+
 function syncableDoubaoRows(rows = selectedDoubaoRows(), forceUpdate = false) {
-  return rows.filter((row) => String(row["最终视频生成提示词"] || "").trim()
+  return rows.filter((row) => canExecuteDoubaoSync(row, forceUpdate)
     && promptCountryMatchesSelection(row)
+    && String(row["兼职同步状态"] || "").trim() !== "同步冲突"
     && (forceUpdate || String(row["兼职同步状态"] || "").trim() !== "已同步"));
 }
 
+function doubaoSyncSelectionSummary(rows = selectedDoubaoRows(), forceUpdate = false) {
+  const eligible = rows.filter((row) => canExecuteDoubaoSync(row, forceUpdate) && promptCountryMatchesSelection(row));
+  const conflicts = eligible.filter((row) => String(row["兼职同步状态"] || "").trim() === "同步冲突").length;
+  const synced = forceUpdate
+    ? 0
+    : eligible.filter((row) => String(row["兼职同步状态"] || "").trim() === "已同步").length;
+  return {
+    selected: rows.length,
+    submitted: syncableDoubaoRows(rows, forceUpdate).length,
+    synced,
+    conflicts,
+    unavailable: rows.length - eligible.length,
+  };
+}
+
 function isJobRunning(name) {
-  return state.jobs.some((job) => job.name === name && job.status === "running");
+  return state.jobs.some((job) => job.name === name && ["queued", "running"].includes(job.status));
 }
 
 function isJobBusy(name) {
@@ -434,11 +520,12 @@ function renderMetrics() {
 }
 
 function renderPage() {
-  const page = ["materials", "videos", "doubao", "prompts"].includes(state.activePage) ? state.activePage : "materials";
+  const page = ["materials", "videos", "doubao", "part-time", "prompts"].includes(state.activePage) ? state.activePage : "materials";
   state.activePage = page;
   $("materialsPage").classList.toggle("active", page === "materials");
   $("videosPage").classList.toggle("active", page === "videos");
   $("doubaoPage").classList.toggle("active", page === "doubao");
+  $("partTimePage").classList.toggle("active", page === "part-time");
   $("promptsPage").classList.toggle("active", page === "prompts");
   const remixActive = page === "materials" || page === "videos";
   $("remixSubnav").hidden = !remixActive;
@@ -446,6 +533,7 @@ function renderPage() {
   $("pageMaterials").classList.toggle("active", page === "materials");
   $("pageVideos").classList.toggle("active", page === "videos");
   $("pageDoubao").classList.toggle("active", page === "doubao");
+  $("pagePartTime").classList.toggle("active", page === "part-time");
   $("pagePrompts").classList.toggle("active", page === "prompts");
   localStorage.setItem("viral-remix-active-page", page);
 }
@@ -462,6 +550,47 @@ function renderSelectionState() {
 function rowNumber(row) {
   const value = Number(row["行号"]);
   return Number.isFinite(value) ? value : 0;
+}
+
+function doubaoSelectionLabel(rows) {
+  const lineNumbers = rows.map(rowNumber).filter((line) => line > 0);
+  if (!lineNumbers.length) return `豆包素材 ${rows.length} 条`;
+  const from = Math.min(...lineNumbers);
+  const to = Math.max(...lineNumbers);
+  return `豆包素材表行号 ${from}–${to}（已选 ${rows.length} 条）`;
+}
+
+function doubaoRowNumberMap(rows) {
+  return Object.fromEntries(
+    rows
+      .map((row) => [String(row.record_id || "").trim(), rowNumber(row)])
+      .filter(([recordId, line]) => recordId && line > 0),
+  );
+}
+
+function partTimeSelectionLabel(rows) {
+  const lineNumbers = rows.map(rowNumber).filter((line) => line > 0);
+  if (!lineNumbers.length) return `兼职成片 ${rows.length} 条`;
+  const from = Math.min(...lineNumbers);
+  const to = Math.max(...lineNumbers);
+  return `兼职表行号 ${from}–${to}（已选 ${rows.length} 条）`;
+}
+
+function partTimeRowNumberMap(rows) {
+  return Object.fromEntries(
+    rows
+      .map((row) => [String(row.record_id || "").trim(), rowNumber(row)])
+      .filter(([recordId, line]) => recordId && line > 0),
+  );
+}
+
+function batchJobSummary(data) {
+  const jobIds = Array.isArray(data?.job_ids) && data.job_ids.length
+    ? data.job_ids
+    : (data?.job_id ? [data.job_id] : []);
+  return jobIds.length > 1
+    ? `${jobIds.length} 个后台任务（${jobIds.join("、")}）`
+    : (jobIds[0] || "任务已提交");
 }
 
 function selectMaterialRange() {
@@ -517,25 +646,51 @@ function clearTaskSelection() {
   renderTasks();
 }
 
+function selectPartTimeRange() {
+  const start = Number($("partTimeRangeStart").value);
+  const end = Number($("partTimeRangeEnd").value);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 1 || end < 1) {
+    notify("请输入有效的兼职表起始行和结束行", "error");
+    return;
+  }
+  const from = Math.min(start, end);
+  const to = Math.max(start, end);
+  const selectedRows = partTimeRowsInRange(state.partTimeItems, start, end);
+  state.selectedPartTimeIds = new Set(selectedRows.map((row) => row.record_id));
+  renderPartTimeItems();
+  if (!selectedRows.length) notify(`兼职表行号 ${from}–${to} 内没有待审核且可同步的成片`, "error");
+}
+
+function clearPartTimeSelection() {
+  state.selectedPartTimeIds.clear();
+  renderPartTimeItems();
+}
+
 function currentVisibleDoubaoRows() {
-  const activeRows = state.doubaoItems.filter((row) => !isCompletedDoubao(row));
-  return pageRows(activeRows, state.doubaoPage, state.doubaoPageSize);
+  return pageRows(state.doubaoItems, state.doubaoPage, state.doubaoPageSize);
 }
 
 function renderDoubaoSelectionState() {
   const visibleIds = currentVisibleDoubaoRows().map((row) => row.record_id).filter(Boolean);
   const selectedRows = selectedDoubaoRows();
   const selectedCount = selectedRows.length;
+  const exportableCount = selectedRows.filter((row) => row["发布前置条件通过"]).length;
   const forceUpdate = Boolean($("forceDoubaoSyncUpdate")?.checked);
-  const syncableCount = syncableDoubaoRows(selectedRows, forceUpdate).length;
-  const syncedSkipped = syncableDoubaoRows(selectedRows, true).length - syncableDoubaoRows(selectedRows, false).length;
+  const syncSummary = doubaoSyncSelectionSummary(selectedRows, forceUpdate);
   const visibleSelectedCount = visibleIds.filter((id) => state.selectedDoubaoIds.has(id)).length;
-  $("selectedDoubaoCount").textContent = `已选 ${selectedCount} 条 · 当前国家可同步 ${syncableCount} 条${!forceUpdate && syncedSkipped ? ` · 跳过已同步 ${syncedSkipped} 条` : ""}`;
+  $("selectedDoubaoCount").textContent = [
+    `已选 ${selectedCount} 条`,
+    `可导出 ${exportableCount} 条`,
+    `本次提交 ${syncSummary.submitted} 条`,
+    syncSummary.synced ? `跳过已同步 ${syncSummary.synced} 条` : "",
+    syncSummary.conflicts ? `保护冲突 ${syncSummary.conflicts} 条` : "",
+    syncSummary.unavailable ? `前置检查未通过 ${syncSummary.unavailable} 条` : "",
+  ].filter(Boolean).join(" · ");
   $("selectAllDoubao").checked = visibleIds.length > 0 && visibleSelectedCount === visibleIds.length;
   $("selectAllDoubao").indeterminate = visibleSelectedCount > 0 && visibleSelectedCount < visibleIds.length;
 }
 
-function selectDoubaoRange() {
+async function selectDoubaoRange() {
   const start = Number($("doubaoRangeStart").value);
   const end = Number($("doubaoRangeEnd").value);
   if (!Number.isFinite(start) || !Number.isFinite(end) || start < 1 || end < 1) {
@@ -544,17 +699,89 @@ function selectDoubaoRange() {
   }
   const from = Math.min(start, end);
   const to = Math.max(start, end);
-  const selectedRows = state.doubaoItems.filter((row) => {
-    const line = rowNumber(row);
-    return line >= from && line <= to && row.record_id;
-  });
-  state.selectedDoubaoIds = new Set(selectedRows.map((row) => row.record_id));
-  renderDoubaoItems();
+  if (to - from + 1 > 1000) {
+    notify("单次最多按行号选择 1000 条，请缩小范围", "error");
+    return;
+  }
+  await loadDoubaoRangeItems(from, to, { select: true });
 }
 
 function clearDoubaoSelection() {
   state.selectedDoubaoIds.clear();
   renderDoubaoItems();
+}
+
+function currentVisiblePartTimeRows() {
+  return pageRows(sortedPartTimeItems(), state.partTimePage, state.partTimePageSize);
+}
+
+function sortedPartTimeItems() {
+  const direction = state.partTimeSortOrder === "oldest" ? 1 : -1;
+  return [...state.partTimeItems].sort((left, right) => {
+    const leftLine = rowNumber(left);
+    const rightLine = rowNumber(right);
+    if (!leftLine && !rightLine) return String(left.record_id || "").localeCompare(String(right.record_id || ""));
+    if (!leftLine) return 1;
+    if (!rightLine) return -1;
+    return direction * (leftLine - rightLine)
+      || String(left.record_id || "").localeCompare(String(right.record_id || ""));
+  });
+}
+
+function renderPartTimeSelectionState() {
+  const visibleIds = currentVisiblePartTimeRows()
+    .filter((row) => row["可同步发布"])
+    .map((row) => row.record_id);
+  const selectedCount = selectedPartTimeRows().length;
+  const batchCount = Math.ceil(selectedCount / 200);
+  const visibleSelectedCount = visibleIds.filter((id) => state.selectedPartTimeIds.has(id)).length;
+  $("selectedPartTimeCount").textContent = selectedCount
+    ? `已选 ${selectedCount} 条 · 将拆分为 ${batchCount} 个后台任务`
+    : "已选 0 条";
+  $("selectAllPartTime").checked = visibleIds.length > 0 && visibleSelectedCount === visibleIds.length;
+  $("selectAllPartTime").indeterminate = visibleSelectedCount > 0 && visibleSelectedCount < visibleIds.length;
+}
+
+function renderPartTimeItems() {
+  const rows = state.partTimeItems;
+  $("metricPartTimeRows").textContent = rows.length;
+  $("metricPartTimePending").textContent = rows.filter((row) => row["可同步发布"]).length;
+  $("metricPartTimePublished").textContent = rows.filter((row) => row["已同步发布"]).length;
+  $("metricPartTimeBlocked").textContent = rows.filter((row) => row["发布阻断原因"]).length;
+  if (!rows.length) {
+    $("partTimeItems").innerHTML = `<div class="selected-box">暂无外部插件已完成的成片</div>`;
+    renderPartTimeSelectionState();
+    return;
+  }
+  state.partTimePage = clampPage(state.partTimePage, rows.length, state.partTimePageSize);
+  const body = currentVisiblePartTimeRows().map((row) => {
+    const canSync = Boolean(row["可同步发布"]);
+    const checked = state.selectedPartTimeIds.has(row.record_id) ? "checked" : "";
+    const blocker = row["发布阻断原因"]
+      ? `<div class="inline-error"><span>${esc(row["发布阻断原因"])}</span></div>`
+      : "";
+    return `<tr>
+      <td class="select-col"><input class="part-time-check" type="checkbox" aria-label="选择兼职成片 ${esc(row.record_id)}" data-part-time-select-id="${esc(row.record_id)}" ${checked} ${canSync ? "" : "disabled"}></td>
+      <td class="row-no">${esc(row["行号"] || "")}</td>
+      <td><strong>${esc(row["文本"] || "未填写任务标题")}</strong><div class="muted">兼职：${esc(row.record_id)}</div><div class="muted">素材：${esc(row["来源记录ID"] || "")}</div></td>
+      <td>${status(row["任务状态"] || "未完成")}<div class="muted">${esc(row["审核"] || "未标记")}</div></td>
+      <td>${status(row["目标国家"] || "未记录")}<div class="muted">${esc(row["目标语言"] || "未记录语言")}</div></td>
+      <td>${row["视频地址"] ? `<a href="${esc(row["视频地址"])}" target="_blank">查看成片</a>` : `<span class="muted">缺少视频</span>`}</td>
+      <td>${status(row["发布状态"] || "待审核")}${blocker}</td>
+    </tr>`;
+  }).join("");
+  $("partTimeItems").innerHTML = `${renderPagination("part-time", rows.length)}<table><thead><tr>
+    <th class="select-col">选</th><th class="row-no">行</th><th>成片任务</th><th>任务 / 审核</th><th>国家 / 语言</th><th>视频</th><th>发布状态</th>
+  </tr></thead><tbody>${body}</tbody></table>`;
+  document.querySelectorAll("[data-part-time-select-id]").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) state.selectedPartTimeIds.add(checkbox.dataset.partTimeSelectId);
+      else state.selectedPartTimeIds.delete(checkbox.dataset.partTimeSelectId);
+      renderPartTimeSelectionState();
+    });
+  });
+  bindPagination($("partTimeItems"), "part-time", renderPartTimeItems);
+  renderPartTimeSelectionState();
 }
 
 function renderThumbs(urls) {
@@ -703,7 +930,7 @@ function renderMaterialRow(row, extraClass = "", hidden = false) {
   const checked = state.selectedMaterialIds.has(row.record_id) ? "checked" : "";
   return `<tr class="selectable${selected} ${esc(extraClass)}" data-material-id="${esc(row.record_id)}" ${hidden ? "hidden" : ""}>
     <td class="select-col"><input class="material-check" type="checkbox" data-select-id="${esc(row.record_id)}" ${checked}></td>
-    <td class="row-no">${esc(row["行号"] || "")}</td>
+    <td class="row-no">${esc(row["行号"] || "…")}</td>
     <td class="video-cell">
       ${videoUrl ? `<a class="video-link" href="${esc(videoUrl)}" target="_blank">${esc(shortUrl(videoUrl))}</a>` : `<strong>${esc(shortUrl(videoUrl))}</strong>`}
       <div class="subline">${esc(row["商品名称"] || "未填写商品名称")}</div>
@@ -939,9 +1166,11 @@ function renderTasks() {
 }
 
 function renderDoubaoMetrics() {
-  $("metricDoubaoRows").textContent = state.doubaoItems.length;
+  $("metricDoubaoRows").textContent = state.doubaoTotal || state.doubaoItems.length;
   $("metricDoubaoImages").textContent = state.doubaoItems.filter((row) => hasDoubaoImage(row)).length;
   $("metricDoubaoStored").textContent = state.doubaoItems.filter((row) => hasDoubaoStoredImage(row)).length;
+  $("metricDoubaoFaceClear").textContent = state.doubaoItems.filter((row) => row["人脸检测状态"] === "无人脸").length;
+  $("metricDoubaoFaces").textContent = state.doubaoItems.filter((row) => ["含人脸", "疑似人脸"].includes(row["人脸检测状态"])).length;
   $("metricDoubaoPrompts").textContent = state.doubaoItems.filter((row) => String(row["最终视频生成提示词"] || "").trim()).length;
   $("metricDoubaoSynced").textContent = state.doubaoItems.filter((row) => String(row["兼职同步状态"] || "").trim() === "已同步").length;
 }
@@ -958,15 +1187,24 @@ function hasDoubaoStoredImage(row) {
 }
 
 function canTransferDoubaoImage(row) {
+  if (row["可执行图片转存"] !== undefined) return Boolean(row["可执行图片转存"]);
   return Boolean(row["商品图可转存"]);
 }
 
-function doubaoVideoUrl(row) {
-  return String(row["视频生成链接"] || "").trim();
+function canExecuteDoubaoFaceDetection(row) {
+  if (row["可执行人脸检测"] !== undefined) return Boolean(row["可执行人脸检测"]);
+  return Boolean(row["人脸可检测"]);
 }
 
-function isCompletedDoubao(row) {
-  return doubaoVideoUrl(row).startsWith("http");
+function canExecuteDoubaoPrompt(row) {
+  if (row["可执行生成提示词"] !== undefined) return Boolean(row["可执行生成提示词"]);
+  return Boolean(row["可生成提示词"]);
+}
+
+function canExecuteDoubaoSync(row, forceUpdate = false) {
+  if (forceUpdate) return Boolean(row["发布前置条件通过"] ?? row["可同步兼职"]);
+  if (row["可执行同步兼职"] !== undefined) return Boolean(row["可执行同步兼职"]);
+  return Boolean(row["可同步兼职"]);
 }
 
 function renderDoubaoRow(row, extraClass = "") {
@@ -982,7 +1220,21 @@ function renderDoubaoRow(row, extraClass = "") {
   const syncPending = state.pendingJobs.has(syncName);
   const syncRunning = isJobBusy(syncName);
   const syncState = String(row["兼职同步状态"] || "未同步").trim();
+  const faceState = String(row["人脸检测状态"] || "待检测").trim();
+  const faceBusy = isJobBusy("doubao-batch-detect-faces");
+  const deleteBusy = isJobBusy("doubao-batch-delete-face-records");
   const countryMatches = promptCountryMatchesSelection(row);
+  const sourceBlocker = String(row["素材阻塞原因"] || "").trim();
+  const flowStage = String(row["流程阶段"] || "待处理").trim();
+  const flowLockReason = String(row["流程锁定原因"] || "").trim();
+  const canDetectFace = canExecuteDoubaoFaceDetection(row);
+  const canGeneratePrompt = canExecuteDoubaoPrompt(row);
+  const canSyncPartTime = canExecuteDoubaoSync(row);
+  const syncBlocker = !countryMatches
+    ? `请先按${selectedCountryName()}·${selectedCountryLanguageName()}重新生成提示词`
+    : !canSyncPartTime
+      ? flowLockReason || sourceBlocker || "未满足发布前置条件"
+      : "";
   const storedImageUrl = String(row["商品图存储链接"] || "").trim();
   const storageCell = hasDoubaoStoredImage(row)
     ? `<a href="${esc(storedImageUrl)}" target="_blank">对象存储</a>`
@@ -995,6 +1247,7 @@ function renderDoubaoRow(row, extraClass = "") {
     <td class="row-no">${esc(row["行号"] || "")}</td>
     <td>
       <strong>${esc(row["商品名称"] || "未填写商品名称")}</strong>
+      <div class="muted">商品 ID：${esc(row["商品ID"] || "未填写")}</div>
       <div class="muted">${esc(row.record_id || "")}</div>
       ${row["商品链接"] ? `<a href="${esc(row["商品链接"])}" target="_blank">商品链接</a>` : ""}
     </td>
@@ -1012,6 +1265,14 @@ function renderDoubaoRow(row, extraClass = "") {
       ${storageCell}
       <button class="mini ghost${storePending ? " is-pending" : ""}" data-action="doubao-store" data-id="${esc(row.record_id)}" ${storeRunning || !canTransferDoubaoImage(row) ? "disabled" : ""}>${storeLabel}</button>
     </td>
+    <td>
+      ${status(faceState)}
+      ${row["人脸检测说明"] ? `<div class="muted" title="${esc(row["人脸检测说明"])}">${esc(compactErrorMessage(row["人脸检测说明"]))}</div>` : ""}
+      <div class="step-cell">
+        <button class="mini" data-action="doubao-detect-face" data-id="${esc(row.record_id)}" title="${esc(flowLockReason || "检测当前对象存储图片")}" ${faceBusy || !canDetectFace ? "disabled" : ""}>${faceState === "无人脸" ? "重新检测" : "检测人脸"}</button>
+        <button class="mini danger" data-action="doubao-delete-face-record" data-id="${esc(row.record_id)}" ${deleteBusy || !row["可删除含人脸记录"] ? "disabled" : ""}>删除记录</button>
+      </div>
+    </td>
     <td>${prompt ? renderPromptDetail("查看Prompt", prompt) : `<span class="muted">未生成</span>`}</td>
     <td class="publish-cell">
       <strong>${esc(row["标题"] || "")}</strong>
@@ -1021,28 +1282,15 @@ function renderDoubaoRow(row, extraClass = "") {
     <td>
       ${status(syncState)}
       ${row["兼职同步错误"] ? renderInlineError(row["兼职同步错误"], "") : ""}
+      ${!row["兼职同步错误"] && syncBlocker ? `<div class="muted">${esc(syncBlocker)}</div>` : ""}
     </td>
     <td><div class="step-cell">
-      <button class="mini${promptPending ? " is-pending" : ""}" data-action="doubao-generate" data-id="${esc(row.record_id)}" ${promptRunning || !hasDoubaoImage(row) ? "disabled" : ""}>${promptPending ? "提交中" : promptRunning ? "进行中" : prompt ? "重新生成" : "生成提示词"}</button>
-      <button class="mini sync-button${syncPending ? " is-pending" : ""}" data-action="doubao-sync" data-id="${esc(row.record_id)}" title="${countryMatches ? "同步当前国家语言任务" : `请先按${esc(selectedCountryName())}·${esc(selectedCountryLanguageName())}重新生成提示词`}" ${syncRunning || !prompt || !countryMatches ? "disabled" : ""}>${syncPending ? "提交中" : syncRunning ? "同步中" : countryMatches ? "同步兼职表" : "先重生成"}</button>
+      <span class="flow-stage">${esc(flowStage)}</span>
+      ${flowLockReason ? `<small class="flow-lock-reason">${esc(flowLockReason)}</small>` : ""}
+      <button class="mini${promptPending ? " is-pending" : ""}" data-action="doubao-generate" data-id="${esc(row.record_id)}" title="${esc(flowLockReason || "按当前国家语言生成提示词")}" ${promptRunning || !canGeneratePrompt ? "disabled" : ""}>${promptPending ? "提交中" : promptRunning ? "进行中" : prompt ? "重新生成" : "生成提示词"}</button>
+      <button class="mini sync-button${syncPending ? " is-pending" : ""}" data-action="doubao-sync" data-id="${esc(row.record_id)}" title="${esc(syncBlocker || "同步当前国家语言任务")}" ${syncRunning || !canSyncPartTime || !countryMatches ? "disabled" : ""}>${syncPending ? "提交中" : syncRunning ? "同步中" : countryMatches ? "同步兼职表" : "先重生成"}</button>
     </div></td>
   </tr>`;
-}
-
-function renderCompletedDoubaoGroups(rows) {
-  return groupRowsByDate(rows, doubaoDateGroup).map((group) => {
-    const collapsed = state.collapsedDoubaoDateGroups.has(group.key);
-    const groupRows = collapsed ? "" : group.rows.map((row) => renderDoubaoRow(row, "task-history-row")).join("");
-    return `<tr class="task-date-row">
-      <td colspan="10">
-        <button class="date-toggle" type="button" data-doubao-date-toggle="${esc(group.key)}">
-          <span>${esc(group.label)}</span>
-          <strong>${group.rows.length} 条已完成</strong>
-          <em>${collapsed ? "展开" : "收起"}</em>
-        </button>
-      </td>
-    </tr>${groupRows}`;
-  }).join("");
 }
 
 function renderDoubaoItems() {
@@ -1052,33 +1300,13 @@ function renderDoubaoItems() {
     renderDoubaoSelectionState();
     return;
   }
-  const activeRows = state.doubaoItems.filter((row) => !isCompletedDoubao(row));
-  const completedRows = state.doubaoItems.filter((row) => isCompletedDoubao(row));
-  state.doubaoPage = clampPage(state.doubaoPage, activeRows.length, state.doubaoPageSize);
-  const visibleActiveRows = pageRows(activeRows, state.doubaoPage, state.doubaoPageSize);
-  completedRows.forEach((row) => {
-    const group = doubaoDateGroup(row);
-    if (!state.seenDoubaoDateGroups.has(group.key)) {
-      state.seenDoubaoDateGroups.add(group.key);
-      state.collapsedDoubaoDateGroups.add(group.key);
-    }
-  });
-  const body = [
-    renderCompletedDoubaoGroups(completedRows),
-    ...visibleActiveRows.map((row) => renderDoubaoRow(row)),
-  ].join("");
-  $("doubaoItems").innerHTML = `${renderPagination("doubao", activeRows.length)}<table><thead><tr>
-    <th class="select-col">选</th><th class="row-no">行</th><th>商品</th><th>国家 / 语言 / 版本</th><th>图片</th><th>对象存储</th><th>最终视频生成提示词</th><th>发布内容</th><th>兼职同步</th><th>操作</th>
+  state.doubaoPage = clampPage(state.doubaoPage, state.doubaoItems.length, state.doubaoPageSize);
+  const visibleRows = pageRows(state.doubaoItems, state.doubaoPage, state.doubaoPageSize);
+  const body = visibleRows.map((row) => renderDoubaoRow(row)).join("");
+  $("doubaoItems").innerHTML = `${renderPagination("doubao", state.doubaoItems.length)}<table><thead><tr>
+    <th class="select-col">选</th><th class="row-no">行</th><th>商品</th><th>国家 / 语言 / 版本</th><th>图片</th><th>对象存储</th><th>人脸检测</th><th>最终视频生成提示词</th><th>发布内容</th><th>兼职同步</th><th>操作</th>
   </tr></thead><tbody>${body}</tbody></table>`;
 
-  document.querySelectorAll("[data-doubao-date-toggle]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const key = button.dataset.doubaoDateToggle;
-      if (state.collapsedDoubaoDateGroups.has(key)) state.collapsedDoubaoDateGroups.delete(key);
-      else state.collapsedDoubaoDateGroups.add(key);
-      renderDoubaoItems();
-    });
-  });
   document.querySelectorAll("[data-doubao-select-id]").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) state.selectedDoubaoIds.add(checkbox.dataset.doubaoSelectId);
@@ -1088,6 +1316,12 @@ function renderDoubaoItems() {
   });
   document.querySelectorAll("[data-action='doubao-store']").forEach((button) => {
     button.addEventListener("click", () => storeDoubaoImage(button.dataset.id, button));
+  });
+  document.querySelectorAll("[data-action='doubao-detect-face']").forEach((button) => {
+    button.addEventListener("click", () => batchDoubaoDetectFaces(button, [button.dataset.id]));
+  });
+  document.querySelectorAll("[data-action='doubao-delete-face-record']").forEach((button) => {
+    button.addEventListener("click", () => batchDoubaoDeleteFaceRecords(button, [button.dataset.id]));
   });
   document.querySelectorAll("[data-action='doubao-generate']").forEach((button) => {
     button.addEventListener("click", () => generateDoubaoPrompt(button.dataset.id, button));
@@ -1232,16 +1466,94 @@ async function loadTasks(options = {}) {
   markPageLoaded("videos");
 }
 
+async function loadPartTimeItems(options = {}) {
+  const loadVersion = state.partTimeLoadVersion + 1;
+  state.partTimeLoadVersion = loadVersion;
+  const path = `/api/part-time-items?days=${encodeURIComponent(state.partTimeDateRange)}`;
+  const data = await api(tablePath(path, options));
+  if (loadVersion !== state.partTimeLoadVersion) return;
+  state.partTimeItems = data.data;
+  const syncableIds = new Set(state.partTimeItems.filter((row) => row["可同步发布"]).map((row) => row.record_id));
+  state.selectedPartTimeIds = new Set([...state.selectedPartTimeIds].filter((id) => syncableIds.has(id)));
+  renderPartTimeItems();
+  markTableLoaded("partTime", "兼职成片", state.partTimeItems.length);
+  markPageLoaded("part-time");
+}
+
+async function loadDoubaoRangeItems(start, end, options = {}) {
+  const from = Math.min(start, end);
+  const to = Math.max(start, end);
+  const loadVersion = state.doubaoLoadVersion + 1;
+  state.doubaoLoadVersion = loadVersion;
+  state.doubaoLoadedRange = { start: from, end: to };
+  state.doubaoItems = [];
+  state.doubaoRowIndex = {};
+  state.doubaoTotal = 0;
+  renderDoubaoSelectionState();
+  $("doubaoRefreshState").textContent = `正在读取豆包素材表行号 ${from}–${to}…`;
+  $("doubaoItems").innerHTML = `<div class="selected-box" role="status"><strong>正在读取指定行号</strong>只读取 ${from}–${to}，无需等待全表加载。</div>`;
+  const params = new URLSearchParams({
+    start_row: String(from),
+    end_row: String(to),
+  });
+  if (options.force) params.set("force", "1");
+  const data = await api(`/api/doubao-items/range?${params.toString()}`);
+  if (loadVersion !== state.doubaoLoadVersion) return;
+  const rows = Array.isArray(data.data) ? data.data : [];
+  rows.sort((left, right) => {
+    const delta = rowNumber(left) - rowNumber(right);
+    return state.doubaoSortOrder === "oldest" ? delta : -delta;
+  });
+  state.doubaoItems = rows;
+  state.doubaoRowIndex = Object.fromEntries(rows.map((row) => [row.record_id, rowNumber(row)]));
+  state.doubaoTotal = Number(data.total || rows.length);
+  const rowIds = new Set(rows.map((row) => row.record_id).filter(Boolean));
+  state.selectedDoubaoIds = options.select
+    ? rowIds
+    : new Set([...state.selectedDoubaoIds].filter((id) => rowIds.has(id)));
+  state.doubaoPage = 1;
+  renderDoubaoItems();
+  markTableLoaded("doubao", `豆包表行号 ${from}–${to}`, rows.length);
+  markPageLoaded("doubao");
+}
+
 async function loadDoubaoItems(options = {}) {
+  if (state.doubaoLoadedRange && !options.full) {
+    return loadDoubaoRangeItems(
+      state.doubaoLoadedRange.start,
+      state.doubaoLoadedRange.end,
+      options,
+    );
+  }
+  const loadVersion = state.doubaoLoadVersion + 1;
+  state.doubaoLoadVersion = loadVersion;
+  state.doubaoLoadedRange = null;
+  state.doubaoItems = [];
+  state.doubaoRowIndex = {};
+  state.doubaoTotal = 0;
+  renderDoubaoSelectionState();
+  $("doubaoRefreshState").textContent = "正在加载全部豆包素材与飞书真实行号…";
+  $("doubaoItems").innerHTML = `<div class="selected-box" role="status"><strong>正在加载全部豆包素材</strong>数据与真实行号全部加载完成后统一显示，请稍候。</div>`;
   const rows = [];
   const seenPageTokens = new Set();
   let pageToken = "";
+  let total = 0;
+  const rowIndexPromise = api(tablePath("/api/doubao-items/row-index", options)).then(
+    (data) => ({ data }),
+    (error) => ({ error }),
+  );
   while (true) {
     const params = new URLSearchParams({ page_size: "100", offset: String(rows.length) });
+    const finiteDateRange = state.doubaoDateRange !== "0";
+    params.set("order", finiteDateRange ? "latest" : state.doubaoSortOrder);
+    params.set("days", state.doubaoDateRange);
     if (pageToken) params.set("page_token", pageToken);
     if (options.force) params.set("force", "1");
     const data = await api(`/api/doubao-items/page?${params.toString()}`);
+    if (loadVersion !== state.doubaoLoadVersion) return;
     rows.push(...data.data);
+    total = Number(data.total || total || 0);
+    $("doubaoRefreshState").textContent = `正在加载全部豆包素材与飞书真实行号…已读取 ${rows.length}${total ? ` / ${total}` : ""} 条`;
     if (!data.has_more) break;
     const nextPageToken = String(data.page_token || "");
     if (!nextPageToken || seenPageTokens.has(nextPageToken)) {
@@ -1250,11 +1562,25 @@ async function loadDoubaoItems(options = {}) {
     seenPageTokens.add(nextPageToken);
     pageToken = nextPageToken;
   }
+  const rowIndexResult = await rowIndexPromise;
+  if (rowIndexResult.error) throw rowIndexResult.error;
+  if (loadVersion !== state.doubaoLoadVersion) return;
+  state.doubaoRowIndex = rowIndexResult.data.data || {};
+  rows.forEach((row) => {
+    row["行号"] = state.doubaoRowIndex[row.record_id] || "";
+  });
+  rows.sort((left, right) => {
+    const delta = rowNumber(left) - rowNumber(right);
+    return state.doubaoSortOrder === "oldest" ? delta : -delta;
+  });
   state.doubaoItems = rows;
-  const existingIds = new Set(state.doubaoItems.map((row) => row.record_id));
+  state.doubaoTotal = state.doubaoDateRange === "0"
+    ? Math.max(Number(rowIndexResult.data.total || 0), total, rows.length)
+    : rows.length;
+  const existingIds = new Set(rows.map((row) => row.record_id));
   state.selectedDoubaoIds = new Set([...state.selectedDoubaoIds].filter((id) => existingIds.has(id)));
   renderDoubaoItems();
-  markTableLoaded("doubao", "豆包表", state.doubaoItems.length);
+  markTableLoaded("doubao", "豆包表", rows.length);
   markPageLoaded("doubao");
 }
 
@@ -1320,47 +1646,376 @@ async function savePromptEdit() {
   }
 }
 
+const JOB_ACTION_LABELS = {
+  "doubao.store_image": "转存商品图到对象存储",
+  "doubao.batch_store_images": "批量转存商品图",
+  "doubao.detect_face": "检测商品图人脸",
+  "doubao.batch_detect_faces": "批量检测商品图人脸",
+  "doubao.delete_face_record": "删除含人脸素材记录",
+  "doubao.batch_delete_face_records": "批量删除含人脸素材记录",
+  "doubao.generate_prompt": "生成豆包视频提示词",
+  "doubao.batch_generate_prompts": "批量生成豆包视频提示词",
+  "doubao.sync_part_time": "同步到兼职任务表",
+  "doubao.batch_sync_part_time": "批量同步到兼职任务表",
+  "doubao.batch_workflow": "按流程批量处理豆包素材",
+  "publish.sync_doubao": "同步豆包视频到发布表",
+  "publish.sync_part_time": "审核兼职成片并同步发布表",
+  "material.prepare": "处理视频复刻素材",
+  "material.batch_prepare": "批量处理视频复刻素材",
+  "material.analyze_video": "拆解爆款视频",
+  "material.store_image": "转存商品主图",
+  "material.generate_images": "生成商品组图",
+  "material.create_tasks": "创建视频任务",
+  "material.batch_step": "批量处理视频复刻步骤",
+  "material.retry_failed_step": "重试失败素材步骤",
+  "task.generate_video": "生成带货视频",
+  "task.batch_generate_video": "批量生成带货视频",
+  "task.sync_reference_image": "同步视频参考图",
+  "task.batch_sync_reference_images": "批量同步视频参考图",
+  "task.store_manual_video": "转存人工视频",
+  "task.batch_store_manual_videos": "批量转存人工视频",
+  "publish.sync": "同步视频到发布表",
+};
+
+function jobLabel(job) {
+  return JOB_ACTION_LABELS[job.action] || String(job.name || "后台处理任务");
+}
+
+function jobTime(value) {
+  const timestamp = Number(value || 0);
+  if (!timestamp) return "";
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(timestamp));
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}`;
+}
+
+function jobErrorMessage(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "未返回具体失败原因";
+  if (/RecordIdNotFound/i.test(raw)) return "飞书记录不存在（可能已删除或重建）";
+  if (/Data not ready/i.test(raw)) return "上游数据尚未准备好，请稍后重试";
+  if (/Gemini HTTP 502|502 Bad Gateway/i.test(raw)) return "AI 服务临时异常（HTTP 502）";
+  if (/HTTP 403|download failed/i.test(raw)) return "源图片拒绝访问（HTTP 403）";
+  return compactErrorMessage(raw);
+}
+
+function jobOutcome(job, processed, failed, conflicts = 0, blocked = 0) {
+  if (job.cancel_requested && ["queued", "running"].includes(job.status)) {
+    return `<span class="status running">停止中</span>`;
+  }
+  if (job.status === "cancelled") return `<span class="status cancelled">已停止</span>`;
+  if (job.status === "queued") return `<span class="status">排队中</span>`;
+  if (job.status === "running") return `<span class="status running">处理中</span>`;
+  if (job.status === "failed") return `<span class="status failed">任务失败</span>`;
+  if (failed > 0 && processed > 0 && failed >= processed) {
+    return `<span class="status failed">全部失败 ${failed}/${processed}</span>`;
+  }
+  if (failed > 0) return `<span class="status failed">部分失败 ${failed}/${processed || failed}</span>`;
+  if (conflicts > 0) return `<span class="status protected">完成，保护跳过 ${conflicts}</span>`;
+  if (blocked > 0) return `<span class="status protected">完成，流程拦截 ${blocked}</span>`;
+  return `<span class="status done">已完成</span>`;
+}
+
+function jobFailureItems(job) {
+  const result = job.result || {};
+  const items = Array.isArray(result.failures)
+    ? result.failures
+    : Array.isArray(result.results)
+      ? result.results.filter((item) => item?.error || item?.status === "failed")
+      : [];
+  if (job.error && !items.length) return [{ error: job.error }];
+  return items;
+}
+
+function jobConflictItems(job) {
+  const result = job.result || {};
+  return Array.isArray(result.conflict_items) ? result.conflict_items : [];
+}
+
+function jobBlockedItems(job) {
+  const result = job.result || {};
+  return Array.isArray(result.blocked_items) ? result.blocked_items : [];
+}
+
+function jobItemLocation(item, index) {
+  const recordId = item?.record_id ? String(item.record_id) : `第 ${index + 1} 条`;
+  const row = Number(item?.row_number || 0);
+  const sourceTable = String(item?.source_table || "").trim();
+  if (row > 0 && sourceTable) return `${sourceTable}第 ${row} 行（${recordId}）`;
+  return recordId;
+}
+
+const jobCountryLabels = {
+  PH: "菲律宾",
+  MY: "马来西亚",
+  MY_EN: "马来西亚",
+  MX: "墨西哥",
+  TH: "泰国",
+  ID: "印度尼西亚",
+};
+
 function renderJob(job) {
   const result = job.result || {};
   const failed = Number(result.failed || 0);
+  const conflicts = Number(result.conflicts || 0);
+  const blocked = Number(result.blocked || 0);
   const processed = Number(result.processed || 0);
-  const itemErrors = Array.isArray(result.results)
-    ? result.results.map((item) => item?.error).filter(Boolean)
-    : [];
-  const outcome = job.status === "done" && failed > 0
-    ? `<span class="status failed">${job.name === "doubao-batch-store-images" ? "转存失败" : "部分失败"} ${failed}/${processed || failed}</span>`
-    : status(job.status);
-  const detail = itemErrors.length
-    ? `<div class="muted" title="${esc(itemErrors[0])}">${esc(compactErrorMessage(itemErrors[0]))}</div>`
+  const cancelled = Number(result.cancelled || 0);
+  const succeeded = Math.max(0, processed - failed - conflicts - blocked);
+  const failureItems = jobFailureItems(job);
+  const conflictItems = jobConflictItems(job);
+  const blockedItems = jobBlockedItems(job);
+  const failureTotal = Number(result.failure_items_total || failureItems.length || (job.error ? 1 : 0));
+  const conflictTotal = Number(result.conflict_items_total || conflictItems.length);
+  const blockedTotal = Number(result.blocked_items_total || blockedItems.length);
+  const createdAt = jobTime(job.created_at);
+  const finishedAt = jobTime(job.finished_at);
+  const target = job.target || {};
+  const targetCountry = jobCountryLabels[String(target.country_code || "").toUpperCase()] || target.country_code || "";
+  const targetMeta = [
+    target.label,
+    target.record_count ? `${target.record_count} 条` : "",
+    targetCountry,
+  ].filter(Boolean);
+  const targetLine = targetMeta.length
+    ? `<div class="job-target">处理对象：${targetMeta.map(esc).join(" · ")}</div>`
     : "";
-  return `<div class="job">
-    <div><strong>${esc(job.name)}</strong><div class="muted">${esc(job.id)}</div>${detail}</div>
-    <div>${outcome}</div>
-  </div>`;
+  const stats = processed > 0 || cancelled > 0
+    ? `<div class="job-stats"><span>处理 ${processed} 条</span><span class="job-success">成功 ${succeeded} 条</span>${blocked ? `<span class="job-protected">流程拦截 ${blocked} 条</span>` : ""}${conflicts ? `<span class="job-protected">保护跳过 ${conflicts} 条</span>` : ""}${failed ? `<span class="job-failed">失败 ${failed} 条</span>` : ""}${cancelled ? `<span class="job-cancelled">未处理 ${cancelled} 条</span>` : ""}</div>`
+    : "";
+  const cancellableActions = new Set([
+    "doubao.batch_store_images",
+    "doubao.batch_detect_faces",
+    "doubao.batch_delete_face_records",
+    "doubao.batch_generate_prompts",
+    "doubao.batch_sync_part_time",
+    "doubao.batch_workflow",
+    "publish.sync_doubao",
+    "publish.sync_part_time",
+    "material.batch_step",
+    "material.batch_prepare",
+    "task.batch_generate_video",
+    "task.batch_sync_reference_images",
+    "task.batch_store_manual_videos",
+  ]);
+  const canCancel = cancellableActions.has(String(job.action || ""))
+    && ["queued", "running"].includes(job.status);
+  const cancelControl = canCancel
+    ? `<button class="mini job-cancel" type="button" data-action="cancel-job" data-job-id="${esc(job.id)}"${job.cancel_requested ? " disabled" : ""}>${job.cancel_requested ? "停止中" : "停止任务"}</button>`
+    : "";
+  const retry = failureTotal > 0 && !["queued", "running"].includes(job.status)
+    ? `<button class="mini retry-mini job-retry" type="button" data-action="retry-job-failures" data-job-id="${esc(job.id)}">重试失败 ${failureTotal} 条</button>`
+    : "";
+  const failures = failureItems.length
+    ? `<details class="job-failures">
+        <summary>查看 ${failureTotal} 条失败明细${failureItems.length < failureTotal ? `（显示前 ${failureItems.length} 条）` : ""}</summary>
+        <div class="job-failure-actions">${retry}</div>
+        <ol>${failureItems.map((item, index) => {
+          const recordId = esc(jobItemLocation(item, index));
+          const stage = item?.stage ? `${item.stage}：` : "";
+          return `<li><code>${recordId}</code><span>${esc(stage + jobErrorMessage(item?.error || item?.message || job.error))}</span></li>`;
+        }).join("")}</ol>
+      </details>`
+    : "";
+  const protectedItems = conflictItems.length
+    ? `<details class="job-conflicts">
+        <summary>查看 ${conflictTotal} 条保护明细${conflictItems.length < conflictTotal ? `（显示前 ${conflictItems.length} 条）` : ""}</summary>
+        <ol>${conflictItems.map((item, index) => {
+          const recordId = esc(jobItemLocation(item, index));
+          return `<li><code>${recordId}</code><span>${esc(item?.message || "目标记录受保护，未覆盖")}</span></li>`;
+        }).join("")}</ol>
+      </details>`
+    : "";
+  const blockedDetails = blockedItems.length
+    ? `<details class="job-conflicts">
+        <summary>查看 ${blockedTotal} 条流程拦截明细${blockedItems.length < blockedTotal ? `（显示前 ${blockedItems.length} 条）` : ""}</summary>
+        <ol>${blockedItems.map((item, index) => {
+          const recordId = esc(jobItemLocation(item, index));
+          const stage = item?.stage ? `${item.stage}：` : "";
+          return `<li><code>${recordId}</code><span>${esc(stage + (item?.message || "当前记录未通过流程前置检查"))}</span></li>`;
+        }).join("")}</ol>
+      </details>`
+    : "";
+  return `<article class="job">
+    <div class="job-header">
+      <div>
+        <strong class="job-title">${esc(jobLabel(job))}</strong>
+        <div class="job-id">任务 ID · ${esc(job.id)}</div>
+      </div>
+      <div class="job-header-actions">
+        ${jobOutcome(job, processed, failed, conflicts, blocked)}
+        ${cancelControl}
+      </div>
+    </div>
+    <div class="job-times">
+      ${createdAt ? `<span>创建：${createdAt}</span>` : ""}
+      ${finishedAt ? `<span>完成：${finishedAt}</span>` : ""}
+    </div>
+    ${targetLine}
+    ${stats}
+    ${failures}
+    ${protectedItems}
+    ${blockedDetails}
+  </article>`;
+}
+
+async function retryJobFailures(jobId, button = null) {
+  const oldText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交重试中";
+  }
+  try {
+    const data = await api(`/api/jobs/${jobId}/retry-failures`, {
+      method: "POST",
+      body: "{}",
+    });
+    state.submittedJobIds.add(data.job_id);
+    notify(`已重新提交 ${data.retry_count} 条失败记录：${data.job_id}`);
+    await loadJobs();
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+    }
+  }
+}
+
+async function cancelJob(jobId, button = null) {
+  if (!window.confirm("确定停止这个批量任务吗？已完成的记录会保留，未开始的记录不会继续处理。")) return;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "停止中";
+  }
+  try {
+    const data = await api(`/api/jobs/${jobId}/cancel`, {
+      method: "POST",
+      body: "{}",
+    });
+    notify(data.message || "已请求停止任务");
+    await loadJobs();
+  } catch (error) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "停止任务";
+    }
+    throw error;
+  }
+}
+
+function bindJobActions() {
+  document.querySelectorAll("[data-action='retry-job-failures']").forEach((button) => {
+    button.addEventListener("click", () => retryJobFailures(button.dataset.jobId, button));
+  });
+  document.querySelectorAll("[data-action='cancel-job']").forEach((button) => {
+    button.addEventListener("click", () => cancelJob(button.dataset.jobId, button));
+  });
+}
+
+function jobPage(job) {
+  const action = String(job.action || "");
+  if (action === "publish.sync_part_time" || String(job.name || "").startsWith("part-time-")) return "part-time";
+  if (action.startsWith("doubao.") || action === "publish.sync_doubao" || String(job.name || "").startsWith("doubao-")) return "doubao";
+  if (action.startsWith("task.") || action === "publish.sync") return "videos";
+  if (action.startsWith("material.")) return "materials";
+  return "";
+}
+
+function renderJobSummary(jobs) {
+  const running = jobs.filter((job) => ["queued", "running"].includes(job.status)).length;
+  const failed = jobs.filter((job) => job.status === "failed" || Number(job.result?.failed || 0) > 0).length;
+  const target = $("jobSummary");
+  if (!target) return;
+  target.textContent = `最近 ${Math.min(jobs.length, 20)} 条 · 处理中 ${running} · 有失败 ${failed}`;
+}
+
+function runPageDataLoader(page, options = {}) {
+  if (page === "materials") return loadMaterials(options);
+  if (page === "videos") return loadTasks(options);
+  if (page === "doubao") return loadDoubaoItems(options);
+  if (page === "part-time") return loadPartTimeItems(options);
+  if (page === "prompts") return loadPrompts(options);
+  return Promise.resolve();
+}
+
+function pageLoadKey(page) {
+  if (page === "doubao") {
+    const range = state.doubaoLoadedRange;
+    return `${page}:${state.doubaoDateRange}:${state.doubaoSortOrder}:${range ? `${range.start}-${range.end}` : "all"}`;
+  }
+  if (page === "part-time") return `${page}:${state.partTimeDateRange}`;
+  return page;
+}
+
+function loadPageData(page, options = {}) {
+  const key = pageLoadKey(page);
+  const existing = state.pageLoadPromises.get(key);
+  if (existing) return existing;
+  const promise = Promise.resolve(runPageDataLoader(page, options)).finally(() => {
+    if (state.pageLoadPromises.get(key) === promise) state.pageLoadPromises.delete(key);
+  });
+  state.pageLoadPromises.set(key, promise);
+  return promise;
+}
+
+async function refreshStaleActivePage() {
+  const page = state.activePage;
+  if (!state.stalePages.has(page) || !activePageLoaded(page)) return;
+  try {
+    await loadPageData(page, { force: true });
+    state.stalePages.delete(page);
+  } catch (error) {
+    notify(`任务已完成，但网页刷新失败：${error.message || "请手动刷新表格"}`, "error");
+  }
 }
 
 async function loadJobs() {
-  const data = await api("/api/jobs");
-  const previousActiveDoubaoJobIds = new Set(state.jobs
-    .filter((job) => ["queued", "running"].includes(job.status) && String(job.name || "").startsWith("doubao-"))
+  const data = await api("/api/jobs?limit=30");
+  const previousActiveJobIds = new Set(state.jobs
+    .filter((job) => ["queued", "running"].includes(job.status))
     .map((job) => job.id));
-  const completedDoubaoJob = data.data.some((job) => previousActiveDoubaoJobIds.has(job.id)
-    && !["queued", "running"].includes(job.status));
+  const completedJobs = data.data.filter((job) => !["queued", "running"].includes(job.status)
+    && (previousActiveJobIds.has(job.id) || state.submittedJobIds.has(job.id)));
+  completedJobs.forEach((job) => {
+    state.submittedJobIds.delete(job.id);
+    const page = jobPage(job);
+    if (page) state.stalePages.add(page);
+  });
   const nextActiveNames = data.data
     .filter((job) => job.status === "running")
     .map((job) => `${job.name}:${job.id}`)
     .join("|");
-  const nextSnapshot = data.data.map((job) => `${job.id}:${job.name}:${job.status}:${job.error || ""}`).join("|");
+  const nextSnapshot = data.data.map((job) => [
+    job.id,
+    job.name,
+    job.status,
+    job.error || "",
+    job.finished_at || "",
+    job.result?.processed || "",
+    job.result?.failed || "",
+    job.outcome || "",
+    job.target?.label || "",
+  ].join(":")).join("|");
   const activeChanged = nextActiveNames !== state.lastActiveJobNames;
   state.jobs = data.data;
   state.lastActiveJobNames = nextActiveNames;
   if (nextSnapshot !== state.lastJobsSnapshot) {
     state.lastJobsSnapshot = nextSnapshot;
-    $("jobs").innerHTML = data.data.slice().reverse().map(renderJob).join("");
+    const visibleJobs = data.data.slice(-20).reverse();
+    $("jobs").innerHTML = visibleJobs.map(renderJob).join("");
+    bindJobActions();
+    renderJobSummary(visibleJobs);
   }
-  if (completedDoubaoJob && state.activePage === "doubao" && activePageLoaded("doubao")) {
-    await loadDoubaoItems({ force: true });
-  }
+  await refreshStaleActivePage();
   if (!activeChanged) return;
   if (state.activePage === "materials" && activePageLoaded("materials")) renderMaterials();
   if (state.activePage === "videos" && activePageLoaded("videos")) renderTasks();
@@ -1368,9 +2023,11 @@ async function loadJobs() {
 }
 
 async function loadLogs() {
-  const data = await api("/api/logs?limit=120");
+  const data = await api("/api/logs?limit=80");
   const box = $("logs");
-  const nextText = data.data.map((l) => `[${l.timestamp}] [${l.level}] [${l.source}] ${l.message}`).join("\n");
+  const levelLabels = { info: "信息", success: "成功", error: "失败", warning: "警告" };
+  const sourceLabels = { workflow: "业务处理", batch: "批量任务", audit: "操作审计", system: "系统" };
+  const nextText = data.data.map((l) => `[${l.timestamp}] [${levelLabels[l.level] || l.level}] [${sourceLabels[l.source] || l.source}] ${l.message}`).join("\n");
   if (nextText === state.lastLogsSnapshot) return;
   const shouldStick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   state.lastLogsSnapshot = nextText;
@@ -1666,11 +2323,16 @@ async function batchDoubaoStoreImages(button = null) {
     button.classList.add("is-pending");
   }
   try {
-    const data = await api("/api/doubao-items/batch-store-images", {
+    const data = await api("/api/doubao-items/batch-operation", {
       method: "POST",
-      body: JSON.stringify({ record_ids: rows.map((row) => row.record_id), limit: 50 }),
+      body: JSON.stringify({
+        operation: "store_images",
+        record_ids: rows.map((row) => row.record_id),
+        row_numbers: doubaoRowNumberMap(rows),
+        selection_label: doubaoSelectionLabel(rows),
+      }),
     });
-    notify(`已启动商品图批量转存：${data.job_id}`);
+    notify(`已启动 ${rows.length} 条商品图批量转存：${batchJobSummary(data)}`);
     await loadJobs();
   } finally {
     setPendingJob(name, false);
@@ -1682,17 +2344,62 @@ async function batchDoubaoStoreImages(button = null) {
   }
 }
 
-async function batchDoubaoPrompts(button = null) {
-  const name = `doubao-batch-prompts:${state.doubaoCountryCode}`;
+async function batchDoubaoWorkflow(button = null) {
+  const name = "doubao-batch-workflow";
   if (isJobBusy(name)) return;
-  const selectedRows = selectedDoubaoRows();
-  if (!selectedRows.length) {
-    notify("请先勾选要生成提示词的豆包记录", "error");
+  const rows = selectedDoubaoRows();
+  if (!rows.length) {
+    notify("请先勾选要按流程处理的豆包记录", "error");
     return;
   }
-  const rows = selectedRows.filter((row) => hasDoubaoImage(row) && !isJobBusy(`doubao-generate-prompt:${row.record_id}:${state.doubaoCountryCode}`));
+  const forceUpdate = Boolean($("forceDoubaoSyncUpdate")?.checked);
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  try {
+    const data = await api("/api/doubao-items/batch-operation", {
+      method: "POST",
+      body: JSON.stringify({
+        operation: "process_workflow",
+        record_ids: rows.map((row) => row.record_id),
+        row_numbers: doubaoRowNumberMap(rows),
+        country_code: state.doubaoCountryCode,
+        force_update: forceUpdate,
+        selection_label: doubaoSelectionLabel(rows),
+      }),
+    });
+    notify(`已启动 ${rows.length} 条按流程批量处理：${batchJobSummary(data)}，后台会从每条记录的当前步骤继续`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+  }
+}
+
+async function batchDoubaoDetectFaces(button = null, explicitIds = null) {
+  const name = "doubao-batch-detect-faces";
+  if (isJobBusy(name)) return;
+  const sourceRows = explicitIds
+    ? state.doubaoItems.filter((row) => explicitIds.includes(row.record_id))
+    : selectedDoubaoRows();
+  if (!sourceRows.length) {
+    notify("请先勾选要检测人脸的豆包记录", "error");
+    return;
+  }
+  const externalCount = sourceRows.filter((row) => !hasDoubaoStoredImage(row)).length;
+  const rows = sourceRows.filter((row) => canExecuteDoubaoFaceDetection(row));
   if (!rows.length) {
-    notify("已勾选记录里没有可生成提示词的商品图", "error");
+    notify(externalCount
+      ? "所选图片尚未进入自有对象存储，请先执行步骤 1“批量转存”"
+      : "所选记录里没有可检测的商品图", "error");
     return;
   }
   const oldText = button ? button.textContent : "";
@@ -1703,14 +2410,102 @@ async function batchDoubaoPrompts(button = null) {
     button.classList.add("is-pending");
   }
   try {
-    const data = await api("/api/doubao-items/batch-generate-prompts", {
+    const data = await api("/api/doubao-items/batch-operation", {
       method: "POST",
       body: JSON.stringify({
+        operation: "detect_faces",
         record_ids: rows.map((row) => row.record_id),
-        country_code: state.doubaoCountryCode,
+        row_numbers: doubaoRowNumberMap(rows),
+        selection_label: doubaoSelectionLabel(rows),
       }),
     });
-    notify(`已启动 ${rows.length} 条豆包提示词生成：${data.job_id}`);
+    notify(`已启动 ${rows.length} 条人脸检测：${batchJobSummary(data)}`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+    renderDoubaoItems();
+  }
+}
+
+async function batchDoubaoDeleteFaceRecords(button = null, explicitIds = null) {
+  const name = "doubao-batch-delete-face-records";
+  if (isJobBusy(name)) return;
+  const sourceRows = explicitIds
+    ? state.doubaoItems.filter((row) => explicitIds.includes(row.record_id))
+    : selectedDoubaoRows();
+  const rows = sourceRows.filter((row) => row["可删除含人脸记录"]);
+  if (!rows.length) {
+    notify("请先勾选被标记为“含人脸”或“疑似人脸”的记录", "error");
+    return;
+  }
+  if (!window.confirm(`将从豆包视频素材表永久删除 ${rows.length} 条记录，且无法撤销，是否继续？`)) return;
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  try {
+    const data = await api("/api/doubao-items/batch-operation", {
+      method: "POST",
+      body: JSON.stringify({
+        operation: "delete_face_records",
+        record_ids: rows.map((row) => row.record_id),
+        row_numbers: doubaoRowNumberMap(rows),
+        selection_label: doubaoSelectionLabel(rows),
+      }),
+    });
+    notify(`已启动 ${rows.length} 条含人脸记录删除：${batchJobSummary(data)}`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+    renderDoubaoItems();
+  }
+}
+
+async function batchDoubaoPrompts(button = null) {
+  const name = `doubao-batch-prompts:${state.doubaoCountryCode}`;
+  if (isJobBusy(name)) return;
+  const selectedRows = selectedDoubaoRows();
+  if (!selectedRows.length) {
+    notify("请先勾选要生成提示词的豆包记录", "error");
+    return;
+  }
+  const rows = selectedRows.filter((row) => canExecuteDoubaoPrompt(row) && !isJobBusy(`doubao-generate-prompt:${row.record_id}:${state.doubaoCountryCode}`));
+  if (!rows.length) {
+    notify("没有可生成提示词的记录，请先完成步骤 1 转存和步骤 2 人脸检测", "error");
+    return;
+  }
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  try {
+    const data = await api("/api/doubao-items/batch-operation", {
+      method: "POST",
+      body: JSON.stringify({
+        operation: "generate_prompts",
+        record_ids: rows.map((row) => row.record_id),
+        row_numbers: doubaoRowNumberMap(rows),
+        country_code: state.doubaoCountryCode,
+        selection_label: doubaoSelectionLabel(rows),
+      }),
+    });
+    notify(`已启动 ${rows.length} 条豆包提示词生成：${batchJobSummary(data)}`);
     await loadJobs();
   } finally {
     setPendingJob(name, false);
@@ -1729,10 +2524,13 @@ async function batchDoubaoSyncPartTime(button = null) {
   const selectedRows = selectedDoubaoRows();
   const promptRows = selectedRows.filter((row) => String(row["最终视频生成提示词"] || "").trim());
   const forceUpdate = Boolean($("forceDoubaoSyncUpdate")?.checked);
+  const syncSummary = doubaoSyncSelectionSummary(selectedRows, forceUpdate);
   const rows = syncableDoubaoRows(selectedRows, forceUpdate);
   if (!rows.length) {
     const hasSyncedRows = syncableDoubaoRows(selectedRows, true).length > 0;
-    const message = !forceUpdate && hasSyncedRows
+    const message = syncSummary.conflicts && syncSummary.conflicts === selectedRows.length
+      ? `所选 ${syncSummary.conflicts} 条均为同步冲突：对应兼职任务已接单或完成，为保护现有任务不可覆盖`
+      : !forceUpdate && hasSyncedRows
       ? "所选记录均已同步；如需覆盖，请勾选“强制更新已同步”"
       : promptRows.length
       ? `所选提示词不属于${selectedCountryName()}·${selectedCountryLanguageName()}，请先按当前国家语言重新生成`
@@ -1748,15 +2546,19 @@ async function batchDoubaoSyncPartTime(button = null) {
     button.classList.add("is-pending");
   }
   try {
-    const data = await api("/api/doubao-items/batch-sync-part-time", {
+    const data = await api("/api/doubao-items/batch-operation", {
       method: "POST",
       body: JSON.stringify({
+        operation: "sync_part_time",
         record_ids: rows.map((row) => row.record_id),
+        row_numbers: doubaoRowNumberMap(rows),
         country_code: state.doubaoCountryCode,
         force_update: forceUpdate,
+        selection_label: doubaoSelectionLabel(rows),
       }),
     });
-    notify(`已启动 ${rows.length} 条兼职任务同步：${data.job_id}`);
+    const excluded = selectedRows.length - rows.length;
+    notify(`已选 ${selectedRows.length} 条，本次提交 ${rows.length} 条${excluded ? `，排除 ${excluded} 条已同步/冲突/前置检查未通过记录` : ""}：${batchJobSummary(data)}`);
     await loadJobs();
   } finally {
     setPendingJob(name, false);
@@ -1784,20 +2586,97 @@ async function batchDoubaoSyncPublish(button = null) {
     button.classList.add("is-pending");
   }
   try {
-    const data = await api("/api/doubao-items/batch-sync-publish", {
+    const data = await api("/api/doubao-items/batch-operation", {
       method: "POST",
-      body: JSON.stringify({ record_ids: rows.map((row) => row.record_id), limit: 200 }),
+      body: JSON.stringify({
+        operation: "sync_publish",
+        record_ids: rows.map((row) => row.record_id),
+        row_numbers: doubaoRowNumberMap(rows),
+        selection_label: doubaoSelectionLabel(rows),
+        limit: 200,
+      }),
     });
-    const pending = Number(data.readiness.pending_sources || 0);
-    const readyText = `已确认 ${data.readiness.ready_sources} 条素材有 ${data.readiness.eligible_videos} 个可用视频`;
-    notify(pending
-      ? `${readyText}，其余 ${pending} 条视频未生成，已跳过`
-      : `${readyText}，已启动发布表同步`);
+    const readiness = data.readiness || {};
+    const readySources = Number(readiness.ready_sources || 0);
+    const eligibleVideos = Number(readiness.eligible_videos || 0);
+    const pendingSources = Number(readiness.pending_sources || 0);
+    notify(
+      `已选 ${rows.length} 条素材，其中 ${readySources} 条有已完成兼职成片、共 ${eligibleVideos} 个有效视频`
+      + `${pendingSources ? `；其余 ${pendingSources} 条会在运行记录中按行号说明原因` : ""}：${batchJobSummary(data)}`,
+    );
     await loadJobs();
-  } catch (error) {
-    notify(error.message, "error");
   } finally {
     setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+  }
+}
+
+async function batchPartTimeSyncPublish(button = null) {
+  const name = "part-time-batch-sync-publish";
+  if (isJobBusy(name)) return;
+  const rows = selectedPartTimeRows().filter((row) => row["可同步发布"]);
+  if (!rows.length) {
+    notify("请先勾选待审核的兼职成片", "error");
+    return;
+  }
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  try {
+    const data = await api("/api/part-time-items/batch-sync-publish", {
+      method: "POST",
+      body: JSON.stringify({
+        record_ids: rows.map((row) => row.record_id),
+        row_numbers: partTimeRowNumberMap(rows),
+        selection_label: partTimeSelectionLabel(rows),
+        limit: 200,
+      }),
+    });
+    notify(`已完整提交 ${rows.length} 条成片审核发布任务：${batchJobSummary(data)}`);
+    await loadJobs();
+  } catch (error) {
+    notify(error.message || "兼职成片同步发布失败", "error");
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+  }
+}
+
+async function exportDoubaoBatchQueue(button = null) {
+  const selectedRows = selectedDoubaoRows();
+  const rows = selectedRows.slice(0, 200);
+  if (!rows.length) {
+    notify("请先勾选已完成转存、人脸检测和提示词生成的豆包素材", "error");
+    return;
+  }
+  const oldText = button ? button.textContent : "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "正在打包";
+    button.classList.add("is-pending");
+  }
+  try {
+    const filename = await downloadApi("/api/doubao-items/export-batch-queue", {
+      method: "POST",
+      body: JSON.stringify({ record_ids: rows.map((row) => row.record_id) }),
+    });
+    const excluded = selectedRows.length - rows.length;
+    notify(`已导出 ${rows.length} 条任务：${filename}${excluded ? `；另有 ${excluded} 条不满足条件或超过单批上限` : ""}`);
+  } catch (error) {
+    notify(error.message || "豆包素材批量队列导出失败", "error");
+  } finally {
     if (button) {
       button.disabled = false;
       button.textContent = oldText;
@@ -1948,27 +2827,35 @@ $("loadLogs").onclick = loadLogs;
 $("refreshMaterialsTable").onclick = () => refreshTable("refreshMaterialsTable", () => loadMaterials({ force: true }));
 $("refreshTasksTable").onclick = () => refreshTable("refreshTasksTable", () => loadTasks({ force: true }));
 $("refreshDoubaoTable").onclick = () => refreshTable("refreshDoubaoTable", () => loadDoubaoItems({ force: true }));
+$("refreshPartTimeTable").onclick = () => refreshTable("refreshPartTimeTable", () => loadPartTimeItems({ force: true }));
 $("refreshPromptsTable").onclick = () => refreshTable("refreshPromptsTable", () => loadPrompts({ force: true }));
 
 async function loadActivePage(options = {}) {
-  if (state.activePage === "materials") return loadMaterials(options);
-  if (state.activePage === "videos") return loadTasks(options);
-  if (state.activePage === "doubao") return loadDoubaoItems(options);
-  if (state.activePage === "prompts") return loadPrompts(options);
+  return loadPageData(state.activePage, options);
 }
 
 function switchPage(page) {
   state.activePage = page;
   renderPage();
-  if (!activePageLoaded(page)) loadActivePage().catch(() => {});
+  const force = state.stalePages.has(page);
+  if (force || !activePageLoaded(page)) {
+    loadActivePage({ force }).then(() => {
+      state.stalePages.delete(page);
+    }).catch((error) => notify(error.message || "页面数据刷新失败", "error"));
+  }
 }
 
 $("pageRemix").onclick = () => switchPage(state.activePage === "videos" ? "videos" : "materials");
 $("pageMaterials").onclick = () => switchPage("materials");
 $("pageVideos").onclick = () => switchPage("videos");
 $("pageDoubao").onclick = () => switchPage("doubao");
+$("pagePartTime").onclick = () => switchPage("part-time");
 $("pagePrompts").onclick = () => switchPage("prompts");
-$("loadDoubao").onclick = () => loadDoubaoItems({ force: true });
+$("loadDoubao").onclick = () => {
+  state.doubaoLoadedRange = null;
+  loadDoubaoItems({ force: true, full: true }).catch((error) => notify(error.message, "error"));
+};
+$("loadPartTime").onclick = () => loadPartTimeItems({ force: true });
 $("loadPrompts").onclick = () => loadPrompts({ force: true });
 $("addPrompt").onclick = () => {
   state.editingPromptId = "";
@@ -1980,6 +2867,43 @@ $("doubaoCountry").onchange = () => {
   state.doubaoCountryCode = $("doubaoCountry").value;
   localStorage.setItem("viral-remix-doubao-country", state.doubaoCountryCode);
   renderDoubaoItems();
+};
+$("doubaoSortOrder").value = state.doubaoSortOrder;
+$("doubaoSortOrder").onchange = () => {
+  state.doubaoSortOrder = $("doubaoSortOrder").value === "oldest" ? "oldest" : "latest";
+  localStorage.setItem("viral-remix-doubao-sort", state.doubaoSortOrder);
+  state.doubaoPage = 1;
+  state.doubaoItems.sort((left, right) => {
+    const delta = rowNumber(left) - rowNumber(right);
+    return state.doubaoSortOrder === "oldest" ? delta : -delta;
+  });
+  renderDoubaoItems();
+};
+$("doubaoDateRange").value = state.doubaoDateRange;
+$("doubaoDateRange").onchange = () => {
+  state.doubaoDateRange = normalizeDateRange($("doubaoDateRange").value);
+  localStorage.setItem("viral-remix-doubao-date-range", state.doubaoDateRange);
+  state.doubaoLoadedRange = null;
+  state.doubaoPage = 1;
+  state.selectedDoubaoIds.clear();
+  state.loadedPages.delete("doubao");
+  loadPageData("doubao").catch((error) => notify(error.message, "error"));
+};
+$("partTimeSortOrder").value = state.partTimeSortOrder;
+$("partTimeSortOrder").onchange = () => {
+  state.partTimeSortOrder = $("partTimeSortOrder").value === "oldest" ? "oldest" : "latest";
+  localStorage.setItem("viral-remix-part-time-sort", state.partTimeSortOrder);
+  state.partTimePage = 1;
+  renderPartTimeItems();
+};
+$("partTimeDateRange").value = state.partTimeDateRange;
+$("partTimeDateRange").onchange = () => {
+  state.partTimeDateRange = normalizeDateRange($("partTimeDateRange").value);
+  localStorage.setItem("viral-remix-part-time-date-range", state.partTimeDateRange);
+  state.partTimePage = 1;
+  state.selectedPartTimeIds.clear();
+  state.loadedPages.delete("part-time");
+  loadPageData("part-time").catch((error) => notify(error.message, "error"));
 };
 $("forceDoubaoSyncUpdate").onchange = renderDoubaoSelectionState;
 $("promptCountryFilter").onchange = () => {
@@ -2018,11 +2942,26 @@ $("selectAllDoubao").onchange = () => {
   else ids.forEach((id) => state.selectedDoubaoIds.delete(id));
   renderDoubaoItems();
 };
-$("selectDoubaoRange").onclick = selectDoubaoRange;
+$("selectAllPartTime").onchange = () => {
+  const ids = currentVisiblePartTimeRows()
+    .filter((row) => row["可同步发布"])
+    .map((row) => row.record_id);
+  if ($("selectAllPartTime").checked) ids.forEach((id) => state.selectedPartTimeIds.add(id));
+  else ids.forEach((id) => state.selectedPartTimeIds.delete(id));
+  renderPartTimeItems();
+};
+$("selectPartTimeRange").onclick = selectPartTimeRange;
+$("clearPartTimeSelection").onclick = clearPartTimeSelection;
+["partTimeRangeStart", "partTimeRangeEnd"].forEach((id) => {
+  $(id).addEventListener("keydown", (event) => {
+    if (event.key === "Enter") selectPartTimeRange();
+  });
+});
+$("selectDoubaoRange").onclick = () => selectDoubaoRange().catch((error) => notify(error.message, "error"));
 $("clearDoubaoSelection").onclick = clearDoubaoSelection;
 ["doubaoRangeStart", "doubaoRangeEnd"].forEach((id) => {
   $(id).addEventListener("keydown", (event) => {
-    if (event.key === "Enter") selectDoubaoRange();
+    if (event.key === "Enter") selectDoubaoRange().catch((error) => notify(error.message, "error"));
   });
 });
 $("batchAnalyze").onclick = () => runBatchMaterialStep("analyze-video", $("batchAnalyze"));
@@ -2030,9 +2969,14 @@ $("batchStoreImage").onclick = () => runBatchMaterialStep("store-image", $("batc
 $("batchGenerateImages").onclick = () => runBatchMaterialStep("generate-images", $("batchGenerateImages"));
 $("batchCreateTasks").onclick = () => runBatchMaterialStep("create-tasks", $("batchCreateTasks"));
 $("batchDoubaoStoreImages").onclick = () => batchDoubaoStoreImages($("batchDoubaoStoreImages"));
+$("batchDoubaoWorkflow").onclick = () => batchDoubaoWorkflow($("batchDoubaoWorkflow"));
+$("batchDoubaoDetectFaces").onclick = () => batchDoubaoDetectFaces($("batchDoubaoDetectFaces"));
+$("batchDoubaoDeleteFaceRecords").onclick = () => batchDoubaoDeleteFaceRecords($("batchDoubaoDeleteFaceRecords"));
 $("batchDoubaoPrompts").onclick = () => batchDoubaoPrompts($("batchDoubaoPrompts"));
+$("exportDoubaoBatchQueue").onclick = () => exportDoubaoBatchQueue($("exportDoubaoBatchQueue"));
 $("batchDoubaoSyncPartTime").onclick = () => batchDoubaoSyncPartTime($("batchDoubaoSyncPartTime"));
 $("batchDoubaoSyncPublish").onclick = () => batchDoubaoSyncPublish($("batchDoubaoSyncPublish"));
+$("batchPartTimeSyncPublish").onclick = () => batchPartTimeSyncPublish($("batchPartTimeSyncPublish"));
 
 $("batchVideos").onclick = async () => {
   const name = "batch-generate-videos";
