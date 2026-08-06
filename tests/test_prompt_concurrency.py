@@ -82,17 +82,33 @@ class PromptConcurrencyTests(unittest.TestCase):
 
         self.assertEqual(updates, [])
 
-    def test_current_prompt_revision_can_be_saved(self):
+    def test_enabled_prompt_content_is_immutable(self):
         workflow, _, updates, _ = self.make_workflow()
         current = workflow.list_configs()[0]["revision"]
 
-        workflow.update(
-            "prompt-1",
-            {"模板内容": "用户的新模板"},
-            expected_revision=current,
-        )
+        with self.assertRaisesRegex(ValueError, "新版本"):
+            workflow.update(
+                "prompt-1",
+                {"模板内容": "用户的新模板"},
+                expected_revision=current,
+            )
 
-        self.assertEqual(updates[0]["模板内容"], "用户的新模板")
+        self.assertEqual(updates, [])
+
+    def test_once_enabled_prompt_stays_immutable_after_disabling(self):
+        workflow, fields, updates, _ = self.make_workflow()
+        fields["版本已锁定"] = "是"
+        fields["是否启用"] = "停用"
+        current = workflow.list_configs()[0]["revision"]
+
+        with self.assertRaisesRegex(ValueError, "新版本"):
+            workflow.update(
+                "prompt-1",
+                {"模板内容": "改写已使用版本"},
+                expected_revision=current,
+            )
+
+        self.assertEqual(updates, [])
 
     def test_new_prompt_is_saved_as_draft_by_default(self):
         workflow, _, _, records = self.make_workflow()
@@ -108,6 +124,8 @@ class PromptConcurrencyTests(unittest.TestCase):
         self.assertEqual(records[1]["fields"]["Prompt类型"], "豆包视频")
         self.assertEqual(records[1]["fields"]["模板Key"], "doubao_seedance_video_prompt")
         self.assertEqual(records[1]["fields"]["是否启用"], "停用")
+        self.assertEqual(records[1]["fields"]["方案Key"], "current_conversion")
+        self.assertEqual(records[1]["fields"]["执行模式"], "meta_generate")
 
     def test_enabling_new_prompt_disables_active_sibling(self):
         workflow, fields, updates, records = self.make_workflow()
@@ -122,6 +140,7 @@ class PromptConcurrencyTests(unittest.TestCase):
 
         self.assertEqual(fields["是否启用"], "停用")
         self.assertEqual(records[1]["fields"]["是否启用"], "启用")
+        self.assertEqual(records[1]["fields"]["版本已锁定"], "是")
         self.assertIn({"是否启用": "停用"}, updates)
 
     def test_duplicate_version_in_same_country_is_rejected(self):
@@ -154,6 +173,33 @@ class PromptConcurrencyTests(unittest.TestCase):
 
         self.assertEqual(fields["是否启用"], "停用")
         self.assertEqual(records[1]["fields"]["是否启用"], "启用")
+        self.assertEqual(records[1]["fields"]["版本已锁定"], "是")
+
+    def test_same_version_is_allowed_for_different_language_or_category(self):
+        workflow, _, _, records = self.make_workflow()
+
+        workflow.create({
+            "Prompt名称": "马来西亚英语鞋类",
+            "方案Key": "current_conversion",
+            "方案名称": "T1",
+            "执行模式": "meta_generate",
+            "版本": "mx-v1",
+            "目标地区": "墨西哥",
+            "目标语言": "英语",
+            "适用品类": "鞋类",
+            "模板内容": "English shoes",
+        })
+
+        self.assertEqual(len(records), 2)
+
+    def test_legacy_row_maps_to_t1_meta_generate(self):
+        workflow, _, _, _ = self.make_workflow()
+
+        row = workflow.list_configs()[0]
+
+        self.assertEqual(row["方案Key"], "current_conversion")
+        self.assertEqual(row["方案名称"], "T1 当前转化模板")
+        self.assertEqual(row["执行模式"], "meta_generate")
 
 
 if __name__ == "__main__":

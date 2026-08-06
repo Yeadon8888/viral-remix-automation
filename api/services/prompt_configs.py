@@ -11,16 +11,41 @@ from ..prompting import (
 
 
 DOUBAO_PROMPT_KEY = "doubao_seedance_video_prompt"
+DEFAULT_SCHEME_KEY = "current_conversion"
+DEFAULT_SCHEME_NAME = "T1 当前转化模板"
+DEFAULT_EXECUTION_MODE = "meta_generate"
 EDITABLE_FIELDS = (
     "Prompt名称",
+    "模板Key",
+    "方案Key",
+    "方案名称",
+    "执行模式",
     "版本",
     "是否启用",
     "目标地区",
+    "目标语言",
+    "适用品类",
+    "视频时长",
     "模板内容",
+    "输出协议",
     "变量说明",
     "备注",
+    "版本已锁定",
 )
 REQUIRED_FIELDS = ("Prompt名称", "版本", "目标地区", "模板内容")
+IMMUTABLE_VERSION_FIELDS = {
+    "模板Key",
+    "方案Key",
+    "执行模式",
+    "版本",
+    "目标地区",
+    "目标语言",
+    "适用品类",
+    "视频时长",
+    "模板内容",
+    "输出协议",
+    "变量说明",
+}
 
 
 class PromptConflictError(RuntimeError):
@@ -54,11 +79,11 @@ class PromptConfigService:
         fields = self._write_fields(values, creating=True)
         self._validate(fields)
         rows = self.list_configs()
-        key = fields["模板Key"]
-        region = fields["目标地区"]
-        self._ensure_unique_version(rows, key, region, fields["版本"])
+        dimensions = self._dimensions(fields)
+        self._ensure_unique_version(rows, *dimensions, fields["版本"])
         if fields["是否启用"] == "启用":
-            self._disable_siblings(rows, key, region)
+            fields["版本已锁定"] = "是"
+            self._disable_siblings(rows, *dimensions)
         created = self.feishu.create_record(self.settings.prompt_table_id, fields)
         return self._config_row(created)
 
@@ -77,23 +102,31 @@ class PromptConfigService:
             raise PromptConflictError("Prompt 已被其他人修改，请刷新后重新编辑")
         current_row = self._config_row(current)
         merged = {**current_row, **fields}
+        if self._is_locked(current_row):
+            changed_locked_fields = [
+                name
+                for name in IMMUTABLE_VERSION_FIELDS
+                if name in fields and fields[name] != current_row.get(name)
+            ]
+            if changed_locked_fields:
+                raise ValueError("已启用或已使用的 Prompt 内容不可修改，请复制为新版本")
+        if merged.get("是否启用") == "启用":
+            fields["版本已锁定"] = "是"
+            merged["版本已锁定"] = "是"
         self._validate(merged)
         rows = self.list_configs()
-        key = str(merged.get("模板Key") or "").strip()
-        region = str(merged.get("目标地区") or "").strip()
+        dimensions = self._dimensions(merged)
         version = str(merged.get("版本") or "").strip()
         self._ensure_unique_version(
             rows,
-            key,
-            region,
+            *dimensions,
             version,
             exclude_record_id=record_id,
         )
         if merged.get("是否启用") == "启用":
             self._disable_siblings(
                 rows,
-                key,
-                region,
+                *dimensions,
                 exclude_record_id=record_id,
             )
         return self.feishu.update_record(
@@ -160,12 +193,20 @@ class PromptConfigService:
             "Prompt名称": field_value(fields, "Prompt名称", ""),
             "Prompt类型": field_value(fields, "Prompt类型", ""),
             "模板Key": field_value(fields, "模板Key", ""),
+            "方案Key": field_value(fields, "方案Key", DEFAULT_SCHEME_KEY),
+            "方案名称": field_value(fields, "方案名称", DEFAULT_SCHEME_NAME),
+            "执行模式": field_value(fields, "执行模式", DEFAULT_EXECUTION_MODE),
             "版本": field_value(fields, "版本", ""),
             "是否启用": field_value(fields, "是否启用", ""),
             "目标地区": field_value(fields, "目标地区", ""),
+            "目标语言": field_value(fields, "目标语言", ""),
+            "适用品类": field_value(fields, "适用品类", "通用"),
+            "视频时长": field_value(fields, "视频时长", ""),
             "模板内容": field_value(fields, "模板内容", ""),
+            "输出协议": field_value(fields, "输出协议", "json"),
             "变量说明": field_value(fields, "变量说明", ""),
             "备注": field_value(fields, "备注", ""),
+            "版本已锁定": field_value(fields, "版本已锁定", ""),
             "revision": prompt_revision(fields),
         }
 
@@ -182,7 +223,14 @@ class PromptConfigService:
         }
         if creating:
             fields["Prompt类型"] = "豆包视频"
-            fields["模板Key"] = DOUBAO_PROMPT_KEY
+            fields.setdefault("模板Key", DOUBAO_PROMPT_KEY)
+            fields.setdefault("方案Key", DEFAULT_SCHEME_KEY)
+            fields.setdefault("方案名称", DEFAULT_SCHEME_NAME)
+            fields.setdefault("执行模式", DEFAULT_EXECUTION_MODE)
+            fields.setdefault("目标语言", "")
+            fields.setdefault("适用品类", "通用")
+            fields.setdefault("视频时长", "")
+            fields.setdefault("输出协议", "json")
             fields.setdefault("是否启用", "停用")
         return fields
 
@@ -193,6 +241,8 @@ class PromptConfigService:
                 raise ValueError(f"{name}不能为空")
         if fields.get("是否启用") not in {"启用", "停用"}:
             raise ValueError("是否启用只能是：启用 / 停用")
+        if fields.get("执行模式", DEFAULT_EXECUTION_MODE) not in {"meta_generate", "direct_prompt"}:
+            raise ValueError("执行模式只能是：meta_generate / direct_prompt")
         allowed_regions = {"墨西哥", "通用", *prompt_regions()}
         if fields.get("目标地区") not in allowed_regions:
             raise ValueError(f"目标地区只能是：{' / '.join(sorted(allowed_regions))}")
@@ -200,8 +250,10 @@ class PromptConfigService:
     @staticmethod
     def _ensure_unique_version(
         rows: list[dict[str, Any]],
-        key: str,
+        scheme_key: str,
         region: str,
+        language: str,
+        category: str,
         version: str,
         *,
         exclude_record_id: str = "",
@@ -210,8 +262,10 @@ class PromptConfigService:
             if row.get("record_id") == exclude_record_id:
                 continue
             if (
-                str(row.get("模板Key") or "").strip() == key
+                str(row.get("方案Key") or DEFAULT_SCHEME_KEY).strip() == scheme_key
                 and str(row.get("目标地区") or "").strip() == region
+                and str(row.get("目标语言") or "").strip() == language
+                and str(row.get("适用品类") or "通用").strip() == category
                 and str(row.get("版本") or "").strip().casefold() == version.casefold()
             ):
                 raise ValueError(f"版本 {version} 在 {region} 已存在，请使用新版本号")
@@ -219,8 +273,10 @@ class PromptConfigService:
     def _disable_siblings(
         self,
         rows: list[dict[str, Any]],
-        key: str,
+        scheme_key: str,
         region: str,
+        language: str,
+        category: str,
         *,
         exclude_record_id: str = "",
     ) -> None:
@@ -228,8 +284,10 @@ class PromptConfigService:
             if row.get("record_id") == exclude_record_id:
                 continue
             if (
-                str(row.get("模板Key") or "").strip() == key
+                str(row.get("方案Key") or DEFAULT_SCHEME_KEY).strip() == scheme_key
                 and str(row.get("目标地区") or "").strip() == region
+                and str(row.get("目标语言") or "").strip() == language
+                and str(row.get("适用品类") or "通用").strip() == category
                 and str(row.get("是否启用") or "").strip() == "启用"
             ):
                 self.feishu.update_record(
@@ -237,3 +295,19 @@ class PromptConfigService:
                     str(row["record_id"]),
                     {"是否启用": "停用"},
                 )
+
+    @staticmethod
+    def _dimensions(fields: dict[str, Any]) -> tuple[str, str, str, str]:
+        return (
+            str(fields.get("方案Key") or DEFAULT_SCHEME_KEY).strip(),
+            str(fields.get("目标地区") or "").strip(),
+            str(fields.get("目标语言") or "").strip(),
+            str(fields.get("适用品类") or "通用").strip(),
+        )
+
+    @staticmethod
+    def _is_locked(fields: dict[str, Any]) -> bool:
+        return (
+            str(fields.get("版本已锁定") or "").strip() == "是"
+            or str(fields.get("是否启用") or "").strip() == "启用"
+        )

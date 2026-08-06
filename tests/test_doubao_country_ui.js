@@ -43,5 +43,9 @@ test("main navigation separates material processing from part-time review", () =
   assert.match(html, /data-page="prompts"[\s\S]*?<strong>Prompt配置<\/strong>/);
   assert.match(html, /id="addPrompt"[\s\S]*?>新增提示词<\/button>/);
   assert.match(js, /\/api\/prompts" :[\s\S]*?method: isCreating \? "POST"/);
+  assert.match(js, /editPromptSchemeKey/);
+  assert.match(js, /editPromptExecutionMode/);
+  assert.match(js, /data-action="clone-prompt"/);
+  assert.match(js, /Prompt 版本已锁定/);
   assert.doesNotMatch(html, /视频拆解 -&gt;|视频拆解 -> 主图入库/);
 });

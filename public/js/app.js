@@ -16,6 +16,7 @@ const state = {
   seenTaskDateGroups: new Set(),
   editingPromptId: "",
   creatingPrompt: false,
+  promptDraft: null,
   selectedMaterialId: localStorage.getItem("viral-remix-selected-material") || "",
   selectedMaterialIds: new Set(),
   selectedTaskIds: new Set(),
@@ -1349,18 +1350,18 @@ function renderPrompts() {
     return;
   }
   $("prompts").innerHTML = `<table><thead><tr>
-    <th>Prompt</th><th>类型</th><th>Key</th><th>版本</th><th>状态</th><th>地区</th><th>模板内容</th><th>操作</th>
+    <th>Prompt</th><th>方案</th><th>模式</th><th>版本</th><th>状态</th><th>市场 / 品类</th><th>模板内容</th><th>操作</th>
   </tr></thead><tbody>${rows.map((row) => {
     const content = String(row["模板内容"] || "").trim();
     return `<tr>
       <td><strong>${esc(row["Prompt名称"] || "")}</strong><div class="muted">${esc(row.record_id || "")}</div></td>
-      <td>${esc(row["Prompt类型"] || "")}</td>
-      <td><code>${esc(row["模板Key"] || "")}</code></td>
+      <td><strong>${esc(row["方案名称"] || "T1 当前转化模板")}</strong><div class="muted"><code>${esc(row["方案Key"] || "current_conversion")}</code></div></td>
+      <td><code>${esc(row["执行模式"] || "meta_generate")}</code></td>
       <td>${esc(row["版本"] || "")}</td>
       <td>${status(row["是否启用"] || "未设置")}</td>
-      <td>${esc(row["目标地区"] || "")}</td>
+      <td>${esc(row["目标地区"] || "")}<div class="muted">${esc(row["目标语言"] || "通用语言")} · ${esc(row["适用品类"] || "通用")}</div></td>
       <td>${renderPromptDetail("查看模板", content)}<div class="muted">${esc(row["变量说明"] || "")}</div></td>
-      <td><button class="mini" data-action="edit-prompt" data-id="${esc(row.record_id)}">编辑</button></td>
+      <td><button class="mini" data-action="edit-prompt" data-id="${esc(row.record_id)}">编辑</button> <button class="mini secondary" data-action="clone-prompt" data-id="${esc(row.record_id)}">复制新版本</button></td>
     </tr>`;
   }).join("")}</tbody></table>`;
 
@@ -1368,6 +1369,25 @@ function renderPrompts() {
     button.addEventListener("click", () => {
       state.creatingPrompt = false;
       state.editingPromptId = button.dataset.id;
+      renderPromptEditor();
+      $("promptEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  });
+  document.querySelectorAll("[data-action='clone-prompt']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const source = state.prompts.find((item) => item.record_id === button.dataset.id);
+      if (!source) return;
+      state.editingPromptId = "";
+      state.creatingPrompt = true;
+      state.promptDraft = {
+        ...source,
+        record_id: "",
+        revision: "",
+        "Prompt名称": `${source["Prompt名称"] || "Prompt"}-新版本`,
+        "版本": "",
+        "是否启用": "停用",
+        "版本已锁定": "",
+      };
       renderPromptEditor();
       $("promptEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
     });
@@ -1385,17 +1405,24 @@ function renderPromptEditor() {
     ? `${defaultCountry.name}-${defaultCountry.language_name}`
     : defaultRegion;
   const row = state.creatingPrompt
-    ? {
+    ? (state.promptDraft || {
       "Prompt名称": `豆包视频-${defaultNameRegion}-新方案`,
       "Prompt类型": "豆包视频",
       "模板Key": "doubao_seedance_video_prompt",
+      "方案Key": "current_conversion",
+      "方案名称": "T1 当前转化模板",
+      "执行模式": "meta_generate",
       "版本": "",
       "是否启用": "停用",
       "目标地区": defaultRegion,
+      "目标语言": defaultCountry?.language_name || "",
+      "适用品类": "通用",
+      "视频时长": "15",
       "模板内容": "",
+      "输出协议": "json",
       "变量说明": "{product_name} 商品名称\n{product_link} 商品链接",
       "备注": "",
-    }
+    })
     : state.prompts.find((item) => item.record_id === state.editingPromptId);
   if (!row) {
     box.hidden = true;
@@ -1403,6 +1430,10 @@ function renderPromptEditor() {
     return;
   }
   box.hidden = false;
+  const versionLocked = !state.creatingPrompt && (
+    row["版本已锁定"] === "是" || row["是否启用"] === "启用"
+  );
+  const immutableDisabled = versionLocked ? "disabled" : "";
   box.innerHTML = `<div class="editor-head">
     <div>
       <strong>${state.creatingPrompt ? "新增豆包视频提示词" : "编辑 Prompt"}</strong>
@@ -1412,17 +1443,30 @@ function renderPromptEditor() {
   </div>
   <div class="editor-grid">
     <label>Prompt名称<input id="editPromptName" type="text" value="${esc(row["Prompt名称"] || "")}"></label>
-    <label>版本<input id="editPromptVersion" type="text" value="${esc(row["版本"] || "")}"></label>
+    <label>模板 Key<input id="editPromptTemplateKey" type="text" value="${esc(row["模板Key"] || "doubao_seedance_video_prompt")}" ${immutableDisabled}></label>
+    <label>方案 Key<input id="editPromptSchemeKey" type="text" value="${esc(row["方案Key"] || "current_conversion")}" ${immutableDisabled}></label>
+    <label>方案名称<input id="editPromptSchemeName" type="text" value="${esc(row["方案名称"] || "T1 当前转化模板")}"></label>
+    <label>执行模式<select id="editPromptExecutionMode" ${immutableDisabled}>
+      ${["meta_generate", "direct_prompt"].map((item) => `<option value="${item}" ${row["执行模式"] === item ? "selected" : ""}>${item}</option>`).join("")}
+    </select></label>
+    <label>版本<input id="editPromptVersion" type="text" value="${esc(row["版本"] || "")}" ${immutableDisabled}></label>
     <label>状态<select id="editPromptEnabled">
       ${["启用", "停用"].map((item) => `<option value="${item}" ${row["是否启用"] === item ? "selected" : ""}>${item}</option>`).join("")}
     </select></label>
-    <label>地区<select id="editPromptRegion">
+    <label>地区<select id="editPromptRegion" ${immutableDisabled}>
       ${promptRegionOptions().filter((item) => item.value).map((item) => `<option value="${esc(item.value)}" ${row["目标地区"] === item.value ? "selected" : ""}>${esc(item.label)}</option>`).join("")}
     </select></label>
+    <label>目标语言<input id="editPromptLanguage" type="text" value="${esc(row["目标语言"] || "")}" ${immutableDisabled}></label>
+    <label>适用品类<select id="editPromptCategory" ${immutableDisabled}>
+      ${["通用", "鞋类", "服装", "其他"].map((item) => `<option value="${item}" ${row["适用品类"] === item ? "selected" : ""}>${item}</option>`).join("")}
+    </select></label>
+    <label>视频时长（秒）<input id="editPromptDuration" type="number" min="1" value="${esc(row["视频时长"] || "")}" ${immutableDisabled}></label>
+    <label>输出协议<input id="editPromptOutputProtocol" type="text" value="${esc(row["输出协议"] || "json")}" ${immutableDisabled}></label>
   </div>
-  <label class="editor-block">模板内容<textarea id="editPromptContent" rows="18">${esc(row["模板内容"] || "")}</textarea></label>
-  <label class="editor-block">变量说明<textarea id="editPromptVars" rows="3">${esc(row["变量说明"] || "")}</textarea></label>
+  <label class="editor-block">模板内容<textarea id="editPromptContent" rows="18" ${immutableDisabled}>${esc(row["模板内容"] || "")}</textarea></label>
+  <label class="editor-block">变量说明<textarea id="editPromptVars" rows="3" ${immutableDisabled}>${esc(row["变量说明"] || "")}</textarea></label>
   <label class="editor-block">备注<textarea id="editPromptNote" rows="3">${esc(row["备注"] || "")}</textarea></label>
+  ${versionLocked ? `<div class="editor-hint">Prompt 版本已锁定：可更新名称、备注和启停状态；内容变更请使用“复制新版本”。</div>` : ""}
   ${state.creatingPrompt ? `<div class="editor-hint">新模板会先作为草稿保存。如果直接选择“启用”，同一国家当前生效的豆包视频模板会自动停用。</div>` : ""}
   <div class="editor-actions">
     <button id="savePromptEdit" type="button">${state.creatingPrompt ? "新增到飞书" : "保存到飞书"}</button>
@@ -1598,6 +1642,7 @@ async function loadPrompts(options = {}) {
 function closePromptEditor() {
   state.editingPromptId = "";
   state.creatingPrompt = false;
+  state.promptDraft = null;
   renderPromptEditor();
 }
 
@@ -1613,10 +1658,18 @@ async function savePromptEdit() {
   const button = $("savePromptEdit");
   const fields = {
     "Prompt名称": $("editPromptName").value.trim(),
+    "模板Key": $("editPromptTemplateKey").value.trim(),
+    "方案Key": $("editPromptSchemeKey").value.trim(),
+    "方案名称": $("editPromptSchemeName").value.trim(),
+    "执行模式": $("editPromptExecutionMode").value,
     "版本": $("editPromptVersion").value.trim(),
     "是否启用": $("editPromptEnabled").value,
     "目标地区": $("editPromptRegion").value,
+    "目标语言": $("editPromptLanguage").value.trim(),
+    "适用品类": $("editPromptCategory").value,
+    "视频时长": $("editPromptDuration").value.trim(),
     "模板内容": $("editPromptContent").value.trim(),
+    "输出协议": $("editPromptOutputProtocol").value.trim(),
     "变量说明": $("editPromptVars").value.trim(),
     "备注": $("editPromptNote").value.trim(),
   };
@@ -1635,6 +1688,7 @@ async function savePromptEdit() {
     });
     notify(isCreating ? "提示词已新增到飞书" : "Prompt 已保存");
     state.creatingPrompt = false;
+    state.promptDraft = null;
     state.editingPromptId = "";
     await loadPrompts({ force: true });
   } catch (error) {
@@ -2860,6 +2914,7 @@ $("loadPrompts").onclick = () => loadPrompts({ force: true });
 $("addPrompt").onclick = () => {
   state.editingPromptId = "";
   state.creatingPrompt = true;
+  state.promptDraft = null;
   renderPromptEditor();
   $("promptEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
 };
