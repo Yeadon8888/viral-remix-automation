@@ -204,7 +204,7 @@
                 <select id="doubaoCountry" aria-describedby="countryHelp"></select>
               </label>
               <p id="countryHelp">国家与语言会共同决定 Prompt 模板、口播语言和兼职任务归属。</p>
-              <div class="workflow-rule">后端会按当前图片链接校验检测结果；更换图片后必须重新检测。</div>
+              <div class="workflow-rule">人脸检测可按批次跳过；若执行检测，后端会按当前图片链接校验结果，更换图片后需重新选择。</div>
             </div>
             <div class="batch-bar doubao-batch-bar">
               <label class="checkline">
@@ -221,6 +221,14 @@
               </div>
               <strong id="selectedDoubaoCount">已选 0 条</strong>
               <span class="helper-text">批量操作只处理已勾选记录</span>
+              <label class="checkline" title="不勾选时，本次流程会记录为已跳过并继续后续步骤">
+                <input id="requireDoubaoFaceDetection" type="checkbox">
+                <span>需要人脸检测</span>
+              </label>
+              <label class="checkline" title="付费操作；仅处理检测为含人脸或疑似人脸的图片">
+                <input id="repairDoubaoFaces" type="checkbox" disabled>
+                <span>自动白底图修复与复检（付费）</span>
+              </label>
               <button id="batchDoubaoWorkflow" class="sync-button" type="button" title="仅执行步骤 1–3：图片转存、人脸检测、提示词生成、同步兼职表；不包含发布表同步">按流程批量处理</button>
             </div>
             <div class="doubao-workflow" aria-label="豆包素材处理流程">
@@ -231,7 +239,7 @@
               </section>
               <section class="workflow-step">
                 <span class="step-number">2</span>
-                <div><strong>检测商品图人脸</strong><small>仅检测已转存图片；疑似人脸同样阻断</small></div>
+                <div><strong>检测商品图人脸（可选）</strong><small>按流程处理时由上方勾选项决定；疑似人脸同样阻断</small></div>
                 <div class="actions">
                   <button id="batchDoubaoDetectFaces" class="primary" type="button">批量检测</button>
                 </div>

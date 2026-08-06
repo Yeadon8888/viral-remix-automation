@@ -710,6 +710,11 @@ class ViralRemixWorkflow:
         job_id: str | None = None,
         target_records: list[dict[str, Any]] | None = None,
         force_update: bool = False,
+        detect_faces: bool = True,
+        repair_faces: bool = False,
+        repair_checkpoint: dict[str, Any] | None = None,
+        save_repair_checkpoint=None,
+        should_stop=None,
     ) -> dict[str, Any]:
         country = get_country(country_code)
         completed_steps: list[str] = []
@@ -730,9 +735,32 @@ class ViralRemixWorkflow:
                     continue
 
                 if next_action == "detect_face":
-                    stage = "人脸检测"
-                    self.detect_doubao_face(record_id, job_id=job_id)
+                    stage = "人脸检测" if detect_faces else "跳过人脸检测"
+                    if detect_faces:
+                        self.detect_doubao_face(record_id, job_id=job_id)
+                    else:
+                        self.doubao_assets.skip_face_detection(record_id, job_id=job_id)
                     completed_steps.append(stage)
+                    continue
+
+                if next_action == "remove_image" and detect_faces and repair_faces:
+                    stage = "白底图修复与人脸复检"
+                    repair_result = self.generate_doubao_white_background(
+                        record_id,
+                        job_id=job_id,
+                        checkpoint=repair_checkpoint,
+                        save_checkpoint=save_repair_checkpoint,
+                        should_stop=should_stop,
+                    )
+                    completed_steps.append(stage)
+                    if repair_result.get("status") != "完成":
+                        return {
+                            "record_id": record_id,
+                            "status": "blocked",
+                            "stage": stage,
+                            "message": str(repair_result.get("error") or "白底图复检未通过"),
+                            "steps": completed_steps,
+                        }
                     continue
 
                 if next_action == "generate_prompt":

@@ -12,11 +12,15 @@ test("Doubao UI uses one country selector and backend batch endpoints", () => {
   assert.match(html, /id="batchDoubaoSyncPartTime"/);
   assert.match(html, /id="exportDoubaoBatchQueue"[^>]*>导出批量队列 ZIP<\/button>/);
   assert.match(html, /id="batchDoubaoWorkflow"[^>]*>按流程批量处理<\/button>/);
+  assert.match(html, /id="requireDoubaoFaceDetection"/);
+  assert.match(html, /id="repairDoubaoFaces"[^>]*disabled/);
   assert.match(html, /id="batchDoubaoSyncPublish"/);
   assert.match(js, /\/api\/doubao-items\/batch-operation/);
   assert.match(js, /\/api\/doubao-items\/export-batch-queue/);
   assert.match(js, /async function exportDoubaoBatchQueue/);
   assert.match(js, /operation: "process_workflow"/);
+  assert.match(js, /detect_faces: requireFaceDetection/);
+  assert.match(js, /repair_faces: repairFaces/);
   assert.match(js, /function batchJobSummary\(data\)/);
   assert.match(js, /Array\.isArray\(data\.job_ids\)/);
   assert.match(js, /jobIds\.length > 1/);

@@ -42,6 +42,10 @@ def normalize_payload(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         normalized["limit"] = max(1, int(normalized.get("limit") or 1))
     if "force_update" in normalized:
         normalized["force_update"] = normalized.get("force_update") is True
+    if "detect_faces" in normalized:
+        normalized["detect_faces"] = normalized.get("detect_faces") is True
+    if "repair_faces" in normalized:
+        normalized["repair_faces"] = normalized.get("repair_faces") is True and normalized.get("detect_faces") is True
     return normalized
 
 
@@ -81,6 +85,7 @@ def _batch(
     job_id: str | None = None,
     label: str = "",
     row_numbers: dict[str, int] | None = None,
+    resume_paid_checkpoints: bool = False,
 ) -> dict[str, Any]:
     total = len(records)
     workers = min(total, max(1, int(max_workers))) if total else 1
@@ -105,7 +110,8 @@ def _batch(
                 output.setdefault("source_table", "豆包素材表")
             return output
 
-        if record_id in checkpointed:
+        has_resumable_paid_task = resume_paid_checkpoints and checkpointed.get(record_id, {}).get("task_id")
+        if record_id in checkpointed and not has_resumable_paid_task:
             if label:
                 add_log("info", f"[{label} {index + 1}/{total}] 从检查点恢复: {location}", "batch", job_id)
             return with_row_context(checkpointed[record_id])
@@ -289,7 +295,16 @@ def execute_action(
         return result
 
     if action == "doubao.batch_workflow":
+        from api.jobs import job_cancel_requested, job_item_results, save_job_item_result
+
         target_records = work.feishu.list_records(work.settings.part_time_table_id)
+        repair_checkpoints = job_item_results(job_id)
+        face_options = {}
+        if "detect_faces" in data:
+            face_options = {
+                "detect_faces": data.get("detect_faces") is not False,
+                "repair_faces": data.get("repair_faces") is True and data.get("detect_faces") is not False,
+            }
         result = _batch(
             record_ids,
             lambda rid: work.process_doubao_workflow_record(
@@ -298,11 +313,22 @@ def execute_action(
                 job_id=job_id,
                 target_records=target_records,
                 force_update=bool(data.get("force_update")),
+                **face_options,
+                **(
+                    {
+                        "repair_checkpoint": repair_checkpoints.get(rid, {}),
+                        "save_repair_checkpoint": lambda progress, record_id=rid: save_job_item_result(job_id, record_id, progress),
+                        "should_stop": lambda: job_cancel_requested(job_id),
+                    }
+                    if face_options.get("repair_faces")
+                    else {}
+                ),
             ),
             max_workers=_concurrency(work, "batch_sync_concurrency", 2),
             job_id=job_id,
             label="按流程处理",
             row_numbers=row_numbers,
+            resume_paid_checkpoints=face_options.get("repair_faces") is True,
         )
         for status in ("created", "updated", "conflict", "skipped", "blocked"):
             result[status] = sum(1 for item in result["results"] if item.get("status") == status)

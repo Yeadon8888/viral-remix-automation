@@ -1055,6 +1055,9 @@ def batch_doubao_operation():
             payload["country_code"] = country.code
         if operation in {"sync_part_time", "process_workflow"}:
             payload["force_update"] = body.get("force_update") is True
+        if operation == "process_workflow":
+            payload["detect_faces"] = body.get("detect_faces") is True
+            payload["repair_faces"] = body.get("repair_faces") is True and payload["detect_faces"]
         if operation == "sync_publish":
             payload["limit"] = min(max(int(body.get("limit", 200)), 1), 200)
         job_ids.append(enqueue_workflow_action(job_name, action, payload))

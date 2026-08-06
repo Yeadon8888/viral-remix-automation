@@ -2443,6 +2443,9 @@ async function batchDoubaoWorkflow(button = null) {
     return;
   }
   const forceUpdate = Boolean($("forceDoubaoSyncUpdate")?.checked);
+  const requireFaceDetection = Boolean($("requireDoubaoFaceDetection")?.checked);
+  const repairFaces = requireFaceDetection && Boolean($("repairDoubaoFaces")?.checked);
+  if (repairFaces && !window.confirm(`将对检测为含人脸或疑似人脸的记录调用付费白底图模型。当前选择 ${rows.length} 条，是否继续？`)) return;
   const oldText = button ? button.textContent : "";
   setPendingJob(name, true);
   if (button) {
@@ -2459,6 +2462,8 @@ async function batchDoubaoWorkflow(button = null) {
         row_numbers: doubaoRowNumberMap(rows),
         country_code: state.doubaoCountryCode,
         force_update: forceUpdate,
+        detect_faces: requireFaceDetection,
+        repair_faces: repairFaces,
         selection_label: doubaoSelectionLabel(rows),
       }),
     });
@@ -2955,6 +2960,11 @@ $("partTimeDateRange").onchange = () => {
   loadPageData("part-time").catch((error) => notify(error.message, "error"));
 };
 $("forceDoubaoSyncUpdate").onchange = renderDoubaoSelectionState;
+$("requireDoubaoFaceDetection").onchange = () => {
+  const repair = $("repairDoubaoFaces");
+  repair.disabled = !$("requireDoubaoFaceDetection").checked;
+  if (repair.disabled) repair.checked = false;
+};
 $("promptCountryFilter").onchange = () => {
   state.promptCountryFilter = $("promptCountryFilter").value;
   renderPrompts();

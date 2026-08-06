@@ -571,6 +571,46 @@ class JobActionContractTests(unittest.TestCase):
         self.assertEqual(result["status"], "created")
         self.assertEqual(result["steps"], ["图片转存", "人脸检测", "提示词生成", "同步兼职表"])
 
+    def test_doubao_workflow_can_explicitly_skip_face_detection(self):
+        from api.workflow import ViralRemixWorkflow
+
+        calls = []
+        fields = {"商品id": "product-1"}
+        current = {"next_action": "detect_face"}
+
+        class FakeFeishu:
+            def get_record(self, table_id, record_id):
+                return {"record_id": record_id, "fields": fields}
+
+        class FakeAssets:
+            def describe(self, fields):
+                return {"素材下一步": current["next_action"], "素材阻塞原因": "", "可执行生成提示词": True}
+
+            def skip_face_detection(self, record_id, job_id=None):
+                calls.append("skip-face")
+                current["next_action"] = "generate_prompt"
+
+        class FakeWorkflow:
+            settings = type("Settings", (), {"doubao_table_id": "doubao-table"})()
+            feishu = FakeFeishu()
+            doubao_assets = FakeAssets()
+
+            def generate_doubao_prompt(self, record_id, country_code, job_id=None):
+                calls.append("prompt")
+                fields.update({"目标国家": "墨西哥", "目标语言": "西班牙语"})
+                current["next_action"] = "sync_part_time"
+
+            def sync_doubao_to_part_time(self, record_id, country_code, job_id=None, target_records=None, force_update=False):
+                calls.append("sync")
+                return {"record_id": record_id, "status": "created"}
+
+        result = ViralRemixWorkflow.process_doubao_workflow_record(
+            FakeWorkflow(), "rec-1", "MX", target_records=[], detect_faces=False
+        )
+
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(calls, ["skip-face", "prompt", "sync"])
+
     def test_doubao_publish_action_invokes_joined_sync(self):
         from api.jobs.actions import execute_action
 

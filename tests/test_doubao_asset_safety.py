@@ -225,6 +225,22 @@ class DoubaoAssetSafetyTests(unittest.TestCase):
             url,
         )
 
+    def test_explicitly_skipped_face_detection_can_continue(self):
+        url = f"{MANAGED}product.png"
+        service, feishu, _, _ = make_service({
+            "商品id": "1732254358741092079",
+            "商品图存储链接": url,
+            "人脸检测状态": "待检测",
+        })
+
+        result = service.skip_face_detection("record-1")
+        state = service.describe(feishu.fields)
+
+        self.assertEqual(result["status"], "已跳过")
+        self.assertEqual(state["人脸检测状态"], "已跳过")
+        self.assertTrue(state["人脸检测通过"])
+        self.assertEqual(state["素材下一步"], "generate_prompt")
+
     def test_store_invalidates_previous_scan(self):
         service, feishu, storage, _ = make_service({
             "商品图存储链接": "https://img.kalocdn.com/product.png",

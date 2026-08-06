@@ -20,6 +20,7 @@ FACE_PENDING = "待检测"
 FACE_EXTERNAL = "待转存"
 FACE_RUNNING = "检测中"
 FACE_FAILED = "检测失败"
+FACE_SKIPPED = "已跳过"
 FACE_REMOVED = "已移除"
 FLAGGED_FACE_STATES = {FACE_PRESENT, FACE_UNCERTAIN}
 LOCKED_SYNC_STATES = {"已同步", "同步冲突"}
@@ -96,12 +97,13 @@ class DoubaoAssetService:
             FACE_UNCERTAIN,
             FACE_RUNNING,
             FACE_FAILED,
+            FACE_SKIPPED,
         }:
             safety_status = FACE_PENDING
         else:
             safety_status = raw_status
 
-        face_passed = bool(managed and checked_url == stored_url and safety_status == FACE_CLEAR)
+        face_passed = bool(managed and checked_url == stored_url and safety_status in {FACE_CLEAR, FACE_SKIPPED})
         product_id = product_id_from_fields(fields)
         prompt = str(field_value(fields, "最终视频生成提示词", "") or "").strip()
         sync_state = str(field_value(fields, "兼职同步状态", "") or "").strip()
@@ -257,6 +259,27 @@ class DoubaoAssetService:
         if not str(field_value(fields, "最终视频生成提示词", "") or "").strip():
             raise RuntimeError("缺少最终视频生成提示词，请先生成提示词")
         return stored_url
+
+    def skip_face_detection(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
+        record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
+        fields = record.get("fields", {})
+        stored_url = self.require_managed_image(fields)
+        state = self.describe(fields)
+        if state["流程已锁定"]:
+            raise RuntimeError(state["流程锁定原因"])
+        self.feishu.update_record(
+            self.settings.doubao_table_id,
+            record_id,
+            {
+                FACE_STATUS_FIELD: FACE_SKIPPED,
+                FACE_DETAIL_FIELD: "操作员明确选择跳过人脸检测",
+                FACE_TIME_FIELD: now_ms(),
+                FACE_IMAGE_FIELD: url_cell(stored_url),
+                FACE_MODEL_FIELD: "skipped-by-operator",
+            },
+        )
+        add_log("info", f"已按操作员选择跳过豆包商品图人脸检测: {record_id}", "workflow", job_id)
+        return {"record_id": record_id, "status": FACE_SKIPPED, "stored_image_url": stored_url}
 
     def download_managed_image(self, fields: dict[str, Any]) -> tuple[bytes, str, str]:
         stored_url = self.require_managed_image(fields)
