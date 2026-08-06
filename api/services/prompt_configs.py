@@ -2,7 +2,7 @@ import hashlib
 import json
 from typing import Any
 
-from ..countries import prompt_regions
+from ..countries import COUNTRIES, prompt_regions
 from ..feishu import field_value
 from ..prompting import (
     DEFAULT_IMAGE_PROMPTS,
@@ -14,6 +14,10 @@ DOUBAO_PROMPT_KEY = "doubao_seedance_video_prompt"
 DEFAULT_SCHEME_KEY = "current_conversion"
 DEFAULT_SCHEME_NAME = "T1 当前转化模板"
 DEFAULT_EXECUTION_MODE = "meta_generate"
+LANGUAGE_BY_PROMPT_REGION = {
+    country.prompt_region: country.language_name
+    for country in COUNTRIES
+}
 EDITABLE_FIELDS = (
     "Prompt名称",
     "模板Key",
@@ -156,6 +160,8 @@ class PromptConfigService:
         for row in self.list_configs():
             key = str(row.get("模板Key") or "").strip()
             scheme_key = str(row.get("方案Key") or DEFAULT_SCHEME_KEY).strip()
+            target_language = str(row.get("目标语言") or "").strip()
+            category = str(row.get("适用品类") or "通用").strip()
             content = str(row.get("模板内容") or "").strip()
             enabled = str(row.get("是否启用") or "").strip()
             target_region = str(row.get("目标地区") or "").strip()
@@ -164,6 +170,8 @@ class PromptConfigService:
                 or not content
                 or enabled != "启用"
                 or scheme_key != DEFAULT_SCHEME_KEY
+                or category != "通用"
+                or target_language not in {"", LANGUAGE_BY_PROMPT_REGION.get(region, "")}
             ):
                 continue
             rank = (

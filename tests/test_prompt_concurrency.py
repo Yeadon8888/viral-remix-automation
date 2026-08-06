@@ -96,6 +96,33 @@ class PromptConcurrencyTests(unittest.TestCase):
         self.assertEqual(template, "原始模板内容")
         self.assertEqual(version, f"{DOUBAO_PROMPT_KEY}:mx-v1")
 
+    def test_legacy_active_template_ignores_nonmatching_language_and_category(self):
+        workflow, _, _, records = self.make_workflow()
+        for record_id, language, category in (
+            ("wrong-language", "英语", "通用"),
+            ("wrong-category", "西班牙语", "鞋类"),
+        ):
+            records.append({
+                "record_id": record_id,
+                "fields": {
+                    "Prompt名称": record_id,
+                    "Prompt类型": "豆包视频",
+                    "模板Key": DOUBAO_PROMPT_KEY,
+                    "方案Key": "current_conversion",
+                    "执行模式": "meta_generate",
+                    "版本": "other-v1",
+                    "是否启用": "启用",
+                    "目标地区": "墨西哥",
+                    "目标语言": language,
+                    "适用品类": category,
+                    "模板内容": "不应被旧请求选中",
+                },
+            })
+
+        template, _ = workflow.active_template(DOUBAO_PROMPT_KEY, "墨西哥", "fallback")
+
+        self.assertEqual(template, "原始模板内容")
+
     def test_stale_prompt_revision_is_rejected_before_write(self):
         workflow, _, updates, _ = self.make_workflow()
         with self.assertRaises(PromptConflictError):
