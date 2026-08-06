@@ -887,6 +887,16 @@ def generate_doubao_prompt(record_id):
     return jsonify({"success": True, "job_id": job_id})
 
 
+@app.route("/api/doubao-items/<record_id>/category", methods=["PATCH"])
+def update_doubao_category(record_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        data = get_workflow().update_doubao_category(record_id, body.get("category"))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+    return jsonify({"success": True, "data": data})
+
+
 @app.route("/api/doubao-items/<record_id>/generate-white-background", methods=["POST"])
 def generate_doubao_white_background(record_id):
     job_id = enqueue_workflow_action(

@@ -450,6 +450,7 @@ class ViralRemixWorkflow:
                 "行号": index if include_row_numbers else "",
                 "record_id": record.get("record_id"),
                 "商品名称": field_value(fields, "商品名称", ""),
+                "商品品类": field_value(fields, "商品品类", "其他"),
                 "商品链接": field_value(fields, "商品链接", ""),
                 "商品图链接": image_url,
                 "商品图存储链接": stored_image_url,
@@ -641,6 +642,16 @@ class ViralRemixWorkflow:
 
     def store_doubao_image(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         return self.doubao_assets.store_image(record_id, job_id=job_id)
+
+    def update_doubao_category(self, record_id: str, category: str) -> dict[str, Any]:
+        value = str(category or "其他").strip() or "其他"
+        if value not in {"鞋类", "服装", "其他"}:
+            raise ValueError("商品品类只能是：鞋类 / 服装 / 其他")
+        record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
+        state = self.doubao_assets.describe(record.get("fields", {}))
+        if state["流程已锁定"]:
+            raise RuntimeError(state["流程锁定原因"])
+        return self.feishu.update_record(self.settings.doubao_table_id, record_id, {"商品品类": value})
 
     def detect_doubao_face(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         return self.doubao_assets.detect_face(record_id, force=True, job_id=job_id)

@@ -319,6 +319,11 @@ class PublishSyncService:
                 "商品标题": product_title,
                 "商品ID": product_id_from_fields(source_fields),
                 "目标国家": target_country,
+                "目标语言": str(field_value(part_time_fields, "目标语言", "") or field_value(source_fields, "目标语言", "") or "").strip(),
+                "Prompt方案Key": str(field_value(part_time_fields, "Prompt方案Key", "") or field_value(source_fields, "Prompt方案Key", "current_conversion") or "current_conversion").strip(),
+                "Prompt方案名称": str(field_value(part_time_fields, "Prompt方案名称", "") or field_value(source_fields, "Prompt方案名称", "T1 当前转化模板") or "T1 当前转化模板").strip(),
+                "Prompt配置版本": str(field_value(part_time_fields, "Prompt配置版本", "") or field_value(source_fields, "Prompt配置版本", "") or "").strip(),
+                "Prompt执行模式": str(field_value(part_time_fields, "Prompt执行模式", "") or field_value(source_fields, "Prompt执行模式", "meta_generate") or "meta_generate").strip(),
                 "视频链接": video_url,
                 "文案": str(
                     field_value(source_fields, "文案", "") or ""
@@ -599,6 +604,11 @@ class PublishSyncService:
                     "商品标题": product_title,
                     "商品ID": product_id,
                     "目标国家": target_country,
+                    "目标语言": str(field_value(part_time_fields, "目标语言", "") or field_value(source_fields, "目标语言", "") or "").strip(),
+                    "Prompt方案Key": str(field_value(part_time_fields, "Prompt方案Key", "") or field_value(source_fields, "Prompt方案Key", "current_conversion") or "current_conversion").strip(),
+                    "Prompt方案名称": str(field_value(part_time_fields, "Prompt方案名称", "") or field_value(source_fields, "Prompt方案名称", "T1 当前转化模板") or "T1 当前转化模板").strip(),
+                    "Prompt配置版本": str(field_value(part_time_fields, "Prompt配置版本", "") or field_value(source_fields, "Prompt配置版本", "") or "").strip(),
+                    "Prompt执行模式": str(field_value(part_time_fields, "Prompt执行模式", "") or field_value(source_fields, "Prompt执行模式", "meta_generate") or "meta_generate").strip(),
                     "视频链接": video_url,
                     "文案": str(
                         field_value(source_fields, "文案", "") or ""

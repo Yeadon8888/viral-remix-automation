@@ -1276,6 +1276,11 @@ function renderDoubaoRow(row, extraClass = "") {
     <td>
       <strong>${esc(row["商品名称"] || "未填写商品名称")}</strong>
       <div class="muted">商品 ID：${esc(row["商品ID"] || "未填写")}</div>
+      <label class="muted">品类
+        <select data-action="doubao-category" data-id="${esc(row.record_id)}" ${flowLockReason ? "disabled" : ""}>
+          ${["其他", "鞋类", "服装"].map((item) => `<option value="${item}" ${(row["商品品类"] || "其他") === item ? "selected" : ""}>${item}</option>`).join("")}
+        </select>
+      </label>
       <div class="muted">${esc(row.record_id || "")}</div>
       ${row["商品链接"] ? `<a href="${esc(row["商品链接"])}" target="_blank">商品链接</a>` : ""}
     </td>
@@ -1346,6 +1351,20 @@ function renderDoubaoItems() {
   });
   document.querySelectorAll("[data-action='doubao-store']").forEach((button) => {
     button.addEventListener("click", () => storeDoubaoImage(button.dataset.id, button));
+  });
+  document.querySelectorAll("[data-action='doubao-category']").forEach((select) => {
+    select.addEventListener("change", async () => {
+      try {
+        await api(`/api/doubao-items/${select.dataset.id}/category`, {
+          method: "PATCH",
+          body: JSON.stringify({ category: select.value }),
+        });
+        await loadDoubaoItems({ force: true });
+      } catch (error) {
+        notify(error.message, "error");
+        await loadDoubaoItems({ force: true });
+      }
+    });
   });
   document.querySelectorAll("[data-action='doubao-detect-face']").forEach((button) => {
     button.addEventListener("click", () => batchDoubaoDetectFaces(button, [button.dataset.id]));
