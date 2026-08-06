@@ -132,18 +132,18 @@ test("part-time sync button explains the exact publish prerequisite blocker", ()
   assert.match(html, /缺少商品 ID，不能同步到兼职表/);
 });
 
-test("Doubao page names storage and flagged-record batch actions clearly", () => {
+test("Doubao page removes destructive flagged-record actions", () => {
   const root = path.join(__dirname, "..");
   const html = fs.readFileSync(path.join(root, "public", "index.html"), "utf8");
 
   assert.match(html, /id="batchDoubaoStoreImages"[^>]*>批量转存<\/button>/);
   assert.match(html, /id="batchDoubaoDetectFaces"/);
-  assert.match(html, /id="batchDoubaoDeleteFaceRecords"[^>]*>删除标记记录<\/button>/);
+  assert.doesNotMatch(html, /id="batchDoubaoDeleteFaceRecords"/);
   assert.match(html, /id="batchDoubaoSyncPublish"[^>]*>同步到发布表<\/button>/);
   assert.match(html, /不包含在“按流程批量处理”中/);
 });
 
-test("flagged face action deletes the whole record instead of only its image", () => {
+test("flagged face action offers paid white-background repair instead of deletion", () => {
   const context = loadApp();
   const html = vm.runInContext(`renderDoubaoRow({
     record_id: "record-face",
@@ -152,12 +152,17 @@ test("flagged face action deletes the whole record instead of only its image", (
     "商品图存储链接": "https://vc-upload.example.com/product/face.png",
     "商品图已入库": true,
     "人脸检测状态": "含人脸",
-    "可删除含人脸记录": true
+    "可生成白底图": true
   })`, context);
 
-  assert.match(html, /data-action="doubao-delete-face-record"/);
-  assert.match(html, />删除记录<\/button>/);
-  assert.doesNotMatch(html, />移除图片<\/button>/);
+  assert.match(html, /data-action="doubao-generate-white-background"/);
+  assert.match(html, />生成白底图<\/button>/);
+  assert.doesNotMatch(html, /data-action="doubao-delete-face-record"/);
+  assert.doesNotMatch(html, />删除记录<\/button>/);
+  const source = fs.readFileSync("public/js/app.js", "utf8");
+  assert.match(source, /generateDoubaoWhiteBackground/);
+  assert.match(source, /generate-white-background/);
+  assert.match(source, /付费图片模型/);
 });
 
 test("completed batch with item failures is shown as failed with its reason", () => {

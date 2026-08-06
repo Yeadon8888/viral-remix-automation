@@ -68,6 +68,15 @@ class Settings:
     gemini_request_concurrency: int = env_int("GEMINI_REQUEST_CONCURRENCY", 6)
     gemini_min_interval_seconds: float = env_float("GEMINI_MIN_INTERVAL_SECONDS", 0.25)
 
+    tokensfactory_api_key: str = env("TOKENSFACTORY_API_KEY")
+    tokensfactory_base_url: str = env("TOKENSFACTORY_BASE_URL", "https://tokensfactory.cc").rstrip("/")
+    tokensfactory_image_model: str = env("TOKENSFACTORY_IMAGE_MODEL", "nano-banana-2")
+    tokensfactory_image_aspect_ratio: str = env("TOKENSFACTORY_IMAGE_ASPECT_RATIO", "1:1")
+    tokensfactory_image_resolution: str = env("TOKENSFACTORY_IMAGE_RESOLUTION", "2k")
+    tokensfactory_image_timeout_seconds: int = env_int("TOKENSFACTORY_IMAGE_TIMEOUT_SECONDS", 900)
+    tokensfactory_poll_interval_seconds: float = env_float("TOKENSFACTORY_POLL_INTERVAL_SECONDS", 2.0)
+    tokensfactory_request_retries: int = env_int("TOKENSFACTORY_REQUEST_RETRIES", 2)
+
     newtoken_base_url: str = env("NEWTOKEN_IMAGE_BASE_URL", "https://api.newtoken.club").rstrip("/")
     newtoken_api_key: str = env("NEWTOKEN_IMAGE_API_KEY")
     newtoken_model: str = env("NEWTOKEN_IMAGE_MODEL", "gpt-image-2-1K")

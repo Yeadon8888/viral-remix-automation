@@ -28,6 +28,7 @@ from .services import (
     PromptConflictError,
     PublishSyncService,
     ViralVideoAssetService,
+    WhiteBackgroundService,
 )
 from .services.prompt_configs import DOUBAO_PROMPT_KEY
 from .services.batch_queue_export import (
@@ -37,6 +38,7 @@ from .services.batch_queue_export import (
     build_batch_queue_package,
 )
 from .tikhub import TikHubClient
+from .tokensfactory import TokensFactoryImageClient
 
 MATERIAL_PROMPT_FIELD = "视频生成Prompt"
 DOUBAO_FALLBACK_PROMPT = "你是 TikTok 马来西亚带货视频 AI 导演。根据商品图生成适合马来西亚市场的 Seedance 视频生成提示词；中文描述画面，口播和字幕使用马来语，严格保持商品一致性。"
@@ -241,6 +243,7 @@ class ViralRemixWorkflow:
         self.gemini = GeminiClient(settings)
         self.image_client = NewTokenImageClient(settings)
         self.cpa = CpaVideoClient(settings)
+        self.tokensfactory = TokensFactoryImageClient(settings)
         self.video_assets = ViralVideoAssetService(settings, self.feishu, self.r2, self.tikhub)
         self.part_time_sync = PartTimeSyncService(settings, self.feishu, ledger=ledger)
         self.doubao_assets = DoubaoAssetService(
@@ -248,6 +251,14 @@ class ViralRemixWorkflow:
             self.feishu,
             self.r2,
             self.gemini,
+            self._download_url,
+        )
+        self.white_background = WhiteBackgroundService(
+            settings,
+            self.feishu,
+            self.r2,
+            self.doubao_assets,
+            self.tokensfactory,
             self._download_url,
         )
         self.doubao_record_index = DoubaoRecordIndex(settings, self.feishu)
@@ -425,6 +436,12 @@ class ViralRemixWorkflow:
                 attachment or image_url.startswith("http") or stored_image_url.startswith("http")
             )
             asset_state = self.doubao_assets.describe(fields)
+            white_background_service = getattr(self, "white_background", None)
+            white_background_state = (
+                white_background_service.describe_eligibility(fields)
+                if white_background_service
+                else {}
+            )
             video_url = first_available_field(fields, (DOLA_VIDEO_FIELD, "视频生成链接", "视频链接"), "")
             dola_status = str(field_value(fields, DOLA_STATUS_FIELD, "") or "").strip()
             if not dola_status:
@@ -444,6 +461,7 @@ class ViralRemixWorkflow:
                 "商品图数量": len(fields.get("商品图") or []),
                 "商品图文件名": (attachment or {}).get("name", ""),
                 **asset_state,
+                **white_background_state,
                 "最终视频生成提示词": field_value(fields, "最终视频生成提示词", ""),
                 "标题": field_value(fields, "标题", ""),
                 "文案": field_value(fields, "文案", ""),
@@ -626,6 +644,9 @@ class ViralRemixWorkflow:
 
     def detect_doubao_face(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         return self.doubao_assets.detect_face(record_id, force=True, job_id=job_id)
+
+    def generate_doubao_white_background(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
+        return self.white_background.generate(record_id, job_id=job_id)
 
     def delete_doubao_face_record(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         result = self.doubao_assets.delete_flagged_record(record_id, job_id=job_id)

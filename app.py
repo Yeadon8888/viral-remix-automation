@@ -856,6 +856,16 @@ def generate_doubao_prompt(record_id):
     return jsonify({"success": True, "job_id": job_id})
 
 
+@app.route("/api/doubao-items/<record_id>/generate-white-background", methods=["POST"])
+def generate_doubao_white_background(record_id):
+    job_id = enqueue_workflow_action(
+        f"doubao-generate-white-background:{record_id}",
+        "doubao.generate_white_background",
+        {"record_id": record_id},
+    )
+    return jsonify({"success": True, "job_id": job_id})
+
+
 @app.route("/api/doubao-items/<record_id>/sync-part-time", methods=["POST"])
 def sync_doubao_part_time(record_id):
     body = request.get_json(silent=True) or {}
@@ -1063,7 +1073,14 @@ def batch_doubao_operation():
     }
     if readiness is not None:
         response["readiness"] = readiness
-    return jsonify(response)
+    result = jsonify(response)
+    if operation in {"delete_face_records", "remove_face_images"}:
+        response["deprecated"] = True
+        response["deprecation_message"] = "含人脸记录删除操作已废弃，请使用白底图修复"
+        result = jsonify(response)
+        result.headers["Deprecation"] = "true"
+        result.headers["Warning"] = '299 - "Deprecated face-record deletion; use white-background repair"'
+    return result
 
 
 def validated_doubao_batch_request():

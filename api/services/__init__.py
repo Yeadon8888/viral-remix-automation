@@ -8,6 +8,7 @@ from .prompt_configs import (
     PromptConflictError,
 )
 from .publish_sync import PublishSyncService
+from .white_background import WhiteBackgroundService
 
 __all__ = [
     "DoubaoAssetService",
@@ -18,5 +19,6 @@ __all__ = [
     "PromptConflictError",
     "PublishSyncService",
     "ViralVideoAssetService",
+    "WhiteBackgroundService",
     "product_id_from_fields",
 ]

@@ -1223,7 +1223,11 @@ function renderDoubaoRow(row, extraClass = "") {
   const syncState = String(row["兼职同步状态"] || "未同步").trim();
   const faceState = String(row["人脸检测状态"] || "待检测").trim();
   const faceBusy = isJobBusy("doubao-batch-detect-faces");
-  const deleteBusy = isJobBusy("doubao-batch-delete-face-records");
+  const whiteBackgroundName = `doubao-generate-white-background:${row.record_id}`;
+  const whiteBackgroundBusy = isJobBusy(whiteBackgroundName) || state.pendingJobs.has(whiteBackgroundName);
+  const whiteBackgroundStatus = String(row["白底图处理状态"] || "").trim();
+  const canGenerateWhiteBackground = Boolean(row["可生成白底图"]);
+  const whiteBackgroundBlocker = String(row["白底图阻断原因"] || "").trim();
   const countryMatches = promptCountryMatchesSelection(row);
   const sourceBlocker = String(row["素材阻塞原因"] || "").trim();
   const flowStage = String(row["流程阶段"] || "待处理").trim();
@@ -1269,9 +1273,11 @@ function renderDoubaoRow(row, extraClass = "") {
     <td>
       ${status(faceState)}
       ${row["人脸检测说明"] ? `<div class="muted" title="${esc(row["人脸检测说明"])}">${esc(compactErrorMessage(row["人脸检测说明"]))}</div>` : ""}
+      ${whiteBackgroundStatus ? `<div class="muted">白底图：${esc(whiteBackgroundStatus)}</div>` : ""}
+      ${row["白底图处理错误"] ? `<div class="muted">${esc(compactErrorMessage(row["白底图处理错误"]))}</div>` : ""}
       <div class="step-cell">
         <button class="mini" data-action="doubao-detect-face" data-id="${esc(row.record_id)}" title="${esc(flowLockReason || "检测当前对象存储图片")}" ${faceBusy || !canDetectFace ? "disabled" : ""}>${faceState === "无人脸" ? "重新检测" : "检测人脸"}</button>
-        <button class="mini danger" data-action="doubao-delete-face-record" data-id="${esc(row.record_id)}" ${deleteBusy || !row["可删除含人脸记录"] ? "disabled" : ""}>删除记录</button>
+        <button class="mini secondary" data-action="doubao-generate-white-background" data-id="${esc(row.record_id)}" title="${esc(whiteBackgroundBlocker || "付费生成白底商品图并自动复检")}" ${whiteBackgroundBusy || !canGenerateWhiteBackground ? "disabled" : ""}>${whiteBackgroundBusy ? "处理中" : "生成白底图"}</button>
       </div>
     </td>
     <td>${prompt ? renderPromptDetail("查看Prompt", prompt) : `<span class="muted">未生成</span>`}</td>
@@ -1321,8 +1327,8 @@ function renderDoubaoItems() {
   document.querySelectorAll("[data-action='doubao-detect-face']").forEach((button) => {
     button.addEventListener("click", () => batchDoubaoDetectFaces(button, [button.dataset.id]));
   });
-  document.querySelectorAll("[data-action='doubao-delete-face-record']").forEach((button) => {
-    button.addEventListener("click", () => batchDoubaoDeleteFaceRecords(button, [button.dataset.id]));
+  document.querySelectorAll("[data-action='doubao-generate-white-background']").forEach((button) => {
+    button.addEventListener("click", () => generateDoubaoWhiteBackground(button.dataset.id, button));
   });
   document.querySelectorAll("[data-action='doubao-generate']").forEach((button) => {
     button.addEventListener("click", () => generateDoubaoPrompt(button.dataset.id, button));
@@ -2301,6 +2307,36 @@ async function generateDoubaoPrompt(id, button = null) {
   }
 }
 
+async function generateDoubaoWhiteBackground(id, button = null) {
+  const name = `doubao-generate-white-background:${id}`;
+  if (isJobBusy(name) || state.pendingJobs.has(name)) return;
+  if (!window.confirm("生成白底图会调用付费图片模型，成功后将直接替换当前商品图存储链接并自动复检人脸。是否继续？")) return;
+  const oldText = button ? button.textContent : "";
+  setPendingJob(name, true);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "提交中";
+    button.classList.add("is-pending");
+  }
+  renderDoubaoItems();
+  try {
+    const data = await api(`/api/doubao-items/${id}/generate-white-background`, {
+      method: "POST",
+      body: "{}",
+    });
+    notify(`已启动付费白底图任务：${data.job_id}`);
+    await loadJobs();
+  } finally {
+    setPendingJob(name, false);
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+      button.classList.remove("is-pending");
+    }
+    renderDoubaoItems();
+  }
+}
+
 async function syncDoubaoPartTime(id, button = null) {
   const name = `doubao-sync-part-time:${id}:${state.doubaoCountryCode}`;
   if (isJobBusy(name)) return;
@@ -2474,48 +2510,6 @@ async function batchDoubaoDetectFaces(button = null, explicitIds = null) {
       }),
     });
     notify(`已启动 ${rows.length} 条人脸检测：${batchJobSummary(data)}`);
-    await loadJobs();
-  } finally {
-    setPendingJob(name, false);
-    if (button) {
-      button.disabled = false;
-      button.textContent = oldText;
-      button.classList.remove("is-pending");
-    }
-    renderDoubaoItems();
-  }
-}
-
-async function batchDoubaoDeleteFaceRecords(button = null, explicitIds = null) {
-  const name = "doubao-batch-delete-face-records";
-  if (isJobBusy(name)) return;
-  const sourceRows = explicitIds
-    ? state.doubaoItems.filter((row) => explicitIds.includes(row.record_id))
-    : selectedDoubaoRows();
-  const rows = sourceRows.filter((row) => row["可删除含人脸记录"]);
-  if (!rows.length) {
-    notify("请先勾选被标记为“含人脸”或“疑似人脸”的记录", "error");
-    return;
-  }
-  if (!window.confirm(`将从豆包视频素材表永久删除 ${rows.length} 条记录，且无法撤销，是否继续？`)) return;
-  const oldText = button ? button.textContent : "";
-  setPendingJob(name, true);
-  if (button) {
-    button.disabled = true;
-    button.textContent = "提交中";
-    button.classList.add("is-pending");
-  }
-  try {
-    const data = await api("/api/doubao-items/batch-operation", {
-      method: "POST",
-      body: JSON.stringify({
-        operation: "delete_face_records",
-        record_ids: rows.map((row) => row.record_id),
-        row_numbers: doubaoRowNumberMap(rows),
-        selection_label: doubaoSelectionLabel(rows),
-      }),
-    });
-    notify(`已启动 ${rows.length} 条含人脸记录删除：${batchJobSummary(data)}`);
     await loadJobs();
   } finally {
     setPendingJob(name, false);
@@ -3026,7 +3020,6 @@ $("batchCreateTasks").onclick = () => runBatchMaterialStep("create-tasks", $("ba
 $("batchDoubaoStoreImages").onclick = () => batchDoubaoStoreImages($("batchDoubaoStoreImages"));
 $("batchDoubaoWorkflow").onclick = () => batchDoubaoWorkflow($("batchDoubaoWorkflow"));
 $("batchDoubaoDetectFaces").onclick = () => batchDoubaoDetectFaces($("batchDoubaoDetectFaces"));
-$("batchDoubaoDeleteFaceRecords").onclick = () => batchDoubaoDeleteFaceRecords($("batchDoubaoDeleteFaceRecords"));
 $("batchDoubaoPrompts").onclick = () => batchDoubaoPrompts($("batchDoubaoPrompts"));
 $("exportDoubaoBatchQueue").onclick = () => exportDoubaoBatchQueue($("exportDoubaoBatchQueue"));
 $("batchDoubaoSyncPartTime").onclick = () => batchDoubaoSyncPartTime($("batchDoubaoSyncPartTime"));
