@@ -185,9 +185,20 @@ def execute_action(
     country_code = data.get("country_code", "MY")
     row_numbers = data.get("row_numbers") if isinstance(data.get("row_numbers"), dict) else {}
 
+    if action == "doubao.generate_white_background":
+        from api.jobs import job_cancel_requested, job_item_results, save_job_item_result
+
+        checkpoint = job_item_results(job_id).get(record_id, {})
+        return work.generate_doubao_white_background(
+            record_id,
+            job_id=job_id,
+            checkpoint=checkpoint,
+            save_checkpoint=lambda progress: save_job_item_result(job_id, record_id, progress),
+            should_stop=lambda: job_cancel_requested(job_id),
+        )
+
     single_actions = {
         "doubao.detect_face": lambda: work.detect_doubao_face(record_id, job_id=job_id),
-        "doubao.generate_white_background": lambda: work.generate_doubao_white_background(record_id, job_id=job_id),
         "doubao.generate_prompt": lambda: work.generate_doubao_prompt(record_id, country_code, job_id=job_id),
         "doubao.delete_face_record": lambda: work.delete_doubao_face_record(record_id, job_id=job_id),
         "doubao.remove_face_image": lambda: work.delete_doubao_face_record(record_id, job_id=job_id),

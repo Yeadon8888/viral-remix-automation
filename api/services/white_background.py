@@ -76,34 +76,78 @@ class WhiteBackgroundService:
             raise RuntimeError(state["白底图阻断原因"])
         return str(field_value(fields, "商品图存储链接", "") or "").strip()
 
-    def generate(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
+    def generate(
+        self,
+        record_id: str,
+        job_id: str | None = None,
+        *,
+        checkpoint: dict[str, Any] | None = None,
+        save_checkpoint=None,
+        should_stop=None,
+    ) -> dict[str, Any]:
+        progress = dict(checkpoint or {})
+
+        def save(**patch):
+            progress.update(patch)
+            if save_checkpoint:
+                save_checkpoint(dict(progress))
+
         record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
         fields = record.get("fields", {})
-        original_url = self.require_eligible(fields)
+        current_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
+        checkpoint_original_url = str(progress.get("original_url") or "").strip()
+        committed_url = str(progress.get("committed_url") or "").strip()
         model = str(getattr(self.settings, "tokensfactory_image_model", "nano-banana-2") or "nano-banana-2")
+        if committed_url:
+            if current_url != committed_url:
+                raise RuntimeError("白底图恢复点与当前商品图不一致")
+            return self._finish_recheck(
+                record_id,
+                committed_url,
+                str(progress.get("task_id") or "").strip(),
+                model,
+                job_id,
+                save,
+            )
+        original_url = self.require_eligible(fields)
+        if checkpoint_original_url and checkpoint_original_url != current_url:
+            raise RuntimeError("商品图已变更，不能恢复旧的白底图任务")
         self._update_status(record_id, "生成中", model=model)
         add_log("info", f"开始生成白底商品图: {record_id}", "workflow", job_id)
         try:
-            generated = self.generator.generate_white_background(
-                original_url,
-                WHITE_BACKGROUND_PROMPT,
-            )
-            result_url = str(generated.get("image_url") or "").strip()
+            task_id = str(progress.get("task_id") or "").strip()
+            if not task_id:
+                task_id = self.generator.create_task(original_url, WHITE_BACKGROUND_PROMPT)
+                save(stage="生成中", task_id=task_id, original_url=original_url)
+            result_url = str(progress.get("result_url") or "").strip()
+            if not result_url:
+                result_url = self.generator.wait_for_result(task_id, should_stop=should_stop)
+                save(stage="生成完成", result_url=result_url)
             if not result_url.startswith(("http://", "https://")):
                 raise RuntimeError("白底图服务未返回可用的图片链接")
-            data, declared_mime = self.download_url(result_url)
             max_bytes = max(1, int(getattr(self.settings, "face_image_max_bytes", 20 * 1024 * 1024)))
-            if not data:
-                raise RuntimeError("白底图下载结果为空")
-            if len(data) > max_bytes:
-                raise RuntimeError(f"白底图超过大小限制：{max_bytes // 1024 // 1024}MB")
-            mime = _image_mime(data, declared_mime)
-            self._update_status(record_id, "上传中", model=model)
-            suffix = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}.get(mime, Path(result_url).suffix or ".img")
-            uploaded = self.storage.upload_bytes(data, f"white-background{suffix}", mime)
-            managed_url = str(uploaded.get("url") or "").strip()
-            if not self.storage.is_managed_url(managed_url):
-                raise RuntimeError("R2 上传成功但未返回可识别的自有存储链接")
+            managed_url = str(progress.get("managed_url") or "").strip()
+            if not managed_url:
+                downloader = getattr(self.generator, "download_image", None)
+                data, declared_mime = (
+                    downloader(result_url, max_bytes)
+                    if downloader
+                    else self.download_url(result_url)
+                )
+                if not data:
+                    raise RuntimeError("白底图下载结果为空")
+                if len(data) > max_bytes:
+                    raise RuntimeError(f"白底图超过大小限制：{max_bytes // 1024 // 1024}MB")
+                # Generated provider output must have a recognized magic number;
+                # a claimed image/* Content-Type alone is not sufficient.
+                mime = _image_mime(data, "")
+                self._update_status(record_id, "上传中", model=model)
+                suffix = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}.get(mime, Path(result_url).suffix or ".img")
+                uploaded = self.storage.upload_bytes(data, f"white-background{suffix}", mime)
+                managed_url = str(uploaded.get("url") or "").strip()
+                if not self.storage.is_managed_url(managed_url):
+                    raise RuntimeError("R2 上传成功但未返回可识别的自有存储链接")
+                save(stage="上传完成", managed_url=managed_url)
 
             latest = self.feishu.get_record(self.settings.doubao_table_id, record_id).get("fields", {})
             current_url = str(field_value(latest, "商品图存储链接", "") or "").strip()
@@ -126,22 +170,28 @@ class WhiteBackgroundService:
                     WHITE_ERROR_FIELD: "",
                 },
             )
-            face_result = self.assets.detect_face(record_id, force=True, job_id=job_id)
-            if face_result.get("status") != "无人脸":
-                message = f"白底图复检仍为{face_result.get('status') or '未通过'}，已继续阻断"
-                self._update_status(record_id, "失败", model=model, error=message)
-                return {"record_id": record_id, "status": "失败", "error": message}
-            self._update_status(record_id, "完成", model=model)
-            add_log("success", f"白底商品图替换并复检完成: {record_id}", "workflow", job_id)
-            return {
-                "record_id": record_id,
-                "status": "完成",
-                "stored_image_url": managed_url,
-                "external_task_id": str(generated.get("task_id") or ""),
-            }
+            save(stage="待复检", committed_url=managed_url)
+            return self._finish_recheck(record_id, managed_url, task_id, model, job_id, save)
         except Exception as exc:
             self._update_status(record_id, "失败", model=model, error=str(exc))
             raise
+
+    def _finish_recheck(self, record_id, managed_url, task_id, model, job_id, save):
+        face_result = self.assets.detect_face(record_id, force=True, job_id=job_id)
+        if face_result.get("status") != "无人脸":
+            message = f"白底图复检仍为{face_result.get('status') or '未通过'}，已继续阻断"
+            self._update_status(record_id, "待处理", model=model, error=message)
+            save(stage="待处理", status="blocked", error=message)
+            return {"record_id": record_id, "status": "blocked", "error": message}
+        self._update_status(record_id, "完成", model=model)
+        save(stage="完成", status="done")
+        add_log("success", f"白底商品图替换并复检完成: {record_id}", "workflow", job_id)
+        return {
+            "record_id": record_id,
+            "status": "完成",
+            "stored_image_url": managed_url,
+            "external_task_id": task_id,
+        }
 
     def _update_status(
         self,

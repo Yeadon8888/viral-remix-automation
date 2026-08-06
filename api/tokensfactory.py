@@ -23,9 +23,9 @@ class TokensFactoryImageClient:
         self.sleep = sleep_fn
         self.monotonic = monotonic_fn
 
-    def generate_white_background(self, image_url: str, prompt: str) -> dict[str, str]:
+    def generate_white_background(self, image_url: str, prompt: str, *, should_stop=None) -> dict[str, str]:
         task_id = self.create_task(image_url, prompt)
-        image_url = self.wait_for_result(task_id)
+        image_url = self.wait_for_result(task_id, should_stop=should_stop)
         return {"task_id": task_id, "image_url": image_url}
 
     def create_task(self, image_url: str, prompt: str) -> str:
@@ -51,10 +51,12 @@ class TokensFactoryImageClient:
             raise RuntimeError("TokensFactory 创建成功但未返回任务 ID")
         return task_id
 
-    def wait_for_result(self, task_id: str) -> str:
+    def wait_for_result(self, task_id: str, *, should_stop=None) -> str:
         deadline = self.monotonic() + self._timeout_seconds()
-        interval = max(0.0, float(getattr(self.settings, "tokensfactory_poll_interval_seconds", 2) or 0))
+        interval = min(30.0, max(0.1, float(getattr(self.settings, "tokensfactory_poll_interval_seconds", 2) or 2)))
         while self.monotonic() <= deadline:
+            if should_stop and should_stop():
+                raise RuntimeError("TokensFactory 白底图任务已停止等待")
             payload = self._get_task(task_id)
             state = str(payload.get("status") or payload.get("state") or "").strip().lower()
             result_url = self._result_url(payload)
@@ -66,6 +68,33 @@ class TokensFactoryImageClient:
                 raise RuntimeError("TokensFactory 白底图任务已取消")
             self.sleep(interval)
         raise RuntimeError("TokensFactory 白底图生成超时")
+
+    def download_image(self, url: str, max_bytes: int) -> tuple[bytes, str]:
+        try:
+            response = self.session.get(
+                str(url or "").strip(),
+                headers={"Accept": "image/png,image/jpeg,image/webp,image/gif,image/avif"},
+                timeout=min(120, self._timeout_seconds()),
+                stream=True,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError("TokensFactory 白底图结果下载失败") from exc
+        if response.status_code >= 400:
+            raise RuntimeError(f"TokensFactory 白底图结果下载失败：HTTP {response.status_code}")
+        declared_length = int(response.headers.get("content-length") or 0)
+        if declared_length > max_bytes:
+            raise RuntimeError("白底图下载结果超过大小限制")
+        chunks = []
+        size = 0
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            size += len(chunk)
+            if size > max_bytes:
+                raise RuntimeError("白底图下载结果超过大小限制")
+            chunks.append(chunk)
+        content_type = str(response.headers.get("content-type") or "").split(";", 1)[0]
+        return b"".join(chunks), content_type
 
     def _get_task(self, task_id: str) -> dict[str, Any]:
         retries = max(0, int(getattr(self.settings, "tokensfactory_request_retries", 2) or 0))

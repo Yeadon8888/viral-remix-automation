@@ -46,9 +46,12 @@ class FakeGenerator:
         self.result_url = result_url
         self.calls = []
 
-    def generate_white_background(self, image_url, prompt):
+    def create_task(self, image_url, prompt):
         self.calls.append((image_url, prompt))
-        return {"task_id": "external-1", "image_url": self.result_url}
+        return "external-1"
+
+    def wait_for_result(self, task_id, should_stop=None):
+        return self.result_url
 
 
 class FakeGemini:
@@ -103,7 +106,7 @@ class WhiteBackgroundRepairTests(unittest.TestCase):
         calls = []
 
         class FakeWorkflow:
-            def generate_doubao_white_background(self, record_id, job_id=None):
+            def generate_doubao_white_background(self, record_id, job_id=None, **kwargs):
                 calls.append((record_id, job_id))
                 return {"record_id": record_id, "status": "完成"}
 
@@ -190,6 +193,75 @@ class WhiteBackgroundRepairTests(unittest.TestCase):
         self.assertEqual(len(generator.calls), 1)
         self.assertEqual(len(gemini.calls), 1)
         self.assertIn("纯白背景", generator.calls[0][1])
+
+    def test_resume_with_task_checkpoint_does_not_create_another_paid_task(self):
+        service, _, _, generator, _ = make_services(flagged_fields())
+        checkpoints = []
+
+        result = service.generate(
+            "record-1",
+            checkpoint={"stage": "生成中", "task_id": "existing-task", "original_url": f"{MANAGED}face.png"},
+            save_checkpoint=lambda value: checkpoints.append(value),
+        )
+
+        self.assertEqual(result["status"], "完成")
+        self.assertEqual(generator.calls, [])
+        self.assertEqual(checkpoints[-1]["stage"], "完成")
+
+    def test_resume_after_commit_only_rechecks_the_committed_image(self):
+        committed = f"{MANAGED}white.png"
+        fields = flagged_fields(committed)
+        fields["人脸检测状态"] = "待检测"
+        fields["人脸检测图片链接"] = None
+        service, _, storage, generator, gemini = make_services(fields)
+
+        result = service.generate(
+            "record-1",
+            checkpoint={
+                "stage": "待复检",
+                "task_id": "existing-task",
+                "original_url": f"{MANAGED}face.png",
+                "committed_url": committed,
+            },
+        )
+
+        self.assertEqual(result["status"], "完成")
+        self.assertEqual(generator.calls, [])
+        self.assertEqual(storage.uploads, [])
+        self.assertEqual(len(gemini.calls), 1)
+
+    def test_resume_rejects_checkpoint_for_a_replaced_source_image(self):
+        service, _, _, generator, _ = make_services(flagged_fields(f"{MANAGED}new.png"))
+
+        with self.assertRaisesRegex(RuntimeError, "不能恢复旧"):
+            service.generate(
+                "record-1",
+                checkpoint={
+                    "stage": "生成中",
+                    "task_id": "old-task",
+                    "original_url": f"{MANAGED}old.png",
+                },
+            )
+
+        self.assertEqual(generator.calls, [])
+
+    def test_non_image_provider_result_is_rejected_before_upload(self):
+        service, _, storage, _, _ = make_services(flagged_fields())
+        service.download_url = lambda url: (b"<html>not an image</html>", "image/png")
+
+        with self.assertRaisesRegex(RuntimeError, "可识别的图片"):
+            service.generate("record-1")
+
+        self.assertEqual(storage.uploads, [])
+
+    def test_recheck_with_face_returns_to_waiting_for_explicit_retry(self):
+        service, feishu, _, _, _ = make_services(flagged_fields(), gemini=FakeGemini("face"))
+
+        result = service.generate("record-1")
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(feishu.fields["白底图处理状态"], "待处理")
+        self.assertEqual(feishu.fields["人脸检测状态"], "含人脸")
 
 
 if __name__ == "__main__":

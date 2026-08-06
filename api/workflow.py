@@ -645,8 +645,8 @@ class ViralRemixWorkflow:
     def detect_doubao_face(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         return self.doubao_assets.detect_face(record_id, force=True, job_id=job_id)
 
-    def generate_doubao_white_background(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
-        return self.white_background.generate(record_id, job_id=job_id)
+    def generate_doubao_white_background(self, record_id: str, job_id: str | None = None, **kwargs) -> dict[str, Any]:
+        return self.white_background.generate(record_id, job_id=job_id, **kwargs)
 
     def delete_doubao_face_record(self, record_id: str, job_id: str | None = None) -> dict[str, Any]:
         result = self.doubao_assets.delete_flagged_record(record_id, job_id=job_id)
