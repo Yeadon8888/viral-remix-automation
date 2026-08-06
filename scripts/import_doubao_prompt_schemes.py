@@ -9,7 +9,7 @@ from api.services.prompt_configs import DOUBAO_PROMPT_KEY, PromptConfigService
 SCHEMES = (
     ("shoes", "mx_shoes_10s", "墨西哥鞋类 10 秒", "墨西哥", "西班牙语", "鞋类", "direct_prompt", "10"),
     ("clothing", "mx_clothing_10s", "墨西哥服装 10 秒", "墨西哥", "西班牙语", "服装", "direct_prompt", "10"),
-    ("t2", "pain_physical_proof", "T2 痛点与物理反馈", "通用", "", "通用", "meta_generate", "15"),
+    ("t2", "pain_physical_proof", "T2 痛点与物理反馈", "菲律宾", "菲律宾语", "通用", "meta_generate", "15"),
     ("t3", "multi_scene_proof", "T3 多场景价值证明", "菲律宾", "菲律宾语", "通用", "meta_generate", "15"),
 )
 
