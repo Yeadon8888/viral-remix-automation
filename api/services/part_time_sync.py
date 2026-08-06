@@ -122,6 +122,10 @@ class PartTimeSyncService:
             "来源记录ID": source_record_id,
             "目标国家": country.name,
             "目标语言": country.language_name,
+            "Prompt方案Key": str(field_value(source_fields, "Prompt方案Key", "current_conversion") or "current_conversion"),
+            "Prompt方案名称": str(field_value(source_fields, "Prompt方案名称", "T1 当前转化模板") or "T1 当前转化模板"),
+            "Prompt配置版本": str(field_value(source_fields, "Prompt配置版本", "") or ""),
+            "Prompt执行模式": str(field_value(source_fields, "Prompt执行模式", "meta_generate") or "meta_generate"),
         }
         try:
             if target:

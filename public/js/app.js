@@ -468,10 +468,20 @@ async function loadDoubaoPromptOptions() {
   state.doubaoPromptOptions = data.data || [];
   const select = $("doubaoPromptConfig");
   const previous = select.value;
-  select.innerHTML = `<option value="">T1 兼容模式</option>${state.doubaoPromptOptions.map((row) => (
+  select.innerHTML = `<option value="">请选择已启用方案</option>${state.doubaoPromptOptions.map((row) => (
     `<option value="${esc(row.record_id)}">${esc(row["方案名称"] || row["Prompt名称"])} · ${esc(row["版本"] || "未标版本")} · ${esc(row["适用品类"] || "通用")}</option>`
   )).join("")}`;
-  if (state.doubaoPromptOptions.some((row) => row.record_id === previous)) select.value = previous;
+  if (state.doubaoPromptOptions.some((row) => row.record_id === previous)) {
+    select.value = previous;
+  } else {
+    select.value = state.doubaoPromptOptions.find((row) => (row["方案Key"] || "current_conversion") === "current_conversion")?.record_id || "";
+  }
+}
+
+function selectedDoubaoPromptConfigId() {
+  const value = $("doubaoPromptConfig")?.value || "";
+  if (!value) notify("当前国家没有已选择的启用提示词方案，请先在 Prompt 配置页启用方案", "error");
+  return value;
 }
 
 function selectedCountryName() {
@@ -2294,6 +2304,8 @@ async function storeManualVideo(id, button = null) {
 async function generateDoubaoPrompt(id, button = null) {
   const name = `doubao-generate-prompt:${id}:${state.doubaoCountryCode}`;
   if (isJobBusy(name)) return;
+  const promptConfigId = selectedDoubaoPromptConfigId();
+  if (!promptConfigId) return;
   const oldText = button ? button.textContent : "";
   setPendingJob(name, true);
   if (button) {
@@ -2307,7 +2319,7 @@ async function generateDoubaoPrompt(id, button = null) {
       method: "POST",
       body: JSON.stringify({
         country_code: state.doubaoCountryCode,
-        prompt_config_id: $("doubaoPromptConfig")?.value || "",
+        prompt_config_id: promptConfigId,
       }),
     });
     notify(`已启动豆包视频提示词生成：${data.job_id}`);
@@ -2458,6 +2470,8 @@ async function batchDoubaoWorkflow(button = null) {
     notify("请先勾选要按流程处理的豆包记录", "error");
     return;
   }
+  const promptConfigId = selectedDoubaoPromptConfigId();
+  if (!promptConfigId) return;
   const forceUpdate = Boolean($("forceDoubaoSyncUpdate")?.checked);
   const requireFaceDetection = Boolean($("requireDoubaoFaceDetection")?.checked);
   const repairFaces = requireFaceDetection && Boolean($("repairDoubaoFaces")?.checked);
@@ -2480,7 +2494,7 @@ async function batchDoubaoWorkflow(button = null) {
         force_update: forceUpdate,
         detect_faces: requireFaceDetection,
         repair_faces: repairFaces,
-        prompt_config_id: $("doubaoPromptConfig")?.value || "",
+        prompt_config_id: promptConfigId,
         selection_label: doubaoSelectionLabel(rows),
       }),
     });
@@ -2552,6 +2566,8 @@ async function batchDoubaoPrompts(button = null) {
     notify("请先勾选要生成提示词的豆包记录", "error");
     return;
   }
+  const promptConfigId = selectedDoubaoPromptConfigId();
+  if (!promptConfigId) return;
   const rows = selectedRows.filter((row) => canExecuteDoubaoPrompt(row) && !isJobBusy(`doubao-generate-prompt:${row.record_id}:${state.doubaoCountryCode}`));
   if (!rows.length) {
     notify("没有可生成提示词的记录，请先完成步骤 1 转存和步骤 2 人脸检测", "error");
@@ -2572,7 +2588,7 @@ async function batchDoubaoPrompts(button = null) {
         record_ids: rows.map((row) => row.record_id),
         row_numbers: doubaoRowNumberMap(rows),
         country_code: state.doubaoCountryCode,
-        prompt_config_id: $("doubaoPromptConfig")?.value || "",
+        prompt_config_id: promptConfigId,
         selection_label: doubaoSelectionLabel(rows),
       }),
     });
