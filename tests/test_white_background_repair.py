@@ -259,6 +259,23 @@ class WhiteBackgroundRepairTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "cancelled")
         self.assertEqual(generator.calls, [])
+        self.assertNotIn("白底图处理状态", service.feishu.fields)
+
+    def test_stop_during_polling_preserves_task_for_resume(self):
+        class StoppedGenerator(FakeGenerator):
+            def wait_for_result(self, task_id, should_stop=None):
+                raise RuntimeError("TokensFactory 白底图任务已停止等待")
+
+        service, feishu, _, generator, _ = make_services(flagged_fields(), generator=StoppedGenerator())
+        checkpoints = []
+
+        result = service.generate("record-1", save_checkpoint=checkpoints.append)
+
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(result["external_task_id"], "external-1")
+        self.assertEqual(feishu.fields["白底图处理状态"], "已停止")
+        self.assertEqual(checkpoints[-1]["task_id"], "external-1")
+        self.assertFalse(service.describe_eligibility(feishu.fields)["可生成白底图"])
 
     def test_resume_rejects_checkpoint_for_a_replaced_source_image(self):
         service, _, _, generator, _ = make_services(flagged_fields(f"{MANAGED}new.png"))

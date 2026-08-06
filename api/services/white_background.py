@@ -51,6 +51,7 @@ class WhiteBackgroundService:
         stored_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
         checked_url = str(field_value(fields, FACE_IMAGE_FIELD, "") or "").strip()
         face_status = str(asset_state.get("人脸检测状态") or "").strip()
+        white_status = str(field_value(fields, WHITE_STATUS_FIELD, "") or "").strip()
         lock_reason = str(asset_state.get("流程锁定原因") or "").strip()
         reason = ""
         if face_status not in FLAGGED_FACE_STATES:
@@ -61,6 +62,8 @@ class WhiteBackgroundService:
             reason = "人脸检测结果已过期，请先重新检测当前商品图"
         elif lock_reason:
             reason = lock_reason
+        elif white_status in {"生成中", "上传中", "已停止"}:
+            reason = "已有白底图付费任务，请从原任务恢复，勿重复创建"
         return {
             "可生成白底图": not reason,
             "白底图阻断原因": reason,
@@ -115,16 +118,19 @@ class WhiteBackgroundService:
             except Exception as exc:
                 self._update_status(record_id, "失败", model=model, error=str(exc))
                 raise
-        original_url = self.require_eligible(fields)
+        eligibility_fields = fields
+        if progress.get("task_id"):
+            eligibility_fields = {**fields, WHITE_STATUS_FIELD: ""}
+        original_url = self.require_eligible(eligibility_fields)
         if checkpoint_original_url and checkpoint_original_url != current_url:
             raise RuntimeError("商品图已变更，不能恢复旧的白底图任务")
+        if should_stop and should_stop():
+            return {"record_id": record_id, "status": "cancelled", "message": "用户已停止任务，未创建付费任务"}
         self._update_status(record_id, "生成中", model=model)
         add_log("info", f"开始生成白底商品图: {record_id}", "workflow", job_id)
         try:
             task_id = str(progress.get("task_id") or "").strip()
             if not task_id:
-                if should_stop and should_stop():
-                    return {"record_id": record_id, "status": "cancelled", "message": "用户已停止任务，未创建付费任务"}
                 task_id = self.generator.create_task(original_url, WHITE_BACKGROUND_PROMPT)
                 save(stage="生成中", task_id=task_id, original_url=original_url)
             result_url = str(progress.get("result_url") or "").strip()
@@ -161,7 +167,7 @@ class WhiteBackgroundService:
             current_url = str(field_value(latest, "商品图存储链接", "") or "").strip()
             if current_url != original_url:
                 raise RuntimeError("商品图已变更，白底图结果未覆盖当前记录")
-            self.require_eligible(latest)
+            self.require_eligible({**latest, WHITE_STATUS_FIELD: ""})
             self.feishu.update_record(
                 self.settings.doubao_table_id,
                 record_id,
@@ -181,6 +187,10 @@ class WhiteBackgroundService:
             save(stage="待复检", committed_url=managed_url)
             return self._finish_recheck(record_id, managed_url, task_id, model, job_id, save)
         except Exception as exc:
+            if "已停止等待" in str(exc):
+                self._update_status(record_id, "已停止", model=model, error="请从原任务恢复，勿重复创建付费任务")
+                save(stage="已停止", status="cancelled")
+                return {"record_id": record_id, "status": "cancelled", "external_task_id": progress.get("task_id", "")}
             self._update_status(record_id, "失败", model=model, error=str(exc))
             raise
 
