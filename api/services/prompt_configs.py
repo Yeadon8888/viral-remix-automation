@@ -30,8 +30,8 @@ EDITABLE_FIELDS = (
     "输出协议",
     "变量说明",
     "备注",
-    "版本已锁定",
 )
+REVISION_FIELDS = (*EDITABLE_FIELDS, "版本已锁定")
 REQUIRED_FIELDS = ("Prompt名称", "版本", "目标地区", "模板内容")
 IMMUTABLE_VERSION_FIELDS = {
     "模板Key",
@@ -54,7 +54,7 @@ class PromptConflictError(RuntimeError):
 
 def prompt_revision(fields: dict[str, Any]) -> str:
     body = json.dumps(
-        {key: field_value(fields, key, "") for key in EDITABLE_FIELDS},
+        {key: field_value(fields, key, "") for key in REVISION_FIELDS},
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
@@ -102,7 +102,8 @@ class PromptConfigService:
             raise PromptConflictError("Prompt 已被其他人修改，请刷新后重新编辑")
         current_row = self._config_row(current)
         merged = {**current_row, **fields}
-        if self._is_locked(current_row):
+        current_is_locked = self._is_locked(current_row)
+        if current_is_locked:
             changed_locked_fields = [
                 name
                 for name in IMMUTABLE_VERSION_FIELDS
@@ -110,6 +111,8 @@ class PromptConfigService:
             ]
             if changed_locked_fields:
                 raise ValueError("已启用或已使用的 Prompt 内容不可修改，请复制为新版本")
+            fields["版本已锁定"] = "是"
+            merged["版本已锁定"] = "是"
         if merged.get("是否启用") == "启用":
             fields["版本已锁定"] = "是"
             merged["版本已锁定"] = "是"
@@ -152,10 +155,16 @@ class PromptConfigService:
 
         for row in self.list_configs():
             key = str(row.get("模板Key") or "").strip()
+            scheme_key = str(row.get("方案Key") or DEFAULT_SCHEME_KEY).strip()
             content = str(row.get("模板内容") or "").strip()
             enabled = str(row.get("是否启用") or "").strip()
             target_region = str(row.get("目标地区") or "").strip()
-            if not key or not content or enabled != "启用":
+            if (
+                not key
+                or not content
+                or enabled != "启用"
+                or scheme_key != DEFAULT_SCHEME_KEY
+            ):
                 continue
             rank = (
                 2
@@ -293,7 +302,7 @@ class PromptConfigService:
                 self.feishu.update_record(
                     self.settings.prompt_table_id,
                     str(row["record_id"]),
-                    {"是否启用": "停用"},
+                    {"是否启用": "停用", "版本已锁定": "是"},
                 )
 
     @staticmethod

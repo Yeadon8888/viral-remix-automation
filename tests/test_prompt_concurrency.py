@@ -71,6 +71,31 @@ class PromptConcurrencyTests(unittest.TestCase):
         self.assertEqual(template, "原始模板内容")
         self.assertEqual(version, f"{DOUBAO_PROMPT_KEY}:mx-v1")
 
+    def test_legacy_active_template_ignores_other_schemes(self):
+        workflow, _, _, records = self.make_workflow()
+        records.append({
+            "record_id": "prompt-t2",
+            "fields": {
+                "Prompt名称": "T2",
+                "Prompt类型": "豆包视频",
+                "模板Key": DOUBAO_PROMPT_KEY,
+                "方案Key": "pain_physical_proof",
+                "版本": "t2-v1",
+                "是否启用": "启用",
+                "目标地区": "墨西哥",
+                "模板内容": "T2 不应覆盖旧请求",
+            },
+        })
+
+        template, version = workflow.active_template(
+            DOUBAO_PROMPT_KEY,
+            "墨西哥",
+            "fallback",
+        )
+
+        self.assertEqual(template, "原始模板内容")
+        self.assertEqual(version, f"{DOUBAO_PROMPT_KEY}:mx-v1")
+
     def test_stale_prompt_revision_is_rejected_before_write(self):
         workflow, _, updates, _ = self.make_workflow()
         with self.assertRaises(PromptConflictError):
@@ -97,8 +122,13 @@ class PromptConcurrencyTests(unittest.TestCase):
 
     def test_once_enabled_prompt_stays_immutable_after_disabling(self):
         workflow, fields, updates, _ = self.make_workflow()
-        fields["版本已锁定"] = "是"
-        fields["是否启用"] = "停用"
+        current = workflow.list_configs()[0]["revision"]
+        workflow.update(
+            "prompt-1",
+            {"是否启用": "停用"},
+            expected_revision=current,
+        )
+        self.assertEqual(fields["版本已锁定"], "是")
         current = workflow.list_configs()[0]["revision"]
 
         with self.assertRaisesRegex(ValueError, "新版本"):
@@ -108,7 +138,7 @@ class PromptConcurrencyTests(unittest.TestCase):
                 expected_revision=current,
             )
 
-        self.assertEqual(updates, [])
+        self.assertEqual(len(updates), 1)
 
     def test_new_prompt_is_saved_as_draft_by_default(self):
         workflow, _, _, records = self.make_workflow()
@@ -141,7 +171,7 @@ class PromptConcurrencyTests(unittest.TestCase):
         self.assertEqual(fields["是否启用"], "停用")
         self.assertEqual(records[1]["fields"]["是否启用"], "启用")
         self.assertEqual(records[1]["fields"]["版本已锁定"], "是")
-        self.assertIn({"是否启用": "停用"}, updates)
+        self.assertIn({"是否启用": "停用", "版本已锁定": "是"}, updates)
 
     def test_duplicate_version_in_same_country_is_rejected(self):
         workflow, _, _, records = self.make_workflow()
