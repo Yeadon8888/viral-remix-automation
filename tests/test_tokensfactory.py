@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from api.tokensfactory import TokensFactoryImageClient
 
@@ -94,6 +95,25 @@ class TokensFactoryClientTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "TOKENSFACTORY_API_KEY"):
             client.generate_white_background("https://assets.example.com/source.png", "prompt")
+
+        self.assertEqual(session.calls, [])
+
+    def test_stop_before_create_does_not_submit_paid_request(self):
+        session = FakeSession()
+        client = TokensFactoryImageClient(settings(), session=session, sleep_fn=lambda _: None)
+
+        with self.assertRaisesRegex(RuntimeError, "未创建付费任务"):
+            client.generate_white_background("https://assets.example.com/source.png", "prompt", should_stop=lambda: True)
+
+        self.assertEqual(session.calls, [])
+
+    def test_download_rejects_private_result_address(self):
+        session = FakeSession()
+        client = TokensFactoryImageClient(settings(), session=session, sleep_fn=lambda _: None)
+
+        with patch("api.tokensfactory.socket.getaddrinfo", return_value=[(None, None, None, None, ("127.0.0.1", 80))]):
+            with self.assertRaisesRegex(RuntimeError, "地址不安全"):
+                client.download_image("http://provider.example/result.png", 1024)
 
         self.assertEqual(session.calls, [])
 

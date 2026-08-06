@@ -97,18 +97,24 @@ class WhiteBackgroundService:
         current_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
         checkpoint_original_url = str(progress.get("original_url") or "").strip()
         committed_url = str(progress.get("committed_url") or "").strip()
+        uploaded_url = str(progress.get("managed_url") or "").strip()
         model = str(getattr(self.settings, "tokensfactory_image_model", "nano-banana-2") or "nano-banana-2")
-        if committed_url:
-            if current_url != committed_url:
+        if committed_url or (uploaded_url and current_url == uploaded_url):
+            resume_url = committed_url or uploaded_url
+            if current_url != resume_url:
                 raise RuntimeError("白底图恢复点与当前商品图不一致")
-            return self._finish_recheck(
-                record_id,
-                committed_url,
-                str(progress.get("task_id") or "").strip(),
-                model,
-                job_id,
-                save,
-            )
+            try:
+                return self._finish_recheck(
+                    record_id,
+                    resume_url,
+                    str(progress.get("task_id") or "").strip(),
+                    model,
+                    job_id,
+                    save,
+                )
+            except Exception as exc:
+                self._update_status(record_id, "失败", model=model, error=str(exc))
+                raise
         original_url = self.require_eligible(fields)
         if checkpoint_original_url and checkpoint_original_url != current_url:
             raise RuntimeError("商品图已变更，不能恢复旧的白底图任务")
@@ -117,6 +123,8 @@ class WhiteBackgroundService:
         try:
             task_id = str(progress.get("task_id") or "").strip()
             if not task_id:
+                if should_stop and should_stop():
+                    return {"record_id": record_id, "status": "cancelled", "message": "用户已停止任务，未创建付费任务"}
                 task_id = self.generator.create_task(original_url, WHITE_BACKGROUND_PROMPT)
                 save(stage="生成中", task_id=task_id, original_url=original_url)
             result_url = str(progress.get("result_url") or "").strip()

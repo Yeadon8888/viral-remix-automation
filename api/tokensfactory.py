@@ -1,5 +1,8 @@
+import ipaddress
+import socket
 import time
 from typing import Any, Callable
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
@@ -24,6 +27,8 @@ class TokensFactoryImageClient:
         self.monotonic = monotonic_fn
 
     def generate_white_background(self, image_url: str, prompt: str, *, should_stop=None) -> dict[str, str]:
+        if should_stop and should_stop():
+            raise RuntimeError("TokensFactory 白底图任务已停止，未创建付费任务")
         task_id = self.create_task(image_url, prompt)
         image_url = self.wait_for_result(task_id, should_stop=should_stop)
         return {"task_id": task_id, "image_url": image_url}
@@ -70,15 +75,29 @@ class TokensFactoryImageClient:
         raise RuntimeError("TokensFactory 白底图生成超时")
 
     def download_image(self, url: str, max_bytes: int) -> tuple[bytes, str]:
-        try:
-            response = self.session.get(
-                str(url or "").strip(),
-                headers={"Accept": "image/png,image/jpeg,image/webp,image/gif,image/avif"},
-                timeout=min(120, self._timeout_seconds()),
-                stream=True,
-            )
-        except requests.RequestException as exc:
-            raise RuntimeError("TokensFactory 白底图结果下载失败") from exc
+        current_url = str(url or "").strip()
+        response = None
+        for _ in range(4):
+            self._require_public_http_url(current_url)
+            try:
+                response = self.session.get(
+                    current_url,
+                    headers={"Accept": "image/png,image/jpeg,image/webp,image/gif,image/avif"},
+                    timeout=min(120, self._timeout_seconds()),
+                    stream=True,
+                    allow_redirects=False,
+                )
+            except requests.RequestException as exc:
+                raise RuntimeError("TokensFactory 白底图结果下载失败") from exc
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                break
+            location = str(response.headers.get("location") or "").strip()
+            if not location:
+                raise RuntimeError("TokensFactory 白底图下载重定向缺少地址")
+            current_url = urljoin(current_url, location)
+        else:
+            raise RuntimeError("TokensFactory 白底图下载重定向次数过多")
+        assert response is not None
         if response.status_code >= 400:
             raise RuntimeError(f"TokensFactory 白底图结果下载失败：HTTP {response.status_code}")
         declared_length = int(response.headers.get("content-length") or 0)
@@ -95,6 +114,18 @@ class TokensFactoryImageClient:
             chunks.append(chunk)
         content_type = str(response.headers.get("content-type") or "").split(";", 1)[0]
         return b"".join(chunks), content_type
+
+    @staticmethod
+    def _require_public_http_url(url: str) -> None:
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise RuntimeError("TokensFactory 白底图结果地址不安全")
+        try:
+            addresses = {item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or 443)}
+        except socket.gaierror as exc:
+            raise RuntimeError("TokensFactory 白底图结果地址无法解析") from exc
+        if not addresses or any(not ipaddress.ip_address(value).is_global for value in addresses):
+            raise RuntimeError("TokensFactory 白底图结果地址不安全")
 
     def _get_task(self, task_id: str) -> dict[str, Any]:
         retries = max(0, int(getattr(self.settings, "tokensfactory_request_retries", 2) or 0))

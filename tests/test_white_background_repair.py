@@ -230,6 +230,36 @@ class WhiteBackgroundRepairTests(unittest.TestCase):
         self.assertEqual(storage.uploads, [])
         self.assertEqual(len(gemini.calls), 1)
 
+    def test_resume_after_commit_before_checkpoint_only_rechecks(self):
+        committed = f"{MANAGED}white.png"
+        fields = flagged_fields(committed)
+        fields["人脸检测状态"] = "待检测"
+        fields["人脸检测图片链接"] = None
+        service, _, storage, generator, gemini = make_services(fields)
+
+        result = service.generate(
+            "record-1",
+            checkpoint={
+                "stage": "上传完成",
+                "task_id": "existing-task",
+                "original_url": f"{MANAGED}face.png",
+                "managed_url": committed,
+            },
+        )
+
+        self.assertEqual(result["status"], "完成")
+        self.assertEqual(generator.calls, [])
+        self.assertEqual(storage.uploads, [])
+        self.assertEqual(len(gemini.calls), 1)
+
+    def test_stop_before_create_does_not_create_paid_task(self):
+        service, _, _, generator, _ = make_services(flagged_fields())
+
+        result = service.generate("record-1", should_stop=lambda: True)
+
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(generator.calls, [])
+
     def test_resume_rejects_checkpoint_for_a_replaced_source_image(self):
         service, _, _, generator, _ = make_services(flagged_fields(f"{MANAGED}new.png"))
 
