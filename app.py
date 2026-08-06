@@ -575,6 +575,23 @@ def list_prompts():
     return jsonify({"success": True, "data": data})
 
 
+@app.route("/api/doubao-prompt-options")
+def list_doubao_prompt_options():
+    try:
+        country = get_country(request.args.get("country_code"))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+    rows = get_workflow().list_prompt_configs()
+    data = [
+        row for row in rows
+        if str(row.get("模板Key") or "") == "doubao_seedance_video_prompt"
+        and str(row.get("是否启用") or "") == "启用"
+        and str(row.get("目标地区") or "") in {country.prompt_region, "通用"}
+        and str(row.get("目标语言") or "") in {"", country.language_name}
+    ]
+    return jsonify({"success": True, "data": data})
+
+
 @app.route("/api/prompts", methods=["POST"])
 def create_prompt():
     body = dict(request.get_json(silent=True) or {})
@@ -848,10 +865,24 @@ def generate_doubao_prompt(record_id):
         country = get_country(body.get("country_code"))
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
+    prompt_snapshot = None
+    config_id = str(body.get("prompt_config_id") or "").strip()
+    if config_id:
+        try:
+            prompt_snapshot = get_workflow().prompt_configs.resolve_doubao_snapshot(
+                record_id=config_id,
+                region=country.prompt_region,
+                language=country.language_name,
+            )
+        except ValueError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+    payload = {"record_id": record_id, "country_code": country.code}
+    if prompt_snapshot:
+        payload["prompt_snapshot"] = prompt_snapshot
     job_id = enqueue_workflow_action(
         f"doubao-generate-prompt:{record_id}:{country.code}",
         "doubao.generate_prompt",
-        {"record_id": record_id, "country_code": country.code},
+        payload,
     )
     return jsonify({"success": True, "job_id": job_id})
 
@@ -1053,6 +1084,15 @@ def batch_doubao_operation():
                 payload["selection_label"] = f"{prefix} · {suffix}"
         if country:
             payload["country_code"] = country.code
+        if operation in {"generate_prompts", "process_workflow"} and body.get("prompt_config_id"):
+            try:
+                payload["prompt_snapshot"] = get_workflow().prompt_configs.resolve_doubao_snapshot(
+                    record_id=str(body.get("prompt_config_id") or "").strip(),
+                    region=country.prompt_region,
+                    language=country.language_name,
+                )
+            except ValueError as exc:
+                return jsonify({"success": False, "message": str(exc)}), 400
         if operation in {"sync_part_time", "process_workflow"}:
             payload["force_update"] = body.get("force_update") is True
         if operation == "process_workflow":

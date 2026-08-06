@@ -5,6 +5,7 @@ const state = {
   doubaoItems: [],
   partTimeItems: [],
   prompts: [],
+  doubaoPromptOptions: [],
   countries: [],
   jobs: [],
   pendingJobs: new Set(),
@@ -462,6 +463,17 @@ function renderCountrySelect() {
     .join("");
 }
 
+async function loadDoubaoPromptOptions() {
+  const data = await api(`/api/doubao-prompt-options?country_code=${encodeURIComponent(state.doubaoCountryCode)}`);
+  state.doubaoPromptOptions = data.data || [];
+  const select = $("doubaoPromptConfig");
+  const previous = select.value;
+  select.innerHTML = `<option value="">T1 兼容模式</option>${state.doubaoPromptOptions.map((row) => (
+    `<option value="${esc(row.record_id)}">${esc(row["方案名称"] || row["Prompt名称"])} · ${esc(row["版本"] || "未标版本")} · ${esc(row["适用品类"] || "通用")}</option>`
+  )).join("")}`;
+  if (state.doubaoPromptOptions.some((row) => row.record_id === previous)) select.value = previous;
+}
+
 function selectedCountryName() {
   return state.countries.find((country) => country.code === state.doubaoCountryCode)?.name || "马来西亚";
 }
@@ -509,6 +521,7 @@ async function loadCountries() {
   } finally {
     renderCountrySelect();
     renderPromptRegionFilter();
+    await loadDoubaoPromptOptions();
   }
 }
 
@@ -2292,7 +2305,10 @@ async function generateDoubaoPrompt(id, button = null) {
   try {
     const data = await api(`/api/doubao-items/${id}/generate-prompt`, {
       method: "POST",
-      body: JSON.stringify({ country_code: state.doubaoCountryCode }),
+      body: JSON.stringify({
+        country_code: state.doubaoCountryCode,
+        prompt_config_id: $("doubaoPromptConfig")?.value || "",
+      }),
     });
     notify(`已启动豆包视频提示词生成：${data.job_id}`);
     await loadJobs();
@@ -2464,6 +2480,7 @@ async function batchDoubaoWorkflow(button = null) {
         force_update: forceUpdate,
         detect_faces: requireFaceDetection,
         repair_faces: repairFaces,
+        prompt_config_id: $("doubaoPromptConfig")?.value || "",
         selection_label: doubaoSelectionLabel(rows),
       }),
     });
@@ -2555,6 +2572,7 @@ async function batchDoubaoPrompts(button = null) {
         record_ids: rows.map((row) => row.record_id),
         row_numbers: doubaoRowNumberMap(rows),
         country_code: state.doubaoCountryCode,
+        prompt_config_id: $("doubaoPromptConfig")?.value || "",
         selection_label: doubaoSelectionLabel(rows),
       }),
     });
@@ -2921,6 +2939,7 @@ $("doubaoCountry").onchange = () => {
   state.doubaoCountryCode = $("doubaoCountry").value;
   localStorage.setItem("viral-remix-doubao-country", state.doubaoCountryCode);
   renderDoubaoItems();
+  loadDoubaoPromptOptions().catch((error) => notify(error.message, "error"));
 };
 $("doubaoSortOrder").value = state.doubaoSortOrder;
 $("doubaoSortOrder").onchange = () => {

@@ -202,6 +202,50 @@ class PromptConfigService:
         templates, versions = self.active_templates(region)
         return templates.get(key, fallback), versions.get(key, f"{key}:default")
 
+    def resolve_doubao_snapshot(
+        self,
+        *,
+        record_id: str = "",
+        scheme_key: str = DEFAULT_SCHEME_KEY,
+        region: str,
+        language: str,
+        category: str = "",
+    ) -> dict[str, str]:
+        rows = self.list_configs()
+        candidates = [row for row in rows if not record_id or row.get("record_id") == record_id]
+        candidates = [
+            row for row in candidates
+            if str(row.get("模板Key") or "").strip() == DOUBAO_PROMPT_KEY
+            and (record_id or str(row.get("方案Key") or DEFAULT_SCHEME_KEY).strip() == (scheme_key or DEFAULT_SCHEME_KEY))
+            and str(row.get("是否启用") or "").strip() == "启用"
+            and str(row.get("目标地区") or "").strip() in {region, "通用"}
+            and str(row.get("目标语言") or "").strip() in {"", language}
+            and (not category or str(row.get("适用品类") or "通用").strip() in {"通用", category})
+        ]
+        if not candidates:
+            raise ValueError("当前国家、语言和商品品类没有可用的已启用 Prompt 方案")
+        candidates.sort(key=lambda row: (
+            str(row.get("目标地区") or "") == region,
+            bool(category) and str(row.get("适用品类") or "通用") == category,
+            str(row.get("版本") or ""),
+        ), reverse=True)
+        row = candidates[0]
+        return {
+            "config_record_id": str(row.get("record_id") or ""),
+            "template_key": DOUBAO_PROMPT_KEY,
+            "scheme_key": str(row.get("方案Key") or DEFAULT_SCHEME_KEY),
+            "scheme_name": str(row.get("方案名称") or DEFAULT_SCHEME_NAME),
+            "execution_mode": str(row.get("执行模式") or DEFAULT_EXECUTION_MODE),
+            "version": str(row.get("版本") or ""),
+            "region": str(row.get("目标地区") or ""),
+            "language": str(row.get("目标语言") or language),
+            "category": str(row.get("适用品类") or "通用"),
+            "duration": str(row.get("视频时长") or ""),
+            "content": str(row.get("模板内容") or ""),
+            "output_protocol": str(row.get("输出协议") or ""),
+            "variables": str(row.get("变量说明") or ""),
+        }
+
     @staticmethod
     def _config_row(record: dict[str, Any]) -> dict[str, Any]:
         fields = record.get("fields", {})

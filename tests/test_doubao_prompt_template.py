@@ -6,6 +6,46 @@ from api.workflow import DOUBAO_FALLBACK_PROMPT, ViralRemixWorkflow
 
 
 class DoubaoPromptTemplateTests(unittest.TestCase):
+    def test_direct_snapshot_is_rendered_without_gemini_and_written_atomically(self):
+        captured = {}
+
+        class FakeFeishu:
+            def get_record(self, table_id, record_id):
+                return {"record_id": record_id, "fields": {"商品名称": "Zapatos", "商品链接": "https://example.com/p", "商品品类": "鞋类"}}
+
+            def update_record(self, table_id, record_id, fields):
+                captured["fields"] = fields
+                return {"record_id": record_id, "fields": fields}
+
+        class ForbiddenGemini:
+            def generate_doubao_video_prompt(self, **kwargs):
+                raise AssertionError("direct_prompt must not call Gemini")
+
+        workflow = object.__new__(ViralRemixWorkflow)
+        workflow.settings = SimpleNamespace(doubao_table_id="doubao-table")
+        workflow.feishu = FakeFeishu()
+        workflow.gemini = ForbiddenGemini()
+        workflow.doubao_assets = SimpleNamespace(
+            require_prompt_generation_ready=lambda fields: "https://assets.example.com/image.png",
+            download_managed_image=lambda fields: (b"image", "image/png", "https://assets.example.com/image.png"),
+        )
+        snapshot = {
+            "config_record_id": "cfg-shoes",
+            "scheme_key": "mx_shoes_direct_10s",
+            "scheme_name": "墨西哥鞋类 10 秒",
+            "execution_mode": "direct_prompt",
+            "version": "v1",
+            "category": "鞋类",
+            "content": "商品：{product_name}；链接：{product_link}",
+        }
+
+        workflow.generate_doubao_prompt("record-1", "MX", prompt_snapshot=snapshot)
+
+        self.assertEqual(captured["fields"]["最终视频生成提示词"], "商品：Zapatos；链接：https://example.com/p")
+        self.assertEqual(captured["fields"]["Prompt方案Key"], "mx_shoes_direct_10s")
+        self.assertEqual(captured["fields"]["Prompt配置记录ID"], "cfg-shoes")
+        self.assertEqual(captured["fields"]["Prompt执行模式"], "direct_prompt")
+
     def test_generate_doubao_prompt_selects_malaysia_template(self):
         captured = {}
 

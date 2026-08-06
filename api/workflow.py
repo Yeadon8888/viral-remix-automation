@@ -658,6 +658,7 @@ class ViralRemixWorkflow:
         record_id: str,
         country_code: str = "MY",
         job_id: str | None = None,
+        prompt_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         country = get_country(country_code)
         record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
@@ -667,19 +668,35 @@ class ViralRemixWorkflow:
         self.doubao_assets.require_prompt_generation_ready(fields)
         image_bytes, image_mime, stored_url = self.doubao_assets.download_managed_image(fields)
         filename = stored_url.rsplit("/", 1)[-1] or "doubao-product-image"
-        prompt_rules, prompt_version = self._active_prompt_by_key(
-            DOUBAO_PROMPT_KEY,
-            country.prompt_region,
-            doubao_fallback_prompt(country),
-        )
+        snapshot = dict(prompt_snapshot or {})
+        if snapshot:
+            prompt_rules = str(snapshot.get("content") or "")
+            prompt_version = f"{DOUBAO_PROMPT_KEY}:{snapshot.get('version') or '未标版本'}"
+        else:
+            prompt_rules, prompt_version = self._active_prompt_by_key(
+                DOUBAO_PROMPT_KEY,
+                country.prompt_region,
+                doubao_fallback_prompt(country),
+            )
         add_log("info", f"开始生成豆包视频提示词: {product_name or filename} / {country.name}", "workflow", job_id)
-        result = self.gemini.generate_doubao_video_prompt(
-            product_name=product_name,
-            product_link=product_link,
-            prompt_rules=prompt_rules,
-            image_bytes=image_bytes,
-            image_mime=image_mime,
-        )
+        if snapshot.get("execution_mode") == "direct_prompt":
+            category = str(field_value(fields, "商品品类", "其他") or "其他").strip() or "其他"
+            if snapshot.get("category") not in {"通用", category}:
+                raise RuntimeError("所选直接 Prompt 与当前商品品类不兼容")
+            result = {
+                "final_video_prompt": prompt_rules.replace("{product_name}", product_name).replace("{product_link}", product_link),
+                "title": product_name,
+                "caption": str(field_value(fields, "文案", "") or ""),
+                "tags": str(field_value(fields, "标签", "") or ""),
+            }
+        else:
+            result = self.gemini.generate_doubao_video_prompt(
+                product_name=product_name,
+                product_link=product_link,
+                prompt_rules=prompt_rules,
+                image_bytes=image_bytes,
+                image_mime=image_mime,
+            )
         self.feishu.update_record(
             self.settings.doubao_table_id,
             record_id,
@@ -691,6 +708,11 @@ class ViralRemixWorkflow:
                 "目标国家": country.name,
                 "目标语言": country.language_name,
                 "Prompt配置版本": prompt_version,
+                "Prompt方案Key": str(snapshot.get("scheme_key") or "current_conversion"),
+                "Prompt方案名称": str(snapshot.get("scheme_name") or "T1 当前转化模板"),
+                "Prompt配置记录ID": str(snapshot.get("config_record_id") or ""),
+                "Prompt执行模式": str(snapshot.get("execution_mode") or "meta_generate"),
+                "Prompt生成时间": now_ms(),
                 "兼职同步状态": "未同步",
                 "兼职同步错误": "",
             },
@@ -715,6 +737,7 @@ class ViralRemixWorkflow:
         repair_checkpoint: dict[str, Any] | None = None,
         save_repair_checkpoint=None,
         should_stop=None,
+        prompt_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         country = get_country(country_code)
         completed_steps: list[str] = []
@@ -765,7 +788,12 @@ class ViralRemixWorkflow:
 
                 if next_action == "generate_prompt":
                     stage = "提示词生成"
-                    self.generate_doubao_prompt(record_id, country.code, job_id=job_id)
+                    self.generate_doubao_prompt(
+                        record_id,
+                        country.code,
+                        job_id=job_id,
+                        **({"prompt_snapshot": prompt_snapshot} if prompt_snapshot else {}),
+                    )
                     completed_steps.append(stage)
                     continue
 
@@ -788,7 +816,12 @@ class ViralRemixWorkflow:
                                 "steps": completed_steps,
                             }
                         stage = "提示词生成"
-                        self.generate_doubao_prompt(record_id, country.code, job_id=job_id)
+                        self.generate_doubao_prompt(
+                            record_id,
+                            country.code,
+                            job_id=job_id,
+                            **({"prompt_snapshot": prompt_snapshot} if prompt_snapshot else {}),
+                        )
                         completed_steps.append(stage)
                         continue
 

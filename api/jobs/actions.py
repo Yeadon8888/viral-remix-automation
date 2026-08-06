@@ -190,6 +190,7 @@ def execute_action(
     record_ids = data.get("record_ids") or []
     country_code = data.get("country_code", "MY")
     row_numbers = data.get("row_numbers") if isinstance(data.get("row_numbers"), dict) else {}
+    prompt_options = {"prompt_snapshot": data["prompt_snapshot"]} if data.get("prompt_snapshot") else {}
 
     if action == "doubao.generate_white_background":
         from api.jobs import job_cancel_requested, job_item_results, save_job_item_result
@@ -205,7 +206,9 @@ def execute_action(
 
     single_actions = {
         "doubao.detect_face": lambda: work.detect_doubao_face(record_id, job_id=job_id),
-        "doubao.generate_prompt": lambda: work.generate_doubao_prompt(record_id, country_code, job_id=job_id),
+        "doubao.generate_prompt": lambda: work.generate_doubao_prompt(
+            record_id, country_code, job_id=job_id, **prompt_options
+        ),
         "doubao.delete_face_record": lambda: work.delete_doubao_face_record(record_id, job_id=job_id),
         "doubao.remove_face_image": lambda: work.delete_doubao_face_record(record_id, job_id=job_id),
         "doubao.sync_part_time": lambda: work.sync_doubao_to_part_time(record_id, country_code, job_id=job_id),
@@ -247,7 +250,9 @@ def execute_action(
     if action == "doubao.batch_generate_prompts":
         return _batch(
             record_ids,
-            lambda rid: work.generate_doubao_prompt(rid, country_code, job_id=job_id),
+            lambda rid: work.generate_doubao_prompt(
+                rid, country_code, job_id=job_id, **prompt_options
+            ),
             max_workers=_concurrency(work, "batch_prompt_concurrency", 2),
             job_id=job_id,
             label="提示词生成",
@@ -314,6 +319,7 @@ def execute_action(
                 target_records=target_records,
                 force_update=bool(data.get("force_update")),
                 **face_options,
+                **({"prompt_snapshot": data.get("prompt_snapshot")} if data.get("prompt_snapshot") else {}),
                 **(
                     {
                         "repair_checkpoint": repair_checkpoints.get(rid, {}),
