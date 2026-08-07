@@ -71,6 +71,28 @@ def get_country(country_code: str | None) -> Country:
     return country
 
 
+def country_from_target(
+    target_country: str | None,
+    target_language: str | None,
+    fallback_code: str = "MY",
+) -> Country:
+    country_name = str(target_country or "").strip()
+    language_name = str(target_language or "").strip()
+    if not country_name and not language_name:
+        return get_country(fallback_code)
+    matches = [
+        country
+        for country in COUNTRIES
+        if (not country_name or country.name == country_name)
+        and (not language_name or country.language_name == language_name)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if country_name == "马来西亚" and not language_name:
+        return get_country(fallback_code) if get_country(fallback_code).name == country_name else get_country("MY")
+    raise ValueError(f"记录中的目标国家/语言无法识别：{country_name or '未填写'} / {language_name or '未填写'}")
+
+
 def list_countries() -> list[dict[str, str | bool]]:
     return [asdict(country) for country in COUNTRIES]
 

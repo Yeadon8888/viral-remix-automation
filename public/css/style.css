@@ -687,6 +687,14 @@ input[type="checkbox"],
   font-size: 12px;
 }
 
+.range-picker input[type="date"] { width: 142px; }
+
+.selection-mode {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .table-toolbar {
   display: flex;
   align-items: center;

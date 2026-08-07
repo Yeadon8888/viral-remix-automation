@@ -48,6 +48,7 @@ class Settings:
     batch_prompt_concurrency: int = env_int("BATCH_PROMPT_CONCURRENCY", 2)
     batch_face_concurrency: int = env_int("BATCH_FACE_CONCURRENCY", 6)
     batch_sync_concurrency: int = env_int("BATCH_SYNC_CONCURRENCY", 2)
+    batch_workflow_concurrency: int = env_int("BATCH_WORKFLOW_CONCURRENCY", 4)
     face_image_max_bytes: int = env_int("FACE_IMAGE_MAX_BYTES", 20 * 1024 * 1024)
 
     feishu_app_id: str = env("FEISHU_APP_ID")

@@ -200,29 +200,39 @@
             </div>
             <div class="country-toolbar">
               <label for="doubaoCountry">
-                <span>目标国家与语言</span>
+                <span>缺失国家时的兜底国家与语言</span>
                 <select id="doubaoCountry" aria-describedby="countryHelp"></select>
               </label>
               <label for="doubaoPromptConfig">
                 <span>提示词方案</span>
                 <select id="doubaoPromptConfig"><option value="">T1 兼容模式</option></select>
               </label>
-              <p id="countryHelp">国家与语言会共同决定 Prompt 模板、口播语言和兼职任务归属。</p>
+              <label class="checkline" title="每条素材已有目标国家和语言时，自动使用对应的本地化模板">
+                <input id="useDoubaoRecordCountry" type="checkbox" checked>
+                <span>优先使用记录已有国家/语言</span>
+              </label>
+              <p id="countryHelp">记录已有国家/语言时逐条自动识别；缺失时才使用左侧兜底国家。</p>
               <div class="workflow-rule">人脸检测可按批次跳过；若执行检测，后端会按当前图片链接校验结果，更换图片后需重新选择。</div>
             </div>
             <div class="batch-bar doubao-batch-bar">
-              <label class="checkline">
-                <input id="selectAllDoubao" type="checkbox">
-                <span>全选当前记录</span>
-              </label>
-              <div class="range-picker" aria-label="按行号选择豆包记录">
+              <div class="selection-mode" aria-label="豆包记录选择方式">
+                <label class="checkline"><input id="doubaoSelectionByDate" name="doubaoSelectionMode" type="radio" value="date" checked><span>按日期</span></label>
+                <label class="checkline"><input id="doubaoSelectionByRow" name="doubaoSelectionMode" type="radio" value="row"><span>按行号</span></label>
+              </div>
+              <div id="doubaoDatePicker" class="range-picker" aria-label="按日期选择豆包记录">
+                <span>日期</span>
+                <input id="doubaoExactDate" type="date" aria-label="豆包素材日期">
+                <button id="selectDoubaoDate" class="mini secondary" type="button">选择当天素材</button>
+              </div>
+              <div id="doubaoRowPicker" class="range-picker" aria-label="按行号选择豆包记录" hidden>
                 <span>行号</span>
                 <input id="doubaoRangeStart" type="number" min="1" inputmode="numeric" aria-label="豆包起始行" placeholder="起始">
                 <span>—</span>
                 <input id="doubaoRangeEnd" type="number" min="1" inputmode="numeric" aria-label="豆包结束行" placeholder="结束">
                 <button id="selectDoubaoRange" class="mini secondary" type="button">选择</button>
-                <button id="clearDoubaoSelection" class="mini ghost" type="button">清空</button>
               </div>
+              <button id="clearDoubaoSelection" class="mini ghost" type="button">清空</button>
+              <label class="checkline"><input id="selectAllDoubao" type="checkbox"><span>全选当前页</span></label>
               <strong id="selectedDoubaoCount">已选 0 条</strong>
               <span class="helper-text">批量操作只处理已勾选记录</span>
               <label class="checkline" title="不勾选时，本次流程会记录为已跳过并继续后续步骤">

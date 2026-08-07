@@ -791,6 +791,7 @@ def list_doubao_items_page():
     workflow = get_workflow()
     page_size = query_int("page_size", 100, 100)
     days = query_days()
+    exact_date = str(request.args.get("date") or "").strip()
     page_token = str(request.args.get("page_token") or "").strip()
     order = str(request.args.get("order") or "latest").strip().lower()
     if order not in {"latest", "oldest"}:
@@ -800,13 +801,14 @@ def list_doubao_items_page():
     except (TypeError, ValueError):
         offset = 0
     data = cached_list(
-        f"doubao-page:{order}:{days}:{page_size}:{page_token}:{offset}",
+        f"doubao-page:{order}:{days}:{exact_date}:{page_size}:{page_token}:{offset}",
         lambda: workflow.list_doubao_items_page(
             page_size=page_size,
             page_token=page_token,
             start_index=offset + 1,
             order=order,
             days=days,
+            exact_date=exact_date,
         ),
         ttl_seconds=120,
     )
@@ -1061,6 +1063,7 @@ def batch_doubao_operation():
 
     selection_label = str(body.get("selection_label") or "").strip()[:120]
     country = None
+    use_record_country = body.get("use_record_country") is True
     if operation in {"generate_prompts", "sync_part_time", "process_workflow"}:
         try:
             country = get_country(body.get("country_code"))
@@ -1094,7 +1097,10 @@ def batch_doubao_operation():
                 payload["selection_label"] = f"{prefix} · {suffix}"
         if country:
             payload["country_code"] = country.code
-        if operation in {"generate_prompts", "process_workflow"} and body.get("prompt_config_id"):
+        if operation == "process_workflow" and use_record_country:
+            payload["use_record_country"] = True
+            payload["prompt_scheme_key"] = str(body.get("prompt_scheme_key") or "current_conversion").strip()
+        if operation in {"generate_prompts", "process_workflow"} and body.get("prompt_config_id") and not use_record_country:
             try:
                 payload["prompt_snapshot"] = get_workflow().prompt_configs.resolve_doubao_snapshot(
                     record_id=str(body.get("prompt_config_id") or "").strip(),

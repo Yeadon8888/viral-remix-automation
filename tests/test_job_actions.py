@@ -24,7 +24,7 @@ class JobActionContractTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(payload["record_ids"], ["rec-1", "rec-2"])
+        self.assertEqual(payload["record_ids"], ["rec-2", "rec-1"])
         self.assertEqual(payload["row_numbers"], {"rec-1": 101, "rec-2": 102})
         self.assertEqual(payload["country_code"], "MX")
 
@@ -207,7 +207,7 @@ class JobActionContractTests(unittest.TestCase):
             workflow=FakeWorkflow(),
         )
 
-        self.assertEqual(calls, ["rec-1", "rec-2"])
+        self.assertEqual(calls, ["rec-2", "rec-1"])
         self.assertEqual(result["processed"], 2)
         self.assertEqual(result["failed"], 0)
 
@@ -473,7 +473,10 @@ class JobActionContractTests(unittest.TestCase):
                 job_id=None,
                 target_records=None,
                 force_update=False,
+                before_part_time_sync=None,
             ):
+                if before_part_time_sync:
+                    before_part_time_sync()
                 calls.append((record_id, country_code, force_update))
                 if record_id == "rec-blocked":
                     return {
@@ -509,6 +512,41 @@ class JobActionContractTests(unittest.TestCase):
         self.assertEqual(result["failed"], 1)
         self.assertEqual(result["blocked"], 1)
         self.assertEqual(result["created"], 1)
+
+    def test_doubao_workflow_commits_to_part_time_in_source_order(self):
+        from api.jobs.actions import execute_action
+
+        commits = []
+
+        class FakeFeishu:
+            def list_records(self, table_id):
+                return []
+
+        class FakeWorkflow:
+            settings = type(
+                "Settings",
+                (),
+                {"part_time_table_id": "target-table", "batch_workflow_concurrency": 2},
+            )()
+            feishu = FakeFeishu()
+
+            def process_doubao_workflow_record(self, record_id, country_code="MY", before_part_time_sync=None, **kwargs):
+                if record_id == "rec-first":
+                    time.sleep(0.03)
+                before_part_time_sync()
+                commits.append(record_id)
+                return {"record_id": record_id, "status": "created"}
+
+        result = execute_action(
+            "doubao.batch_workflow",
+            {"record_ids": ["rec-first", "rec-second"], "country_code": "MX"},
+            "job-ordered",
+            "alice",
+            workflow=FakeWorkflow(),
+        )
+
+        self.assertEqual(commits, ["rec-first", "rec-second"])
+        self.assertEqual(result["created"], 2)
 
     def test_doubao_workflow_record_runs_each_required_stage_in_order(self):
         from api.workflow import ViralRemixWorkflow
@@ -611,6 +649,54 @@ class JobActionContractTests(unittest.TestCase):
         self.assertEqual(result["status"], "created")
         self.assertEqual(calls, ["skip-face", "prompt", "sync"])
 
+    def test_doubao_workflow_uses_each_records_country_and_scheme(self):
+        from api.workflow import ViralRemixWorkflow
+
+        calls = []
+        fields = {"目标国家": "马来西亚", "目标语言": "英语", "商品品类": "服装"}
+        current = {"next_action": "generate_prompt"}
+
+        class FakeFeishu:
+            def get_record(self, table_id, record_id):
+                return {"record_id": record_id, "fields": fields}
+
+        class FakeAssets:
+            def describe(self, current_fields):
+                return {"素材下一步": current["next_action"], "素材阻塞原因": "", "可执行生成提示词": True}
+
+        class FakePromptConfigs:
+            def resolve_doubao_snapshot(self, **kwargs):
+                calls.append(("snapshot", kwargs))
+                return {"scheme_key": kwargs["scheme_key"], "version": "my-en-t2"}
+
+        class FakeWorkflow:
+            settings = type("Settings", (), {"doubao_table_id": "doubao-table"})()
+            feishu = FakeFeishu()
+            doubao_assets = FakeAssets()
+            prompt_configs = FakePromptConfigs()
+
+            def generate_doubao_prompt(self, record_id, country_code, job_id=None, prompt_snapshot=None):
+                calls.append(("prompt", country_code, prompt_snapshot["scheme_key"]))
+                current["next_action"] = "sync_part_time"
+
+            def sync_doubao_to_part_time(self, record_id, country_code, job_id=None, target_records=None, force_update=False):
+                calls.append(("sync", country_code))
+                return {"record_id": record_id, "status": "created"}
+
+        result = ViralRemixWorkflow.process_doubao_workflow_record(
+            FakeWorkflow(),
+            "rec-my-en",
+            "PH",
+            target_records=[],
+            use_record_country=True,
+            prompt_scheme_key="t2",
+        )
+
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(calls[0][1]["region"], "马来-英语")
+        self.assertEqual(calls[1], ("prompt", "MY_EN", "t2"))
+        self.assertEqual(calls[2], ("sync", "MY_EN"))
+
     def test_doubao_publish_action_invokes_joined_sync(self):
         from api.jobs.actions import execute_action
 
@@ -630,7 +716,7 @@ class JobActionContractTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"created": 1})
-        self.assertEqual(calls, [(["source-1", "source-2"], 200, "job-1")])
+        self.assertEqual(calls, [(["source-2", "source-1"], 200, "job-1")])
 
     def test_part_time_publish_action_invokes_selected_sync(self):
         from api.jobs.actions import execute_action
@@ -651,7 +737,7 @@ class JobActionContractTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"created": 1, "failed": 0})
-        self.assertEqual(calls, [(["part-1", "part-2"], 200, "job-1")])
+        self.assertEqual(calls, [(["part-2", "part-1"], 200, "job-1")])
 
     def test_part_time_publish_action_keeps_real_row_number_in_failure(self):
         from api.jobs.actions import execute_action

@@ -361,6 +361,21 @@ test("Doubao page exposes row-number order control independently from its date f
   assert.match(html, /value="2" selected>最近 2 天/);
 });
 
+test("Doubao page offers mutually exclusive date and row selection", () => {
+  const root = path.join(__dirname, "..");
+  const html = fs.readFileSync(path.join(root, "public", "index.html"), "utf8");
+  const source = fs.readFileSync(path.join(root, "public", "js", "app.js"), "utf8");
+
+  assert.match(html, /id="doubaoSelectionByDate"[^>]+name="doubaoSelectionMode"/);
+  assert.match(html, /id="doubaoSelectionByRow"[^>]+name="doubaoSelectionMode"/);
+  assert.match(html, /id="doubaoExactDate"[^>]+type="date"/);
+  assert.match(source, /params\.set\("date", options\.exactDate\)/);
+  assert.match(source, /use_record_country:/);
+  assert.match(source, /prompt_scheme_key:/);
+  assert.match(source, /特殊类目模板/);
+  assert.match(source, /不再逐条检查品类/);
+});
+
 test("Doubao date-filtered records are displayed in real row-number order", async () => {
   const context = loadApp(async (requestPath) => {
     if (String(requestPath).startsWith("/api/doubao-items/row-index")) {

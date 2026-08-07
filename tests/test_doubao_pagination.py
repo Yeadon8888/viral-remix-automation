@@ -222,6 +222,39 @@ class DoubaoWorkflowPaginationTests(unittest.TestCase):
         self.assertEqual(page["page_token"], "")
         self.assertEqual(page["total"], 0)
 
+    def test_exact_date_filters_records_in_shanghai_timezone(self):
+        selected = datetime(2026, 8, 6, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        previous = datetime(2026, 8, 5, 23, 59, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        class FakeFeishu:
+            def list_records_page(self, table_id, page_size, page_token, sort):
+                return {
+                    "items": [
+                        {"record_id": "selected", "created_time": str(int(selected.timestamp() * 1000)), "fields": {}},
+                        {"record_id": "previous", "created_time": str(int(previous.timestamp() * 1000)), "fields": {}},
+                    ],
+                    "has_more": True,
+                    "page_token": "next-cursor",
+                    "total": 2,
+                }
+
+        workflow = object.__new__(ViralRemixWorkflow)
+        workflow.settings = SimpleNamespace(doubao_table_id="doubao-table")
+        workflow.feishu = FakeFeishu()
+        workflow.r2 = SimpleNamespace(is_managed_url=lambda url: False)
+        workflow.doubao_assets = DoubaoAssetService(
+            workflow.settings,
+            workflow.feishu,
+            workflow.r2,
+            SimpleNamespace(),
+            lambda url: (b"", ""),
+        )
+
+        page = workflow.list_doubao_items_page(exact_date="2026-08-06")
+
+        self.assertEqual([row["record_id"] for row in page["items"]], ["selected"])
+        self.assertFalse(page["has_more"])
+
     def test_workflow_maps_record_ranges_to_doubao_items(self):
         class FakeRecordIndex:
             def range(self, start_row, end_row, force_refresh=False):
@@ -260,8 +293,8 @@ class DoubaoPaginationApiTests(unittest.TestCase):
             def __init__(self):
                 self.call = None
 
-            def list_doubao_items_page(self, page_size, page_token, start_index, order, days):
-                self.call = (page_size, page_token, start_index, order, days)
+            def list_doubao_items_page(self, page_size, page_token, start_index, order, days, exact_date=""):
+                self.call = (page_size, page_token, start_index, order, days, exact_date)
                 return {
                     "items": [{"record_id": "rec-501", "行号": start_index}],
                     "has_more": True,
@@ -277,7 +310,7 @@ class DoubaoPaginationApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(fake_workflow.call, (100, "current-cursor", 501, "oldest", 7))
+        self.assertEqual(fake_workflow.call, (100, "current-cursor", 501, "oldest", 7, ""))
         payload = response.get_json()
         self.assertEqual(payload["data"], [{"record_id": "rec-501", "行号": 501}])
         self.assertTrue(payload["has_more"])

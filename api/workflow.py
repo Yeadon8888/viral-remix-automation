@@ -1,13 +1,15 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, time as datetime_time
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 
 from .config import Settings
-from .countries import doubao_fallback_prompt, get_country
+from .countries import country_from_target, doubao_fallback_prompt, get_country
 from .cpa import CpaVideoClient
 from .feishu import FeishuClient, attachment_count, field_value, first_attachment
 from .gemini import GeminiClient, local_language
@@ -494,6 +496,7 @@ class ViralRemixWorkflow:
         start_index: int = 1,
         order: str = "latest",
         days: int = 0,
+        exact_date: str = "",
     ) -> dict[str, Any]:
         sort = ["后台创建时间 DESC"] if order == "latest" else ["后台创建时间 ASC"]
         page = self.feishu.list_records_page(
@@ -504,12 +507,27 @@ class ViralRemixWorkflow:
         )
         records = page["items"]
         cutoff = recent_window_start_ms(days)
+        date_start = 0
+        date_end = 0
+        if exact_date:
+            try:
+                selected_day = datetime.strptime(exact_date, "%Y-%m-%d").date()
+            except ValueError as exc:
+                raise ValueError("日期格式必须为 YYYY-MM-DD") from exc
+            timezone = ZoneInfo("Asia/Shanghai")
+            date_start = int(datetime.combine(selected_day, datetime_time.min, tzinfo=timezone).timestamp() * 1000)
+            date_end = date_start + 24 * 60 * 60 * 1000
         reached_cutoff = False
-        if cutoff:
+        if cutoff or date_start:
             filtered_records = []
             for record in records:
                 timestamp = record_timestamp_ms(record, ("后台创建时间", "created_time"))
-                if not timestamp or timestamp >= cutoff:
+                if date_start:
+                    if date_start <= timestamp < date_end:
+                        filtered_records.append(record)
+                    elif timestamp and timestamp < date_start and order == "latest":
+                        reached_cutoff = True
+                elif not timestamp or timestamp >= cutoff:
                     filtered_records.append(record)
                 elif order == "latest":
                     reached_cutoff = True
@@ -522,7 +540,7 @@ class ViralRemixWorkflow:
             ),
             "has_more": bool(page["has_more"] and not reached_cutoff),
             "page_token": "" if reached_cutoff else page["page_token"],
-            "total": 0 if cutoff else page.get("total", 0),
+            "total": 0 if cutoff or date_start else page.get("total", 0),
         }
 
     def list_doubao_items_range(
@@ -691,9 +709,6 @@ class ViralRemixWorkflow:
             )
         add_log("info", f"开始生成豆包视频提示词: {product_name or filename} / {country.name}", "workflow", job_id)
         if snapshot.get("execution_mode") == "direct_prompt":
-            category = str(field_value(fields, "商品品类", "其他") or "其他").strip() or "其他"
-            if snapshot.get("category") not in {"通用", category}:
-                raise RuntimeError("所选直接 Prompt 与当前商品品类不兼容")
             result = {
                 "final_video_prompt": prompt_rules.replace("{product_name}", product_name).replace("{product_link}", product_link),
                 "title": product_name,
@@ -749,6 +764,9 @@ class ViralRemixWorkflow:
         save_repair_checkpoint=None,
         should_stop=None,
         prompt_snapshot: dict[str, Any] | None = None,
+        use_record_country: bool = False,
+        prompt_scheme_key: str = "current_conversion",
+        before_part_time_sync=None,
     ) -> dict[str, Any]:
         country = get_country(country_code)
         completed_steps: list[str] = []
@@ -758,6 +776,12 @@ class ViralRemixWorkflow:
             for _ in range(8):
                 record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
                 fields = record.get("fields", {})
+                if use_record_country:
+                    country = country_from_target(
+                        field_value(fields, "目标国家", ""),
+                        field_value(fields, "目标语言", ""),
+                        country_code,
+                    )
                 state = self.doubao_assets.describe(fields)
                 next_action = str(state.get("素材下一步") or "")
                 sync_state = str(field_value(fields, "兼职同步状态", "") or "").strip()
@@ -799,11 +823,19 @@ class ViralRemixWorkflow:
 
                 if next_action == "generate_prompt":
                     stage = "提示词生成"
+                    selected_snapshot = prompt_snapshot
+                    if use_record_country:
+                        selected_snapshot = self.prompt_configs.resolve_doubao_snapshot(
+                            scheme_key=prompt_scheme_key,
+                            region=country.prompt_region,
+                            language=country.language_name,
+                            category="通用",
+                        )
                     self.generate_doubao_prompt(
                         record_id,
                         country.code,
                         job_id=job_id,
-                        **({"prompt_snapshot": prompt_snapshot} if prompt_snapshot else {}),
+                        **({"prompt_snapshot": selected_snapshot} if selected_snapshot else {}),
                     )
                     completed_steps.append(stage)
                     continue
@@ -837,6 +869,8 @@ class ViralRemixWorkflow:
                         continue
 
                     stage = "同步兼职表"
+                    if before_part_time_sync:
+                        before_part_time_sync()
                     result = self.sync_doubao_to_part_time(
                         record_id,
                         country.code,
@@ -851,6 +885,8 @@ class ViralRemixWorkflow:
                 if next_action == "wait_video":
                     if force_update and sync_state == "已同步":
                         stage = "同步兼职表"
+                        if before_part_time_sync:
+                            before_part_time_sync()
                         result = self.sync_doubao_to_part_time(
                             record_id,
                             country.code,

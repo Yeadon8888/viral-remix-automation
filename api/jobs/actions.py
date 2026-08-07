@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from threading import Condition
 from typing import Any
 
 from api.logging_bus import add_log
@@ -7,11 +8,28 @@ from api.logging_bus import add_log
 _worker_workflow = None
 
 
+class _OrderedCommitGate:
+    def __init__(self) -> None:
+        self._condition = Condition()
+        self._finished: set[int] = set()
+
+    def wait(self, index: int) -> None:
+        with self._condition:
+            self._condition.wait_for(
+                lambda: all(previous in self._finished for previous in range(index))
+            )
+
+    def finish(self, index: int) -> None:
+        with self._condition:
+            self._finished.add(index)
+            self._condition.notify_all()
+
+
 def _record_ids(payload: dict[str, Any]) -> list[str]:
     values = payload.get("record_ids")
     if not isinstance(values, list):
         return []
-    return sorted({str(item).strip() for item in values if str(item).strip()})
+    return list(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
 
 
 def normalize_payload(action: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -46,6 +64,10 @@ def normalize_payload(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         normalized["detect_faces"] = normalized.get("detect_faces") is True
     if "repair_faces" in normalized:
         normalized["repair_faces"] = normalized.get("repair_faces") is True and normalized.get("detect_faces") is True
+    if "use_record_country" in normalized:
+        normalized["use_record_country"] = normalized.get("use_record_country") is True
+    if "prompt_scheme_key" in normalized:
+        normalized["prompt_scheme_key"] = str(normalized.get("prompt_scheme_key") or "current_conversion").strip()
     return normalized
 
 
@@ -86,6 +108,7 @@ def _batch(
     label: str = "",
     row_numbers: dict[str, int] | None = None,
     resume_paid_checkpoints: bool = False,
+    on_item_done=None,
 ) -> dict[str, Any]:
     total = len(records)
     workers = min(total, max(1, int(max_workers))) if total else 1
@@ -114,16 +137,22 @@ def _batch(
         if record_id in checkpointed and not has_resumable_paid_task:
             if label:
                 add_log("info", f"[{label} {index + 1}/{total}] 从检查点恢复: {location}", "batch", job_id)
-            return with_row_context(checkpointed[record_id])
+            result = with_row_context(checkpointed[record_id])
+            if on_item_done:
+                on_item_done(index)
+            return result
         if job_id:
             from api.jobs import job_cancel_requested, save_job_item_result
 
             if job_cancel_requested(job_id):
-                return with_row_context({
+                result = with_row_context({
                     "record_id": record_id,
                     "status": "cancelled",
                     "message": "用户已停止任务，当前记录未处理",
                 })
+                if on_item_done:
+                    on_item_done(index)
+                return result
         if label:
             add_log("info", f"[{label} {index + 1}/{total}] 开始: {location}", "batch", job_id)
         try:
@@ -137,6 +166,8 @@ def _batch(
                 save_job_item_result(job_id, record_id, result)
             except Exception as exc:
                 add_log("warning", f"任务检查点写入失败: {record_id} / {exc}", "batch", job_id)
+        if on_item_done:
+            on_item_done(index)
         return result
 
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="batch-item") as pool:
@@ -310,6 +341,14 @@ def execute_action(
                 "detect_faces": data.get("detect_faces") is not False,
                 "repair_faces": data.get("repair_faces") is True and data.get("detect_faces") is not False,
             }
+        record_country_options = {}
+        if data.get("use_record_country"):
+            record_country_options = {
+                "use_record_country": True,
+                "prompt_scheme_key": str(data.get("prompt_scheme_key") or "current_conversion"),
+            }
+        commit_gate = _OrderedCommitGate()
+        order_indexes = {record_id: index for index, record_id in enumerate(record_ids)}
         result = _batch(
             record_ids,
             lambda rid: work.process_doubao_workflow_record(
@@ -318,6 +357,8 @@ def execute_action(
                 job_id=job_id,
                 target_records=target_records,
                 force_update=bool(data.get("force_update")),
+                **record_country_options,
+                before_part_time_sync=lambda record_id=rid: commit_gate.wait(order_indexes[record_id]),
                 **face_options,
                 **({"prompt_snapshot": data.get("prompt_snapshot")} if data.get("prompt_snapshot") else {}),
                 **(
@@ -330,11 +371,12 @@ def execute_action(
                     else {}
                 ),
             ),
-            max_workers=_concurrency(work, "batch_sync_concurrency", 2),
+            max_workers=_concurrency(work, "batch_workflow_concurrency", 4),
             job_id=job_id,
             label="按流程处理",
             row_numbers=row_numbers,
             resume_paid_checkpoints=face_options.get("repair_faces") is True,
+            on_item_done=commit_gate.finish,
         )
         for status in ("created", "updated", "conflict", "skipped", "blocked"):
             result[status] = sum(1 for item in result["results"] if item.get("status") == status)

@@ -27,6 +27,7 @@ const state = {
   doubaoSortOrder: localStorage.getItem("viral-remix-doubao-sort") || "latest",
   partTimeSortOrder: localStorage.getItem("viral-remix-part-time-sort") || "latest",
   doubaoDateRange: normalizeDateRange(localStorage.getItem("viral-remix-doubao-date-range")),
+  doubaoSelectionMode: localStorage.getItem("viral-remix-doubao-selection-mode") === "row" ? "row" : "date",
   partTimeDateRange: normalizeDateRange(localStorage.getItem("viral-remix-part-time-date-range")),
   doubaoTotal: 0,
   doubaoLoadVersion: 0,
@@ -377,7 +378,9 @@ function selectedVisibleTaskRows() {
 }
 
 function selectedDoubaoRows() {
-  return state.doubaoItems.filter((row) => state.selectedDoubaoIds.has(row.record_id));
+  return state.doubaoItems
+    .filter((row) => state.selectedDoubaoIds.has(row.record_id))
+    .sort((left, right) => rowNumber(left) - rowNumber(right));
 }
 
 function selectedPartTimeRows() {
@@ -482,6 +485,17 @@ function selectedDoubaoPromptConfigId() {
   const value = $("doubaoPromptConfig")?.value || "";
   if (!value) notify("当前国家没有已选择的启用提示词方案，请先在 Prompt 配置页启用方案", "error");
   return value;
+}
+
+function selectedDoubaoPromptSchemeKey() {
+  const recordId = $("doubaoPromptConfig")?.value || "";
+  const selected = state.doubaoPromptOptions.find((row) => row.record_id === recordId);
+  return String(selected?.["方案Key"] || "current_conversion").trim();
+}
+
+function selectedDoubaoPromptOption() {
+  const recordId = $("doubaoPromptConfig")?.value || "";
+  return state.doubaoPromptOptions.find((row) => row.record_id === recordId) || null;
 }
 
 function selectedCountryName() {
@@ -715,6 +729,7 @@ function renderDoubaoSelectionState() {
 }
 
 async function selectDoubaoRange() {
+  setDoubaoSelectionMode("row");
   const start = Number($("doubaoRangeStart").value);
   const end = Number($("doubaoRangeEnd").value);
   if (!Number.isFinite(start) || !Number.isFinite(end) || start < 1 || end < 1) {
@@ -728,6 +743,38 @@ async function selectDoubaoRange() {
     return;
   }
   await loadDoubaoRangeItems(from, to, { select: true });
+}
+
+function localDateValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function setDoubaoSelectionMode(mode) {
+  state.doubaoSelectionMode = mode === "row" ? "row" : "date";
+  localStorage.setItem("viral-remix-doubao-selection-mode", state.doubaoSelectionMode);
+  $("doubaoSelectionByDate").checked = state.doubaoSelectionMode === "date";
+  $("doubaoSelectionByRow").checked = state.doubaoSelectionMode === "row";
+  $("doubaoDatePicker").hidden = state.doubaoSelectionMode !== "date";
+  $("doubaoRowPicker").hidden = state.doubaoSelectionMode !== "row";
+  state.selectedDoubaoIds.clear();
+  renderDoubaoItems();
+}
+
+async function selectDoubaoDate() {
+  setDoubaoSelectionMode("date");
+  const exactDate = String($("doubaoExactDate").value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(exactDate)) {
+    notify("请选择有效日期", "error");
+    return;
+  }
+  state.doubaoLoadedRange = null;
+  await loadDoubaoItems({ force: true, full: true, exactDate });
+  state.selectedDoubaoIds = new Set(state.doubaoItems.map((row) => row.record_id).filter(Boolean));
+  renderDoubaoItems();
+  notify(`已选择 ${exactDate} 的 ${state.selectedDoubaoIds.size} 条素材`);
 }
 
 function clearDoubaoSelection() {
@@ -1638,7 +1685,8 @@ async function loadDoubaoItems(options = {}) {
     const params = new URLSearchParams({ page_size: "100", offset: String(rows.length) });
     const finiteDateRange = state.doubaoDateRange !== "0";
     params.set("order", finiteDateRange ? "latest" : state.doubaoSortOrder);
-    params.set("days", state.doubaoDateRange);
+    params.set("days", options.exactDate ? "0" : state.doubaoDateRange);
+    if (options.exactDate) params.set("date", options.exactDate);
     if (pageToken) params.set("page_token", pageToken);
     if (options.force) params.set("force", "1");
     const data = await api(`/api/doubao-items/page?${params.toString()}`);
@@ -2491,6 +2539,12 @@ async function batchDoubaoWorkflow(button = null) {
   }
   const promptConfigId = selectedDoubaoPromptConfigId();
   if (!promptConfigId) return;
+  const promptOption = selectedDoubaoPromptOption();
+  const promptCategory = String(promptOption?.["适用品类"] || "通用").trim() || "通用";
+  const usesSpecialTemplate = promptCategory !== "通用";
+  if (usesSpecialTemplate && !window.confirm(
+    `当前选择的是“${promptCategory}”特殊类目模板。请确认本次 ${rows.length} 条素材全部属于${promptCategory}；确认后系统将直接套用该模板，不再逐条检查品类。选错可能造成素材损失，是否继续？`,
+  )) return;
   const forceUpdate = Boolean($("forceDoubaoSyncUpdate")?.checked);
   const requireFaceDetection = Boolean($("requireDoubaoFaceDetection")?.checked);
   const repairFaces = requireFaceDetection && Boolean($("repairDoubaoFaces")?.checked);
@@ -2510,6 +2564,8 @@ async function batchDoubaoWorkflow(button = null) {
         record_ids: rows.map((row) => row.record_id),
         row_numbers: doubaoRowNumberMap(rows),
         country_code: state.doubaoCountryCode,
+        use_record_country: !usesSpecialTemplate && Boolean($("useDoubaoRecordCountry")?.checked),
+        prompt_scheme_key: selectedDoubaoPromptSchemeKey(),
         force_update: forceUpdate,
         detect_faces: requireFaceDetection,
         repair_faces: repairFaces,
@@ -2997,6 +3053,11 @@ $("doubaoDateRange").onchange = () => {
   state.loadedPages.delete("doubao");
   loadPageData("doubao").catch((error) => notify(error.message, "error"));
 };
+$("doubaoExactDate").value = localDateValue();
+setDoubaoSelectionMode(state.doubaoSelectionMode);
+$("doubaoSelectionByDate").onchange = () => setDoubaoSelectionMode("date");
+$("doubaoSelectionByRow").onchange = () => setDoubaoSelectionMode("row");
+$("selectDoubaoDate").onclick = () => selectDoubaoDate().catch((error) => notify(error.message, "error"));
 $("partTimeSortOrder").value = state.partTimeSortOrder;
 $("partTimeSortOrder").onchange = () => {
   state.partTimeSortOrder = $("partTimeSortOrder").value === "oldest" ? "oldest" : "latest";
