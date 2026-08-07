@@ -365,6 +365,7 @@ test("Doubao page offers mutually exclusive date and row selection", () => {
   const root = path.join(__dirname, "..");
   const html = fs.readFileSync(path.join(root, "public", "index.html"), "utf8");
   const source = fs.readFileSync(path.join(root, "public", "js", "app.js"), "utf8");
+  const styles = fs.readFileSync(path.join(root, "public", "css", "style.css"), "utf8");
 
   assert.match(html, /id="doubaoSelectionByDate"[^>]+name="doubaoSelectionMode"/);
   assert.match(html, /id="doubaoSelectionByRow"[^>]+name="doubaoSelectionMode"/);
@@ -374,6 +375,7 @@ test("Doubao page offers mutually exclusive date and row selection", () => {
   assert.match(source, /prompt_scheme_key:/);
   assert.match(source, /特殊类目模板/);
   assert.match(source, /不再逐条检查品类/);
+  assert.match(styles, /\.range-picker\[hidden\]\s*\{\s*display:\s*none;/);
 });
 
 test("Doubao date-filtered records are displayed in real row-number order", async () => {

@@ -678,6 +678,8 @@ input[type="checkbox"],
   font-weight: 750;
 }
 
+.range-picker[hidden] { display: none; }
+
 .range-picker input {
   width: 72px;
   min-height: 34px;
