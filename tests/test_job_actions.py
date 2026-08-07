@@ -548,6 +548,106 @@ class JobActionContractTests(unittest.TestCase):
         self.assertEqual(commits, ["rec-first", "rec-second"])
         self.assertEqual(result["created"], 2)
 
+    def test_special_template_replacement_updates_part_time_in_source_order(self):
+        from api.jobs.actions import execute_action
+
+        commits = []
+
+        class FakeFeishu:
+            def list_records(self, table_id):
+                return []
+
+        class FakeWorkflow:
+            settings = type(
+                "Settings",
+                (),
+                {"part_time_table_id": "target-table", "batch_workflow_concurrency": 2},
+            )()
+            feishu = FakeFeishu()
+
+            def retemplate_doubao_and_sync(self, record_id, country_code, before_part_time_sync=None, **kwargs):
+                if record_id == "rec-first":
+                    time.sleep(0.03)
+                before_part_time_sync()
+                commits.append(record_id)
+                return {"record_id": record_id, "status": "updated"}
+
+        result = execute_action(
+            "doubao.batch_retemplate_sync",
+            {
+                "record_ids": ["rec-first", "rec-second"],
+                "country_code": "MX",
+                "prompt_snapshot": {"category": "服装", "execution_mode": "direct_prompt"},
+            },
+            "job-retemplate",
+            "alice",
+            workflow=FakeWorkflow(),
+        )
+
+        self.assertEqual(commits, ["rec-first", "rec-second"])
+        self.assertEqual(result["updated"], 2)
+
+    def test_special_template_replacement_protects_taken_part_time_task(self):
+        from api.workflow import ViralRemixWorkflow
+
+        calls = []
+
+        class FakeFeishu:
+            def get_record(self, table_id, record_id):
+                return {"record_id": record_id, "fields": {"兼职同步记录ID": "part-1"}}
+
+        class FakeWorkflow:
+            settings = type("Settings", (), {"doubao_table_id": "doubao", "part_time_table_id": "part-time"})()
+            feishu = FakeFeishu()
+
+            def generate_doubao_prompt(self, *args, **kwargs):
+                calls.append("prompt")
+
+            def sync_doubao_to_part_time(self, *args, **kwargs):
+                calls.append("sync")
+
+        result = ViralRemixWorkflow.retemplate_doubao_and_sync(
+            FakeWorkflow(),
+            "rec-1",
+            "MX",
+            prompt_snapshot={"category": "服装"},
+            target_records=[{"record_id": "part-1", "fields": {"任务状态": "已完成"}}],
+        )
+
+        self.assertEqual(result["status"], "conflict")
+        self.assertEqual(calls, [])
+
+    def test_special_template_replacement_overwrites_pending_task(self):
+        from api.workflow import ViralRemixWorkflow
+
+        calls = []
+
+        class FakeFeishu:
+            def get_record(self, table_id, record_id):
+                return {"record_id": record_id, "fields": {"兼职同步记录ID": "part-1"}}
+
+        class FakeWorkflow:
+            settings = type("Settings", (), {"doubao_table_id": "doubao", "part_time_table_id": "part-time"})()
+            feishu = FakeFeishu()
+
+            def generate_doubao_prompt(self, record_id, country_code, **kwargs):
+                calls.append(("prompt", kwargs["allow_synced_update"]))
+
+            def sync_doubao_to_part_time(self, record_id, country_code, **kwargs):
+                calls.append(("sync", kwargs["force_update"]))
+                return {"record_id": record_id, "status": "updated"}
+
+        result = ViralRemixWorkflow.retemplate_doubao_and_sync(
+            FakeWorkflow(),
+            "rec-1",
+            "MX",
+            prompt_snapshot={"category": "服装"},
+            target_records=[{"record_id": "part-1", "fields": {"任务状态": "待接单"}}],
+        )
+
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual(calls, [("prompt", True), ("sync", True)])
+
     def test_doubao_workflow_record_runs_each_required_stage_in_order(self):
         from api.workflow import ViralRemixWorkflow
 

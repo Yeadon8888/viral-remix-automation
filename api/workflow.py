@@ -33,6 +33,7 @@ from .services import (
     WhiteBackgroundService,
 )
 from .services.prompt_configs import DOUBAO_PROMPT_KEY
+from .services.part_time_sync import LOCKED_TARGET_STATUSES
 from .services.batch_queue_export import (
     BatchQueueExportError,
     BatchQueueItem,
@@ -688,16 +689,20 @@ class ViralRemixWorkflow:
         country_code: str = "MY",
         job_id: str | None = None,
         prompt_snapshot: dict[str, Any] | None = None,
+        allow_synced_update: bool = False,
     ) -> dict[str, Any]:
         country = get_country(country_code)
         record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
         fields = record.get("fields", {})
         product_name = str(field_value(fields, "商品名称", "") or "").strip()
         product_link = str(field_value(fields, "商品链接", "") or "").strip()
-        self.doubao_assets.require_prompt_generation_ready(fields)
-        image_bytes, image_mime, stored_url = self.doubao_assets.download_managed_image(fields)
-        filename = stored_url.rsplit("/", 1)[-1] or "doubao-product-image"
+        if allow_synced_update:
+            self.doubao_assets.require_safe_image(fields)
+        else:
+            self.doubao_assets.require_prompt_generation_ready(fields)
         snapshot = dict(prompt_snapshot or {})
+        stored_url = str(field_value(fields, "商品图存储链接", "") or "").strip()
+        filename = stored_url.rsplit("/", 1)[-1] or "doubao-product-image"
         if snapshot:
             prompt_rules = str(snapshot.get("content") or "")
             prompt_version = f"{DOUBAO_PROMPT_KEY}:{snapshot.get('version') or '未标版本'}"
@@ -716,6 +721,7 @@ class ViralRemixWorkflow:
                 "tags": str(field_value(fields, "标签", "") or ""),
             }
         else:
+            image_bytes, image_mime, _ = self.doubao_assets.download_managed_image(fields)
             result = self.gemini.generate_doubao_video_prompt(
                 product_name=product_name,
                 product_link=product_link,
@@ -750,6 +756,52 @@ class ViralRemixWorkflow:
             "prompt_version": prompt_version,
             "has_prompt": True,
         }
+
+    def retemplate_doubao_and_sync(
+        self,
+        record_id: str,
+        country_code: str,
+        *,
+        prompt_snapshot: dict[str, Any],
+        target_records: list[dict[str, Any]] | None = None,
+        job_id: str | None = None,
+        before_part_time_sync=None,
+    ) -> dict[str, Any]:
+        source = self.feishu.get_record(self.settings.doubao_table_id, record_id)
+        source_fields = source.get("fields", {})
+        target_record_id = str(field_value(source_fields, "兼职同步记录ID", "") or "").strip()
+        target = None
+        if target_record_id:
+            target = next(
+                (item for item in (target_records or []) if str(item.get("record_id") or "") == target_record_id),
+                None,
+            )
+            if target is None:
+                target = self.feishu.get_record(self.settings.part_time_table_id, target_record_id)
+            target_status = str(field_value(target.get("fields", {}), "任务状态", "") or "").strip()
+            if target_status in LOCKED_TARGET_STATUSES:
+                return {
+                    "record_id": record_id,
+                    "target_record_id": target_record_id,
+                    "status": "conflict",
+                    "message": f"目标兼职任务状态为{target_status}，未覆盖现有成果",
+                }
+        self.generate_doubao_prompt(
+            record_id,
+            country_code,
+            job_id=job_id,
+            prompt_snapshot=prompt_snapshot,
+            allow_synced_update=True,
+        )
+        if before_part_time_sync:
+            before_part_time_sync()
+        return self.sync_doubao_to_part_time(
+            record_id,
+            country_code,
+            job_id=job_id,
+            target_records=target_records,
+            force_update=True,
+        )
 
     def process_doubao_workflow_record(
         self,

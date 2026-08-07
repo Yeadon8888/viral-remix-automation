@@ -422,6 +422,7 @@ RETRYABLE_BATCH_ACTIONS = {
     "doubao.batch_generate_prompts",
     "doubao.batch_sync_part_time",
     "doubao.batch_workflow",
+    "doubao.batch_retemplate_sync",
     "publish.sync_doubao",
     "publish.sync_part_time",
 }
@@ -1055,6 +1056,7 @@ def batch_doubao_operation():
         "generate_prompts": ("doubao.batch_generate_prompts", "doubao-batch-generate-prompts", "提示词生成"),
         "sync_part_time": ("doubao.batch_sync_part_time", "doubao-batch-sync-part-time", "兼职表同步"),
         "process_workflow": ("doubao.batch_workflow", "doubao-batch-workflow", "按流程批量处理"),
+        "retemplate_sync": ("doubao.batch_retemplate_sync", "doubao-batch-retemplate-sync", "特殊模板覆盖与兼职表更新"),
         "sync_publish": ("publish.sync_doubao", "doubao-batch-sync-publish", "发布表同步"),
     }
     selected = action_map.get(operation)
@@ -1064,7 +1066,7 @@ def batch_doubao_operation():
     selection_label = str(body.get("selection_label") or "").strip()[:120]
     country = None
     use_record_country = body.get("use_record_country") is True
-    if operation in {"generate_prompts", "sync_part_time", "process_workflow"}:
+    if operation in {"generate_prompts", "sync_part_time", "process_workflow", "retemplate_sync"}:
         try:
             country = get_country(body.get("country_code"))
         except ValueError as exc:
@@ -1100,7 +1102,7 @@ def batch_doubao_operation():
         if operation == "process_workflow" and use_record_country:
             payload["use_record_country"] = True
             payload["prompt_scheme_key"] = str(body.get("prompt_scheme_key") or "current_conversion").strip()
-        if operation in {"generate_prompts", "process_workflow"} and body.get("prompt_config_id") and not use_record_country:
+        if operation in {"generate_prompts", "process_workflow", "retemplate_sync"} and body.get("prompt_config_id") and not use_record_country:
             try:
                 payload["prompt_snapshot"] = get_workflow().prompt_configs.resolve_doubao_snapshot(
                     record_id=str(body.get("prompt_config_id") or "").strip(),
@@ -1109,6 +1111,8 @@ def batch_doubao_operation():
                 )
             except ValueError as exc:
                 return jsonify({"success": False, "message": str(exc)}), 400
+        if operation == "retemplate_sync" and not payload.get("prompt_snapshot"):
+            return jsonify({"success": False, "message": "prompt_config_id is required"}), 400
         if operation in {"sync_part_time", "process_workflow"}:
             payload["force_update"] = body.get("force_update") is True
         if operation == "process_workflow":

@@ -382,6 +382,30 @@ def execute_action(
             result[status] = sum(1 for item in result["results"] if item.get("status") == status)
         return result
 
+    if action == "doubao.batch_retemplate_sync":
+        target_records = work.feishu.list_records(work.settings.part_time_table_id)
+        commit_gate = _OrderedCommitGate()
+        order_indexes = {record_id: index for index, record_id in enumerate(record_ids)}
+        result = _batch(
+            record_ids,
+            lambda rid: work.retemplate_doubao_and_sync(
+                rid,
+                country_code,
+                prompt_snapshot=data["prompt_snapshot"],
+                target_records=target_records,
+                job_id=job_id,
+                before_part_time_sync=lambda record_id=rid: commit_gate.wait(order_indexes[record_id]),
+            ),
+            max_workers=_concurrency(work, "batch_workflow_concurrency", 4),
+            job_id=job_id,
+            label="特殊模板覆盖与兼职表更新",
+            row_numbers=row_numbers,
+            on_item_done=commit_gate.finish,
+        )
+        for status in ("created", "updated", "conflict", "skipped"):
+            result[status] = sum(1 for item in result["results"] if item.get("status") == status)
+        return result
+
     if action == "material.batch_step":
         step = data.get("step", "")
         handlers = {
