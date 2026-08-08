@@ -11,7 +11,16 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
 
         class FakeFeishu:
             def get_record(self, table_id, record_id):
-                return {"record_id": record_id, "fields": {"商品名称": "Zapatos", "商品链接": "https://example.com/p", "商品品类": "鞋类"}}
+                return {
+                    "record_id": record_id,
+                    "fields": {
+                        "商品名称": "Zapatos",
+                        "商品链接": "https://example.com/p",
+                        "商品品类": "鞋类",
+                        "文案": "Texto existente",
+                        "标签": "#zapatos",
+                    },
+                }
 
             def update_record(self, table_id, record_id, fields):
                 captured["fields"] = fields
@@ -45,6 +54,64 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
         self.assertEqual(captured["fields"]["Prompt方案Key"], "mx_shoes_direct_10s")
         self.assertEqual(captured["fields"]["Prompt配置记录ID"], "cfg-shoes")
         self.assertEqual(captured["fields"]["Prompt执行模式"], "direct_prompt")
+        self.assertEqual(captured["fields"]["文案"], "Texto existente")
+        self.assertEqual(captured["fields"]["标签"], "#zapatos")
+
+    def test_direct_snapshot_fills_missing_publish_metadata_without_rewriting_prompt(self):
+        captured = {}
+
+        class FakeFeishu:
+            def get_record(self, table_id, record_id):
+                return {
+                    "record_id": record_id,
+                    "fields": {
+                        "商品名称": "Vestido de mezclilla",
+                        "商品链接": "https://example.com/dress",
+                        "商品品类": "服装",
+                    },
+                }
+
+            def update_record(self, table_id, record_id, fields):
+                captured["fields"] = fields
+                return {"record_id": record_id, "fields": fields}
+
+        class FakeGemini:
+            def generate_doubao_video_prompt(self, **kwargs):
+                captured["gemini_args"] = kwargs
+                return {
+                    "final_video_prompt": "must not replace the direct prompt",
+                    "title": "Vestido de mezclilla",
+                    "caption": "Un vestido versátil para cualquier ocasión.",
+                    "tags": "#ModaMexico #Vestido",
+                }
+
+        workflow = object.__new__(ViralRemixWorkflow)
+        workflow.settings = SimpleNamespace(doubao_table_id="doubao-table")
+        workflow.feishu = FakeFeishu()
+        workflow.gemini = FakeGemini()
+        workflow.doubao_assets = SimpleNamespace(
+            require_prompt_generation_ready=lambda fields: "https://assets.example.com/image.png",
+            download_managed_image=lambda fields: (
+                b"image",
+                "image/png",
+                "https://assets.example.com/image.png",
+            ),
+        )
+        snapshot = {
+            "config_record_id": "cfg-clothing",
+            "scheme_key": "mx_clothing_10s",
+            "scheme_name": "墨西哥服装 10 秒",
+            "execution_mode": "direct_prompt",
+            "version": "v1",
+            "category": "服装",
+            "content": "服装视频：{product_name}",
+        }
+
+        workflow.generate_doubao_prompt("record-1", "MX", prompt_snapshot=snapshot)
+
+        self.assertEqual(captured["fields"]["最终视频生成提示词"], "服装视频：Vestido de mezclilla")
+        self.assertEqual(captured["fields"]["文案"], "Un vestido versátil para cualquier ocasión.")
+        self.assertEqual(captured["fields"]["标签"], "#ModaMexico #Vestido")
 
     def test_generate_doubao_prompt_selects_malaysia_template(self):
         captured = {}

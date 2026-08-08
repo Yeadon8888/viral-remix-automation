@@ -714,11 +714,34 @@ class ViralRemixWorkflow:
             )
         add_log("info", f"开始生成豆包视频提示词: {product_name or filename} / {country.name}", "workflow", job_id)
         if snapshot.get("execution_mode") == "direct_prompt":
+            caption = str(field_value(fields, "文案", "") or "").strip()
+            tags = str(field_value(fields, "标签", "") or "").strip()
+            if not caption or not tags:
+                image_bytes, image_mime, _ = self.doubao_assets.download_managed_image(fields)
+                metadata_rules = "\n\n".join((
+                    prompt_rules,
+                    f"""
+【发布文案与标签补全】
+请额外生成适合{country.name} TikTok 的发布正文和 5-8 个标签。
+正文和标签必须使用{country.language_name}，caption 和 tags 不得为空。
+""".strip(),
+                ))
+                metadata = self.gemini.generate_doubao_video_prompt(
+                    product_name=product_name,
+                    product_link=product_link,
+                    prompt_rules=metadata_rules,
+                    image_bytes=image_bytes,
+                    image_mime=image_mime,
+                )
+                caption = caption or str(metadata.get("caption") or "").strip()
+                tags = tags or str(metadata.get("tags") or "").strip()
+                if not caption or not tags:
+                    raise RuntimeError("发布文案或标签生成为空，未写入不完整结果")
             result = {
                 "final_video_prompt": prompt_rules.replace("{product_name}", product_name).replace("{product_link}", product_link),
                 "title": product_name,
-                "caption": str(field_value(fields, "文案", "") or ""),
-                "tags": str(field_value(fields, "标签", "") or ""),
+                "caption": caption,
+                "tags": tags,
             }
         else:
             image_bytes, image_mime, _ = self.doubao_assets.download_managed_image(fields)
