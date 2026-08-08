@@ -648,6 +648,36 @@ class JobActionContractTests(unittest.TestCase):
         self.assertEqual(result["status"], "updated")
         self.assertEqual(calls, [("prompt", True), ("sync", True)])
 
+    def test_publish_metadata_repair_batch_does_not_sync_part_time_tasks(self):
+        from api.jobs.actions import execute_action
+
+        calls = []
+
+        class FakeWorkflow:
+            settings = type("Settings", (), {"batch_prompt_concurrency": 2})()
+
+            def fill_doubao_publish_metadata(self, record_id, country_code, **kwargs):
+                calls.append((record_id, country_code, kwargs["prompt_snapshot"]["scheme_key"]))
+                return {"record_id": record_id, "status": "updated"}
+
+        result = execute_action(
+            "doubao.batch_fill_metadata",
+            {
+                "record_ids": ["rec-1", "rec-2"],
+                "country_code": "MX",
+                "prompt_snapshot": {"scheme_key": "mx_clothing_10s", "content": "prompt"},
+            },
+            "job-metadata",
+            "alice",
+            workflow=FakeWorkflow(),
+        )
+
+        self.assertEqual(result["updated"], 2)
+        self.assertEqual(
+            sorted(calls),
+            [("rec-1", "MX", "mx_clothing_10s"), ("rec-2", "MX", "mx_clothing_10s")],
+        )
+
     def test_doubao_workflow_record_runs_each_required_stage_in_order(self):
         from api.workflow import ViralRemixWorkflow
 

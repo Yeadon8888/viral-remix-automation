@@ -113,6 +113,59 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
         self.assertEqual(captured["fields"]["文案"], "Un vestido versátil para cualquier ocasión.")
         self.assertEqual(captured["fields"]["标签"], "#ModaMexico #Vestido")
 
+    def test_metadata_repair_updates_only_missing_publish_fields_on_synced_record(self):
+        captured = {}
+
+        class FakeFeishu:
+            def get_record(self, table_id, record_id):
+                return {
+                    "record_id": record_id,
+                    "fields": {
+                        "商品名称": "Vestido",
+                        "商品链接": "https://example.com/dress",
+                        "最终视频生成提示词": "existing direct prompt",
+                        "兼职同步状态": "已同步",
+                    },
+                }
+
+            def update_record(self, table_id, record_id, fields):
+                captured["fields"] = fields
+                return {"record_id": record_id, "fields": fields}
+
+        class FakeGemini:
+            def generate_doubao_video_prompt(self, **kwargs):
+                return {
+                    "final_video_prompt": "must not be written",
+                    "title": "must not be written",
+                    "caption": "Texto para publicar.",
+                    "tags": "#ModaMexico #Vestido",
+                }
+
+        workflow = object.__new__(ViralRemixWorkflow)
+        workflow.settings = SimpleNamespace(doubao_table_id="doubao-table")
+        workflow.feishu = FakeFeishu()
+        workflow.gemini = FakeGemini()
+        workflow.doubao_assets = SimpleNamespace(
+            require_safe_image=lambda fields: None,
+            download_managed_image=lambda fields: (
+                b"image",
+                "image/png",
+                "https://assets.example.com/image.png",
+            ),
+        )
+
+        result = workflow.fill_doubao_publish_metadata(
+            "record-1",
+            "MX",
+            prompt_snapshot={"content": "服装视频：{product_name}"},
+        )
+
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual(
+            captured["fields"],
+            {"文案": "Texto para publicar.", "标签": "#ModaMexico #Vestido"},
+        )
+
     def test_generate_doubao_prompt_selects_malaysia_template(self):
         captured = {}
 

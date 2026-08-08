@@ -683,6 +683,41 @@ class ViralRemixWorkflow:
         self.doubao_record_index.invalidate()
         return result
 
+    def _complete_doubao_publish_metadata(
+        self,
+        fields: dict[str, Any],
+        *,
+        country,
+        product_name: str,
+        product_link: str,
+        prompt_rules: str,
+    ) -> tuple[str, str]:
+        caption = str(field_value(fields, "文案", "") or "").strip()
+        tags = str(field_value(fields, "标签", "") or "").strip()
+        if caption and tags:
+            return caption, tags
+        image_bytes, image_mime, _ = self.doubao_assets.download_managed_image(fields)
+        metadata_rules = "\n\n".join((
+            prompt_rules,
+            f"""
+【发布文案与标签补全】
+请额外生成适合{country.name} TikTok 的发布正文和 5-8 个标签。
+正文和标签必须使用{country.language_name}，caption 和 tags 不得为空。
+""".strip(),
+        ))
+        metadata = self.gemini.generate_doubao_video_prompt(
+            product_name=product_name,
+            product_link=product_link,
+            prompt_rules=metadata_rules,
+            image_bytes=image_bytes,
+            image_mime=image_mime,
+        )
+        caption = caption or str(metadata.get("caption") or "").strip()
+        tags = tags or str(metadata.get("tags") or "").strip()
+        if not caption or not tags:
+            raise RuntimeError("发布文案或标签生成为空，未写入不完整结果")
+        return caption, tags
+
     def generate_doubao_prompt(
         self,
         record_id: str,
@@ -714,29 +749,13 @@ class ViralRemixWorkflow:
             )
         add_log("info", f"开始生成豆包视频提示词: {product_name or filename} / {country.name}", "workflow", job_id)
         if snapshot.get("execution_mode") == "direct_prompt":
-            caption = str(field_value(fields, "文案", "") or "").strip()
-            tags = str(field_value(fields, "标签", "") or "").strip()
-            if not caption or not tags:
-                image_bytes, image_mime, _ = self.doubao_assets.download_managed_image(fields)
-                metadata_rules = "\n\n".join((
-                    prompt_rules,
-                    f"""
-【发布文案与标签补全】
-请额外生成适合{country.name} TikTok 的发布正文和 5-8 个标签。
-正文和标签必须使用{country.language_name}，caption 和 tags 不得为空。
-""".strip(),
-                ))
-                metadata = self.gemini.generate_doubao_video_prompt(
-                    product_name=product_name,
-                    product_link=product_link,
-                    prompt_rules=metadata_rules,
-                    image_bytes=image_bytes,
-                    image_mime=image_mime,
-                )
-                caption = caption or str(metadata.get("caption") or "").strip()
-                tags = tags or str(metadata.get("tags") or "").strip()
-                if not caption or not tags:
-                    raise RuntimeError("发布文案或标签生成为空，未写入不完整结果")
+            caption, tags = self._complete_doubao_publish_metadata(
+                fields,
+                country=country,
+                product_name=product_name,
+                product_link=product_link,
+                prompt_rules=prompt_rules,
+            )
             result = {
                 "final_video_prompt": prompt_rules.replace("{product_name}", product_name).replace("{product_link}", product_link),
                 "title": product_name,
@@ -779,6 +798,40 @@ class ViralRemixWorkflow:
             "prompt_version": prompt_version,
             "has_prompt": True,
         }
+
+    def fill_doubao_publish_metadata(
+        self,
+        record_id: str,
+        country_code: str,
+        *,
+        prompt_snapshot: dict[str, Any],
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        country = get_country(country_code)
+        record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
+        fields = record.get("fields", {})
+        existing_caption = str(field_value(fields, "文案", "") or "").strip()
+        existing_tags = str(field_value(fields, "标签", "") or "").strip()
+        if existing_caption and existing_tags:
+            return {"record_id": record_id, "status": "skipped", "message": "文案和标签已完整"}
+        self.doubao_assets.require_safe_image(fields)
+        product_name = str(field_value(fields, "商品名称", "") or "").strip()
+        product_link = str(field_value(fields, "商品链接", "") or "").strip()
+        caption, tags = self._complete_doubao_publish_metadata(
+            fields,
+            country=country,
+            product_name=product_name,
+            product_link=product_link,
+            prompt_rules=str(prompt_snapshot.get("content") or ""),
+        )
+        updates = {}
+        if not existing_caption:
+            updates["文案"] = caption
+        if not existing_tags:
+            updates["标签"] = tags
+        self.feishu.update_record(self.settings.doubao_table_id, record_id, updates)
+        add_log("success", f"豆包发布文案与标签已补全: {product_name or record_id}", "workflow", job_id)
+        return {"record_id": record_id, "status": "updated"}
 
     def retemplate_doubao_and_sync(
         self,

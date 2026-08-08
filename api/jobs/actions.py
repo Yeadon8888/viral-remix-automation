@@ -406,6 +406,24 @@ def execute_action(
             result[status] = sum(1 for item in result["results"] if item.get("status") == status)
         return result
 
+    if action == "doubao.batch_fill_metadata":
+        result = _batch(
+            record_ids,
+            lambda rid: work.fill_doubao_publish_metadata(
+                rid,
+                country_code,
+                prompt_snapshot=data["prompt_snapshot"],
+                job_id=job_id,
+            ),
+            max_workers=_concurrency(work, "batch_prompt_concurrency", 4),
+            job_id=job_id,
+            label="发布文案与标签补全",
+            row_numbers=row_numbers,
+        )
+        for status in ("updated", "skipped"):
+            result[status] = sum(1 for item in result["results"] if item.get("status") == status)
+        return result
+
     if action == "material.batch_step":
         step = data.get("step", "")
         handlers = {
