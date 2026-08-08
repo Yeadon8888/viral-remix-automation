@@ -1104,7 +1104,7 @@ def batch_doubao_operation():
         if operation == "process_workflow" and use_record_country:
             payload["use_record_country"] = True
             payload["prompt_scheme_key"] = str(body.get("prompt_scheme_key") or "current_conversion").strip()
-        if operation in {"generate_prompts", "process_workflow", "retemplate_sync", "fill_metadata"} and body.get("prompt_config_id") and not use_record_country:
+        if operation in {"generate_prompts", "process_workflow", "retemplate_sync"} and body.get("prompt_config_id") and not use_record_country:
             try:
                 payload["prompt_snapshot"] = get_workflow().prompt_configs.resolve_doubao_snapshot(
                     record_id=str(body.get("prompt_config_id") or "").strip(),
@@ -1113,7 +1113,7 @@ def batch_doubao_operation():
                 )
             except ValueError as exc:
                 return jsonify({"success": False, "message": str(exc)}), 400
-        if operation in {"retemplate_sync", "fill_metadata"} and not payload.get("prompt_snapshot"):
+        if operation == "retemplate_sync" and not payload.get("prompt_snapshot"):
             return jsonify({"success": False, "message": "prompt_config_id is required"}), 400
         if operation in {"sync_part_time", "process_workflow"}:
             payload["force_update"] = body.get("force_update") is True

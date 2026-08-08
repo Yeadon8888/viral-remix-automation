@@ -6,7 +6,7 @@ from api.workflow import DOUBAO_FALLBACK_PROMPT, ViralRemixWorkflow
 
 
 class DoubaoPromptTemplateTests(unittest.TestCase):
-    def test_direct_snapshot_is_rendered_without_gemini_and_written_atomically(self):
+    def test_direct_snapshot_skips_video_gemini_and_writes_independent_metadata(self):
         captured = {}
 
         class FakeFeishu:
@@ -26,14 +26,21 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
                 captured["fields"] = fields
                 return {"record_id": record_id, "fields": fields}
 
-        class ForbiddenGemini:
+        class FakeGemini:
             def generate_doubao_video_prompt(self, **kwargs):
                 raise AssertionError("direct_prompt must not call Gemini")
+
+            def generate_doubao_publish_metadata(self, **kwargs):
+                return {
+                    "title": "Zapatos imprescindibles",
+                    "caption": "Un estilo nuevo para cada paso.",
+                    "tags": "#Zapatos #ModaMexico",
+                }
 
         workflow = object.__new__(ViralRemixWorkflow)
         workflow.settings = SimpleNamespace(doubao_table_id="doubao-table")
         workflow.feishu = FakeFeishu()
-        workflow.gemini = ForbiddenGemini()
+        workflow.gemini = FakeGemini()
         workflow.doubao_assets = SimpleNamespace(
             require_prompt_generation_ready=lambda fields: "https://assets.example.com/image.png",
             download_managed_image=lambda fields: (b"image", "image/png", "https://assets.example.com/image.png"),
@@ -54,8 +61,9 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
         self.assertEqual(captured["fields"]["Prompt方案Key"], "mx_shoes_direct_10s")
         self.assertEqual(captured["fields"]["Prompt配置记录ID"], "cfg-shoes")
         self.assertEqual(captured["fields"]["Prompt执行模式"], "direct_prompt")
-        self.assertEqual(captured["fields"]["文案"], "Texto existente")
-        self.assertEqual(captured["fields"]["标签"], "#zapatos")
+        self.assertEqual(captured["fields"]["标题"], "Zapatos imprescindibles")
+        self.assertEqual(captured["fields"]["文案"], "Un estilo nuevo para cada paso.")
+        self.assertEqual(captured["fields"]["标签"], "#Zapatos #ModaMexico")
 
     def test_direct_snapshot_fills_missing_publish_metadata_without_rewriting_prompt(self):
         captured = {}
@@ -77,9 +85,11 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
 
         class FakeGemini:
             def generate_doubao_video_prompt(self, **kwargs):
-                captured["gemini_args"] = kwargs
+                raise AssertionError("direct_prompt must not call video prompt generation")
+
+            def generate_doubao_publish_metadata(self, **kwargs):
+                captured["metadata_args"] = kwargs
                 return {
-                    "final_video_prompt": "must not replace the direct prompt",
                     "title": "Vestido de mezclilla",
                     "caption": "Un vestido versátil para cualquier ocasión.",
                     "tags": "#ModaMexico #Vestido",
@@ -133,10 +143,9 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
                 return {"record_id": record_id, "fields": fields}
 
         class FakeGemini:
-            def generate_doubao_video_prompt(self, **kwargs):
+            def generate_doubao_publish_metadata(self, **kwargs):
                 return {
-                    "final_video_prompt": "must not be written",
-                    "title": "must not be written",
+                    "title": "Vestido",
                     "caption": "Texto para publicar.",
                     "tags": "#ModaMexico #Vestido",
                 }
@@ -157,13 +166,12 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
         result = workflow.fill_doubao_publish_metadata(
             "record-1",
             "MX",
-            prompt_snapshot={"content": "服装视频：{product_name}"},
         )
 
         self.assertEqual(result["status"], "updated")
         self.assertEqual(
             captured["fields"],
-            {"文案": "Texto para publicar.", "标签": "#ModaMexico #Vestido"},
+            {"标题": "Vestido", "文案": "Texto para publicar.", "标签": "#ModaMexico #Vestido"},
         )
 
     def test_generate_doubao_prompt_selects_malaysia_template(self):
@@ -193,6 +201,13 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
                     "tags": "#tag",
                 }
 
+            def generate_doubao_publish_metadata(self, **kwargs):
+                return {
+                    "title": "metadata title",
+                    "caption": "metadata caption",
+                    "tags": "#metadata",
+                }
+
         workflow = object.__new__(ViralRemixWorkflow)
         workflow.settings = SimpleNamespace(doubao_table_id="doubao-table")
         workflow.feishu = FakeFeishu()
@@ -217,6 +232,62 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
         self.assertEqual(captured["selection"][1], "马来")
         self.assertEqual(captured["gemini_args"]["prompt_rules"], "现有马来西亚模板")
 
+    def test_meta_video_template_cannot_control_publish_metadata(self):
+        captured = {}
+
+        class FakeFeishu:
+            def get_record(self, table_id, record_id):
+                return {
+                    "record_id": record_id,
+                    "fields": {
+                        "商品名称": "Vestido",
+                        "商品链接": "https://example.com/dress",
+                    },
+                }
+
+            def update_record(self, table_id, record_id, fields):
+                captured["fields"] = fields
+                return {"record_id": record_id, "fields": fields}
+
+        class FakeGemini:
+            def generate_doubao_video_prompt(self, **kwargs):
+                return {
+                    "final_video_prompt": "video prompt from selected template",
+                    "title": "wrong title from video template",
+                    "caption": "wrong caption from video template",
+                    "tags": "#wrong",
+                }
+
+            def generate_doubao_publish_metadata(self, **kwargs):
+                captured["metadata_args"] = kwargs
+                return {
+                    "title": "Vestido imprescindible",
+                    "caption": "El look que transforma cualquier día.",
+                    "tags": "#ModaMexico #Vestido",
+                }
+
+        workflow = object.__new__(ViralRemixWorkflow)
+        workflow.settings = SimpleNamespace(doubao_table_id="doubao-table")
+        workflow.feishu = FakeFeishu()
+        workflow.gemini = FakeGemini()
+        workflow.doubao_assets = SimpleNamespace(
+            require_prompt_generation_ready=lambda fields: None,
+            download_managed_image=lambda fields: (
+                b"image",
+                "image/png",
+                "https://assets.example.com/image.png",
+            ),
+        )
+        workflow._active_prompt_by_key = lambda key, region, fallback: ("video template", "video:v1")
+
+        workflow.generate_doubao_prompt("record-1", "MX")
+
+        self.assertEqual(captured["fields"]["最终视频生成提示词"], "video prompt from selected template")
+        self.assertEqual(captured["fields"]["标题"], "Vestido imprescindible")
+        self.assertEqual(captured["fields"]["文案"], "El look que transforma cualquier día.")
+        self.assertEqual(captured["fields"]["标签"], "#ModaMexico #Vestido")
+        self.assertNotIn("prompt_rules", captured["metadata_args"])
+
     def test_doubao_fallback_is_malaysia_instead_of_mexico(self):
         self.assertIn("马来西亚", DOUBAO_FALLBACK_PROMPT)
         self.assertIn("马来语", DOUBAO_FALLBACK_PROMPT)
@@ -233,7 +304,7 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
                 "choices": [
                     {
                         "message": {
-                            "content": '{"final_video_prompt":"prompt","title":"title","caption":"caption","tags":"#tag"}'
+                            "content": '{"final_video_prompt":"prompt"}'
                         }
                     }
                 ]
@@ -266,7 +337,7 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
                 "choices": [
                     {
                         "message": {
-                            "content": '{"final_video_prompt":"prompt","title":"title","caption":"caption","tags":"#tag"}'
+                            "content": '{"final_video_prompt":"prompt"}'
                         }
                     }
                 ]
@@ -290,9 +361,9 @@ class DoubaoPromptTemplateTests(unittest.TestCase):
         self.assertNotIn("请先理解商品图片中的真实商品", prompt)
         self.assertNotIn("必须严格锁定图片中的商品外观", prompt)
         self.assertIn('"final_video_prompt"', prompt)
-        self.assertIn('"title"', prompt)
-        self.assertIn('"caption"', prompt)
-        self.assertIn('"tags"', prompt)
+        self.assertNotIn('"title"', prompt)
+        self.assertNotIn('"caption"', prompt)
+        self.assertNotIn('"tags"', prompt)
 
 
 if __name__ == "__main__":

@@ -412,7 +412,6 @@ def execute_action(
             lambda rid: work.fill_doubao_publish_metadata(
                 rid,
                 country_code,
-                prompt_snapshot=data["prompt_snapshot"],
                 job_id=job_id,
             ),
             max_workers=_concurrency(work, "batch_prompt_concurrency", 4),

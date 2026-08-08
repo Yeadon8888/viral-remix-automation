@@ -59,6 +59,14 @@ class CountryAwareDoubaoPromptTests(unittest.TestCase):
                     "tags": "#tag",
                 }
 
+            def generate_doubao_publish_metadata(self, **kwargs):
+                captured["metadata_args"] = kwargs
+                return {
+                    "title": "title",
+                    "caption": "caption",
+                    "tags": "#tag",
+                }
+
         workflow = object.__new__(ViralRemixWorkflow)
         workflow.settings = SimpleNamespace(doubao_table_id="doubao-table")
         workflow.feishu = FakeFeishu()
@@ -84,6 +92,8 @@ class CountryAwareDoubaoPromptTests(unittest.TestCase):
         self.assertEqual(captured["gemini_args"]["prompt_rules"], "泰国模板")
         self.assertEqual(captured["updated_fields"]["目标国家"], "泰国")
         self.assertEqual(captured["updated_fields"]["目标语言"], "泰语")
+        self.assertEqual(captured["metadata_args"]["region"], "泰国")
+        self.assertEqual(captured["metadata_args"]["language"], "泰语")
         self.assertEqual(captured["updated_fields"]["Prompt配置版本"], "doubao_seedance_video_prompt:th-v1")
         self.assertEqual(captured["updated_fields"]["兼职同步状态"], "未同步")
         self.assertEqual(result["country_code"], "TH")

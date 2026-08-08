@@ -59,7 +59,9 @@
 
 - 单条和批量 Prompt 任务 payload 均必须包含 `country_code`、`template_scheme_key`、`template_record_id`、`template_version` 和 `execution_mode`；这些字段纳入去重摘要。
 - 提交 API 在入队前验证配置记录存在、版本一致、已启用且与国家/语言/品类兼容。Worker 再次验证指定记录的身份与版本，但不要求其仍启用。
-- `meta_generate` 调用 Gemini；`direct_prompt` 使用白名单变量的确定性渲染器，未知变量或缺失必需变量时整条失败。`direct_prompt` 的最终视频 Prompt 不经 Gemini 改写；已有发布文案和标签保留，缺失项可单独按目标语言生成后再原子回写。
+- `meta_generate` 调用 Gemini；`direct_prompt` 使用白名单变量的确定性渲染器，未知变量或缺失必需变量时整条失败。`direct_prompt` 的最终视频 Prompt 不经 Gemini 改写。
+- 视频 Prompt 生成与发布元数据生成为两个独立阶段。所有方案均使用统一发布元数据规则，只向其传入商品信息、商品图、目标市场和目标语言；不传入 T1/T2/T3 或特殊品类视频模板。
+- 发布元数据必须同时包含非空标题、正文和 5-8 个目标语言标签；任一缺失时不回写部分结果。单独修复历史数据时只补空字段，不改视频 Prompt 或兼职任务。
 - 方案执行成功后一次回写最终提示词、发布内容和 Prompt 快照。任意生成失败不写入部分新快照。
 
 ### 飞书字段迁移

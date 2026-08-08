@@ -690,33 +690,27 @@ class ViralRemixWorkflow:
         country,
         product_name: str,
         product_link: str,
-        prompt_rules: str,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, str]:
+        title = str(field_value(fields, "标题", "") or "").strip()
         caption = str(field_value(fields, "文案", "") or "").strip()
         tags = str(field_value(fields, "标签", "") or "").strip()
-        if caption and tags:
-            return caption, tags
+        if title and caption and tags:
+            return title, caption, tags
         image_bytes, image_mime, _ = self.doubao_assets.download_managed_image(fields)
-        metadata_rules = "\n\n".join((
-            prompt_rules,
-            f"""
-【发布文案与标签补全】
-请额外生成适合{country.name} TikTok 的发布正文和 5-8 个标签。
-正文和标签必须使用{country.language_name}，caption 和 tags 不得为空。
-""".strip(),
-        ))
-        metadata = self.gemini.generate_doubao_video_prompt(
+        metadata = self.gemini.generate_doubao_publish_metadata(
             product_name=product_name,
             product_link=product_link,
-            prompt_rules=metadata_rules,
+            region=country.name,
+            language=country.language_name,
             image_bytes=image_bytes,
             image_mime=image_mime,
         )
+        title = title or str(metadata.get("title") or "").strip()
         caption = caption or str(metadata.get("caption") or "").strip()
         tags = tags or str(metadata.get("tags") or "").strip()
-        if not caption or not tags:
-            raise RuntimeError("发布文案或标签生成为空，未写入不完整结果")
-        return caption, tags
+        if not title or not caption or not tags:
+            raise RuntimeError("发布标题、文案或标签生成为空，未写入不完整结果")
+        return title, caption, tags
 
     def generate_doubao_prompt(
         self,
@@ -748,29 +742,32 @@ class ViralRemixWorkflow:
                 doubao_fallback_prompt(country),
             )
         add_log("info", f"开始生成豆包视频提示词: {product_name or filename} / {country.name}", "workflow", job_id)
+        image_bytes, image_mime, _ = self.doubao_assets.download_managed_image(fields)
         if snapshot.get("execution_mode") == "direct_prompt":
-            caption, tags = self._complete_doubao_publish_metadata(
-                fields,
-                country=country,
-                product_name=product_name,
-                product_link=product_link,
-                prompt_rules=prompt_rules,
-            )
-            result = {
-                "final_video_prompt": prompt_rules.replace("{product_name}", product_name).replace("{product_link}", product_link),
-                "title": product_name,
-                "caption": caption,
-                "tags": tags,
-            }
+            final_video_prompt = prompt_rules.replace("{product_name}", product_name).replace("{product_link}", product_link)
         else:
-            image_bytes, image_mime, _ = self.doubao_assets.download_managed_image(fields)
-            result = self.gemini.generate_doubao_video_prompt(
+            video_result = self.gemini.generate_doubao_video_prompt(
                 product_name=product_name,
                 product_link=product_link,
                 prompt_rules=prompt_rules,
                 image_bytes=image_bytes,
                 image_mime=image_mime,
             )
+            final_video_prompt = video_result["final_video_prompt"]
+        metadata = self.gemini.generate_doubao_publish_metadata(
+            product_name=product_name,
+            product_link=product_link,
+            region=country.name,
+            language=country.language_name,
+            image_bytes=image_bytes,
+            image_mime=image_mime,
+        )
+        result = {
+            "final_video_prompt": final_video_prompt,
+            "title": metadata["title"],
+            "caption": metadata["caption"],
+            "tags": metadata["tags"],
+        }
         self.feishu.update_record(
             self.settings.doubao_table_id,
             record_id,
@@ -804,27 +801,28 @@ class ViralRemixWorkflow:
         record_id: str,
         country_code: str,
         *,
-        prompt_snapshot: dict[str, Any],
         job_id: str | None = None,
     ) -> dict[str, Any]:
         country = get_country(country_code)
         record = self.feishu.get_record(self.settings.doubao_table_id, record_id)
         fields = record.get("fields", {})
+        existing_title = str(field_value(fields, "标题", "") or "").strip()
         existing_caption = str(field_value(fields, "文案", "") or "").strip()
         existing_tags = str(field_value(fields, "标签", "") or "").strip()
-        if existing_caption and existing_tags:
-            return {"record_id": record_id, "status": "skipped", "message": "文案和标签已完整"}
+        if existing_title and existing_caption and existing_tags:
+            return {"record_id": record_id, "status": "skipped", "message": "标题、文案和标签已完整"}
         self.doubao_assets.require_safe_image(fields)
         product_name = str(field_value(fields, "商品名称", "") or "").strip()
         product_link = str(field_value(fields, "商品链接", "") or "").strip()
-        caption, tags = self._complete_doubao_publish_metadata(
+        title, caption, tags = self._complete_doubao_publish_metadata(
             fields,
             country=country,
             product_name=product_name,
             product_link=product_link,
-            prompt_rules=str(prompt_snapshot.get("content") or ""),
         )
         updates = {}
+        if not existing_title:
+            updates["标题"] = title
         if not existing_caption:
             updates["文案"] = caption
         if not existing_tags:

@@ -67,24 +67,30 @@ def _normalize_analysis(text: str, product_name: str) -> dict[str, str]:
     }
 
 
-def _normalize_doubao_result(text: str, product_name: str) -> dict[str, str]:
+def _normalize_doubao_video_prompt(text: str) -> dict[str, str]:
     data = _parse_json_object(text)
     if not data:
-        return {
-            "final_video_prompt": text.strip(),
-            "title": product_name,
-            "caption": "",
-            "tags": "",
-        }
+        return {"final_video_prompt": text.strip()}
+    return {
+        "final_video_prompt": str(data.get("final_video_prompt") or data.get("video_prompt") or data.get("prompt") or "").strip(),
+    }
+
+
+def _normalize_publish_metadata(text: str, product_name: str) -> dict[str, str]:
+    data = _parse_json_object(text)
+    if not data:
+        raise RuntimeError("Gemini returned invalid publish metadata JSON")
     tags = data.get("tags") or data.get("keywords") or ""
     if isinstance(tags, list):
         tags = " ".join(str(item).strip() for item in tags if str(item).strip())
-    return {
-        "final_video_prompt": str(data.get("final_video_prompt") or data.get("video_prompt") or data.get("prompt") or "").strip(),
+    result = {
         "title": str(data.get("title") or data.get("publish_title") or product_name).strip(),
         "caption": str(data.get("caption") or data.get("publish_caption") or "").strip(),
         "tags": str(tags).strip(),
     }
+    if not all(result.values()):
+        raise RuntimeError("Gemini returned incomplete publish metadata")
+    return result
 
 
 def _normalize_face_result(text: str) -> dict[str, Any]:
@@ -304,10 +310,7 @@ class GeminiClient:
 【系统回填格式】
 为便于系统回填，请只输出 JSON，不要 Markdown，不要代码块：
 {{
-  "final_video_prompt": "严格按照手动模板生成的完整视频提示词",
-  "title": "发布标题；手动模板未要求时可为空字符串",
-  "caption": "发布正文；手动模板未要求时可为空字符串",
-  "tags": "发布标签；手动模板未要求时可为空字符串"
+  "final_video_prompt": "严格按照手动模板生成的完整视频提示词"
 }}
 """.strip()
         prompt = "\n\n".join((business_prompt, technical_contract)).strip()
@@ -325,9 +328,62 @@ class GeminiClient:
         text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
         if not text:
             raise RuntimeError("Gemini returned empty content")
-        result = _normalize_doubao_result(text, product_name)
+        result = _normalize_doubao_video_prompt(text)
         if not result["final_video_prompt"]:
             raise RuntimeError("Gemini returned empty final_video_prompt")
+        result["analysis_prompt"] = prompt
+        return result
+
+    def generate_doubao_publish_metadata(
+        self,
+        *,
+        product_name: str,
+        product_link: str,
+        region: str,
+        language: str,
+        image_bytes: bytes,
+        image_mime: str,
+    ) -> dict[str, str]:
+        prompt = f"""
+你是 TikTok 电商发布内容编辑。根据商品信息和附带的商品图，生成与视频生成 Prompt 完全独立的发布信息。
+
+【商品】
+- 名称：{product_name or "未填写"}
+- 链接：{product_link or "未填写"}
+- 目标市场：{region}
+- 目标语言：{language}
+
+【规则】
+- title、caption 和 tags 全部使用目标语言，三项都不得为空。
+- title：简短自然，突出一个核心卖点，最多 120 个字符。
+- caption：1-3 句适合 TikTok 的发布正文，自然、口语化，不虚构商品图和名称中无法确认的功效。
+- tags：5-8 个与商品和目标市场相关的 hashtag，使用空格分隔。
+- 不要输出视频生成 Prompt。
+
+只输出 JSON，不要 Markdown：
+{{
+  "title": "发布标题",
+  "caption": "发布正文",
+  "tags": "#tag1 #tag2 #tag3 #tag4 #tag5"
+}}
+""".strip()
+        data = self._post_chat(
+            {
+                "model": self.settings.gemini_model,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": _data_url(image_mime, image_bytes)}},
+                    ],
+                }],
+                "max_tokens": 2048,
+            }
+        )
+        text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        if not text:
+            raise RuntimeError("Gemini returned empty publish metadata")
+        result = _normalize_publish_metadata(text, product_name)
         result["analysis_prompt"] = prompt
         return result
 
