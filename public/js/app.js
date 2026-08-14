@@ -2531,7 +2531,7 @@ async function batchDoubaoStoreImages(button = null) {
 
 async function batchDoubaoWorkflow(button = null) {
   const name = "doubao-batch-workflow";
-  if (isJobBusy(name)) return;
+  if (state.pendingJobs.has(name)) return;
   const rows = selectedDoubaoRows();
   if (!rows.length) {
     notify("请先勾选要按流程处理的豆包记录", "error");

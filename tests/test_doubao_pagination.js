@@ -231,6 +231,56 @@ test("a submitted Doubao job refreshes the table even when it finishes before th
   assert.equal(new URL(refreshRequest, "https://example.test").searchParams.get("force"), "1");
 });
 
+test("a running Doubao workflow does not block submitting a different batch", async () => {
+  const requests = [];
+  const context = loadApp(async (requestPath) => {
+    requests.push(String(requestPath));
+    if (requestPath === "/api/doubao-items/batch-operation") {
+      return {
+        ok: true,
+        headers: { get: () => "application/json" },
+        json: async () => ({ success: true, job_id: "job-new", job_ids: ["job-new"] }),
+      };
+    }
+    if (String(requestPath).startsWith("/api/jobs")) {
+      return {
+        ok: true,
+        headers: { get: () => "application/json" },
+        json: async () => ({
+          success: true,
+          data: [
+            { id: "job-current", name: "doubao-batch-workflow", status: "running" },
+            { id: "job-new", name: "doubao-batch-workflow", status: "queued" },
+          ],
+        }),
+      };
+    }
+    throw new Error(`unexpected request: ${requestPath}`);
+  });
+  vm.runInContext(`
+    state.jobs = [{ id: "job-current", name: "doubao-batch-workflow", status: "running" }];
+    state.doubaoCountryCode = "TH";
+    state.doubaoItems = [{ record_id: "record-new", "行号": 12601 }];
+    state.selectedDoubaoIds = new Set(["record-new"]);
+    state.doubaoPromptOptions = [{
+      record_id: "prompt-th-t2",
+      "方案Key": "pain_physical_proof",
+      "方案名称": "T2 痛点与物理反馈",
+      "适用品类": "通用"
+    }];
+    $("doubaoPromptConfig").value = "prompt-th-t2";
+  `, context);
+
+  await vm.runInContext("batchDoubaoWorkflow()", context);
+
+  assert.equal(
+    requests.filter((requestPath) => requestPath === "/api/doubao-items/batch-operation").length,
+    1,
+  );
+  assert.match(context.__elements.jobs.innerHTML, /job-new/);
+  assert.match(context.__elements.jobs.innerHTML, /排队中/);
+});
+
 test("loadDoubaoItems follows every cursor and merges all records", async () => {
   const requests = [];
   const pages = [
