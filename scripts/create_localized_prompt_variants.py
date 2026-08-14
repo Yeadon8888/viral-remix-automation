@@ -7,6 +7,7 @@ MARKETS = (
     ("墨西哥", "西班牙语", "墨西哥", "Español de México（墨西哥西班牙语）"),
     ("马来", "马来语", "马来西亚", "Bahasa Melayu（马来语）"),
     ("马来-英语", "英语", "马来西亚", "Malaysian English（马来西亚英语）"),
+    ("泰国", "泰语", "泰国", "泰语（自然地道的泰国本土口语）"),
 )
 SCHEMES = {"pain_physical_proof": "T2 痛点与物理反馈", "multi_scene_proof": "T3 多场景价值证明"}
 VERSION = "2026-08-06-localized-v1"
