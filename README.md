@@ -1,103 +1,107 @@
 # 短视频带货全链路自动化工作后台
 
-围绕飞书多维表格搭建的短视频运营后台。前台分为「视频复刻」「豆包视频」「兼职成片」「Prompt配置」四个工作区；Dola 本地工作台已从前台退役，后端兼容接口暂时保留。
+以飞书多维表格承载运营协作，以 Python/Flask 执行业务流程的短视频工作台。生产部署在 Railway；Redis 保存任务与检查点，PostgreSQL 保存持久化业务数据，R2/上传网关保存媒体文件。
 
-## 数据流
+## 接手前先读：代码与生产基线
 
-1. 从素材输入表读取商品名称、爆款视频链接、商品图片、商品组图提示词、地区。
-2. 用 TikHub 解析 TikTok 分享链接并下载原视频。
-3. 用 yunwu 渠道 Gemini 模型理解爆款视频，只输出最终视频生成 Prompt；Prompt 中文为主，口播和视频内文案使用目标地区语言。
-4. 默认截取爆款视频第一帧，和商品主图一起作为 NewToken `gpt-image-2` 系列模型的参考图，生成 1 张商品组图并转存 R2；也可以切换为其它单一模板。
-5. 在「爆款复刻视频生成任务」表创建 1 条视频任务，写入视频生成 Prompt 和参考图链接。
-6. 手动触发任务表视频生成时，调用 CPA `/v1/videos`，下载结果视频并转存 R2，再写回任务表。
-7. 可把已完成的视频任务同步到发布表「视频生成列表」。
-8. 豆包视频支持 MY（马来语）/ MY_EN（马来英语）/ PH / TH / ID（印尼语）/ MX（墨西哥西班牙语）国家语言配置；按国家与语言选择 Seedance Prompt，并把选中记录幂等同步到「数据表-兼职」。目标任务进入「接单中」或「已完成」后，系统不会覆盖兼职人员的工作数据。
+截至 **2026-11-11**，近期生产更新采用维护者本地受控上传 Railway 的方式发布；GitHub `main` **尚未完整对齐近期生产能力**。本次文档更新不代表业务代码已同步，也不代表自动部署、CI 或分支保护已经开启。
 
-## 本地运行
+- 不要把旧 `main` 直接部署到生产，以免覆盖线上新功能。
+- 修改线上问题前，请维护者提供与生产版本对应的提交/开发分支；记录提交 SHA 与 `/healthz` 的 release 标识。
+- 仓库找不到某个线上模块时，先确认基线，不能据此自行重写一套。
+- 本地存在未提交改动时，不要整批提交或覆盖；从维护者确认的基线新建隔离分支。
+
+## 开发者与 Agent 入口
+
+| 你要做什么 | 从哪里开始 |
+| --- | --- |
+| 首次接手、权限和安全边界 | [AGENTS.md](AGENTS.md) |
+| 接任务、建分支、测试、提 PR | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| 复现问题、查任务、定位故障 | [问题定位指南](docs/agents/debugging.md) |
+| 业务名词和历史决策 | [CONTEXT.md](CONTEXT.md)、[ADR](docs/adr/) |
+| Issue 状态与依赖 | [Issue tracker](docs/agents/issue-tracker.md)、[分诊标签](docs/agents/triage-labels.md) |
+
+**协作约定：开发者/Agent 改代码、测试并提 PR；维护者审核、合并并决定上线。** PR 模板与 CODEOWNERS 用于规范交接；强制审核、禁止直推及自动部署需要管理员另外配置，不会因文档存在而自动生效。
+
+## 工作台业务范围
+
+以下是维护者当前管理的线上流程概览，**不是对本仓库旧基线已具备全部功能的承诺**：
+
+1. **爆款复刻**：参考视频/商品素材 → 视频理解与 Prompt → 参考图 → 视频任务 → 成片。
+2. **豆包素材**：库存检查 → 图片转存 → 可选人脸检测与白底图修复 → Prompt 与独立发布元数据 → 兼职表。发布同步是后续独立动作。
+3. **兼职成片**：审核完成视频 → 按资格、国家、权重/等级及配额匹配 AI 账号 → 发布表。
+4. **视频搬运**：明确拥有使用权的视频/Excel → 受限编辑 → R2 成片 → 文案改写 → 仅匹配参与发布的搬运账号 → 发布表“待发布”。不等于直接向 TikTok 发帖，也不承诺平台认可原创。
+5. **运营配置与观察**：Prompt/合规层、AI 与 TikHub 渠道、账号健康、权重与经营观察。启用状态以当前版本和配置为准。
+
+AI 与搬运账号池不得混用。模型及渠道以任务快照和已启用配置为准，不从旧 README 的默认值推断当前生产渠道。每次修改流程前先核对相关 ADR 和基线。
+
+## 本地开发
+
+建议使用与 [Dockerfile](Dockerfile) 一致的 Python 主次版本（当前为 3.13）、Node.js 22+、Git。媒体测试还需要 `ffmpeg` 和 `ffprobe`。
 
 ```bash
+git clone https://github.com/Yeadon8888/viral-remix-automation.git
+cd viral-remix-automation
+git status --short
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt pytest pytest-subtests
 cp .env.example .env
-python app.py
 ```
 
-默认访问 `http://localhost:38888`。
+先按 CONTRIBUTING 核对干净工作区与维护者确认的提交 SHA，再创建开发分支；不要直接把刚拉到的旧 main 当作生产基线。
 
-## Railway 环境变量
+**先配置测试资源，再运行服务。** 不要直接照抄示例中的历史表 ID、媒体前缀或渠道；它们不是可安全写入的测试环境。没有测试资源时，先运行 mock 单元测试，不接生产飞书、Redis、数据库或付费模型。
 
-必填：
+需要由维护者提供的配置类别：
+
+| 类别 | 常见配置 | 开发要求 |
+| --- | --- | --- |
+| 管理鉴权 | `ADMIN_TOKEN` | 独立测试令牌，不使用生产管理员令牌 |
+| 飞书 | `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_APP_TOKEN`、各 `FEISHU_*_TABLE_ID` | 独立测试 Base、表和应用权限 |
+| 任务/持久化 | `REDIS_URL`、`DATABASE_URL`、`COORDINATION_REQUIRED` | 隔离实例或维护者批准的隔离配置，不能共用生产任务队列 |
+| 媒体存储 | 上传网关配置或 `R2_*` | 测试 bucket/前缀；生命周期规则由存储端确认 |
+| 外部模型/查询 | Gemini/AI 渠道、TikHub、图片/视频接口配置 | 默认 mock；真实调用需确认费用、用途和上限 |
+
+可用字段及默认值见 [api/config.py](api/config.py) 与 [.env.example](.env.example)；较新版本可能增加网页端加密配置，以对应基线代码为准。不要在文档、PR、日志、命令行参数或截图中放 Key、Cookie、数据库密码。
+
+配置审核后运行：
 
 ```bash
-ADMIN_TOKEN=
-REDIS_URL=
-DATABASE_URL=
-COORDINATION_REQUIRED=1
-FEISHU_APP_ID=
-FEISHU_APP_SECRET=
-FEISHU_APP_TOKEN=H3RybjMFqabStts0zFUcWrz9nvb
-FEISHU_SOURCE_TABLE_ID=tblDEJZwbA7iEuL1
-FEISHU_TASK_TABLE_ID=tblJSkNvzYaku9Kg
-FEISHU_PROMPT_TABLE_ID=tblvFcsSoHnTP5Te
-FEISHU_DOUBAO_TABLE_ID=tblvHL2tMBrksvpH
-FEISHU_PART_TIME_TABLE_ID=tblhFSNlmKkeJFVK
-FEISHU_PUBLISH_TABLE_ID=tbl0D4WlwbkxtrZx
-TIKHUB_API_KEY=
-GEMINI_API_KEY=
-NEWTOKEN_IMAGE_API_KEY=
-CPA_API_KEY=
-UPLOAD_API_URL=
-UPLOAD_API_KEY=
+python -m flask --app app --no-debug run --host 127.0.0.1 --port 38888 --no-debugger --no-reload
 ```
 
-常用可选项：
+访问 `http://127.0.0.1:38888`。该命令仅绑定本机且关闭调试器/自动重载；旧基线的 `python app.py` 会监听 0.0.0.0 并开启 debug，不作为默认协作启动方式。
+
+## 测试
 
 ```bash
-GEMINI_BASE_URL=https://yunwu.ai
-GEMINI_MODEL=gemini-3.1-flash-lite
-GEMINI_REQUEST_CONCURRENCY=6
-GEMINI_MIN_INTERVAL_SECONDS=0.25
-BATCH_FACE_CONCURRENCY=6
-NEWTOKEN_IMAGE_BASE_URL=https://api.newtoken.club
-NEWTOKEN_IMAGE_MODEL=gpt-image-2-1K
-IMAGE_SCENE_STYLES=viral_first_frame,lifestyle,model,detail,flatlay,outdoor,studio
-CPA_BASE_URL=https://cliproxyapi-production-2dde.up.railway.app
-CPA_VIDEO_MODEL=grok-imagine-video-1.5-preview
-CPA_SECONDS=10
-CPA_SIZE=720x1280
-CPA_RESOLUTION=720p
-CPA_PRESET=normal
-UPLOAD_PREFIX=vidclaw-assets
-R2_PREFIX=viral-remix-7d
+python -m pytest -q
+node --test tests/*.js
 ```
 
-推荐复用 vidclaw 的上传网关：`UPLOAD_API_URL / UPLOAD_API_KEY / UPLOAD_PREFIX`。如果没有上传网关，也可以改用直连 R2 的 `R2_ENDPOINT / R2_ACCESS_KEY / R2_SECRET_KEY / R2_BUCKET / R2_PUBLIC_URL`。`R2_PREFIX` 用来把本工具上传的图片和视频放在独立前缀下。7 天自动清理需要在 Cloudflare R2 bucket 上配置生命周期规则，例如删除 `vidclaw-assets/viral-remix-7d/` 前缀下超过 7 天的对象。
+先运行相关用例，再运行全量回归。缺少 FFmpeg 导致的跳过必须在 PR 中说明；不得把“测试跳过”写成媒体流程已验证。不把真实飞书写入、模型付费或上线当作单元测试步骤。
 
-## API
+## 诊断入口
 
-- `GET /api/health`：检查缺失环境变量。
-- `GET /api/countries`：读取豆包视频支持的国家语言配置；`code` 是稳定配置码，例如 `MY`、`MY_EN`、`ID`、`MX`。
-- `GET /api/materials`：读取素材输入表。
-- `POST /api/materials/<record_id>/analyze-video`：理解爆款视频并生成中文视频生成 Prompt。
-- `POST /api/materials/<record_id>/store-image`：商品主图转存对象存储。
-- `POST /api/materials/<record_id>/generate-images`：生成并转存商品组图。
-- `POST /api/materials/<record_id>/create-tasks`：基于 Prompt 和商品组图创建视频任务。
-- `POST /api/materials/<record_id>/prepare`：兼容旧的一键串联处理。
-- `POST /api/materials/batch-prepare`：批量处理素材。
-- `GET /api/tasks`：读取生成任务表。
-- `POST /api/tasks/<record_id>/generate-video`：单条生成视频。
-- `POST /api/tasks/batch-generate-video`：批量生成视频。
-- `POST /api/tasks/sync-publish`：把已完成任务的标题、文案、标签、商品标题和视频链接同步到发布表。
-- `GET /api/doubao-items/page`：按飞书游标读取全部豆包记录，不受 500 条限制。
-- `POST /api/doubao-items/batch-operation`：豆包素材统一批量入口，支持 `process_workflow`（按流程自动执行）、`store_images`、`detect_faces`、`delete_face_records`、`generate_prompts`、`sync_part_time`、`sync_publish`。
-- `POST /api/doubao-items/<record_id>/generate-prompt`：按 `country_code` 生成单条国家化 Prompt。
-- `POST /api/doubao-items/batch-generate-prompts`：用一个后台任务批量生成国家化 Prompt。
-- `POST /api/doubao-items/<record_id>/sync-part-time`：幂等同步单条记录到兼职表。
-- `POST /api/doubao-items/batch-sync-part-time`：批量同步已选记录，并汇总创建、更新、冲突和失败数。
+| 入口 | 用途 |
+| --- | --- |
+| `GET /healthz` | Worker、Redis/PostgreSQL 健康及版本提供的 release；不是任务完成证明 |
+| `GET /api/health` | 业务配置检查 |
+| `GET /api/jobs?limit=100` | 服务器任务列表；不以浏览器缓存判断后台有无任务 |
+| `GET /api/jobs/<job_id>` | 单任务状态、结果与可用进度 |
+| `GET /api/logs` | 诊断日志；分享前必须脱敏 |
 
-豆包素材按固定顺序处理：先把附件或外部图片链接转存到自有对象存储，再使用配置的 Gemini 模型检测人脸，只有“无人脸”的当前图片才能生成提示词和同步兼职表。图片链接发生变化后，旧检测结果自动失效；“含人脸”与“疑似人脸”的豆包素材记录可在后台确认后整条删除。发布表同步会携带豆包素材表中的 `商品id`，写入发布表 `商品ID` 字段，并继续按兼职记录 ID / 视频链接幂等更新。
+旧基线可能没有 release 字段；此时记“未知”，请维护者提供部署 ID 与提交 SHA 的对应关系，不把缺字段本身当成服务故障。
 
-豆包素材表需要以下字段：`商品id`、`后台创建时间`（自动创建时间）、`人脸检测状态`、`人脸检测说明`、`人脸检测时间`、`人脸检测图片链接`、`人脸检测模型`。发布表需要文本字段 `商品ID`。豆包页面默认按 `后台创建时间 DESC` 从飞书服务端读取，全部游标页和真实行号加载完成后统一显示；也可以切换为最早优先。页面显示的“行”来自独立的飞书原始顺序索引（`record_id → 行号`），不使用排序后序号或总数倒推，因此中间删除过记录时仍与多维表格当前行号一致。兼职成片页面支持按真实行号正序或倒序查看。
+生产是否提供某字段或路由，必须以对应发布版本为准。配置了管理鉴权时，`/api/*` 需要授权；不要公开令牌来“方便排查”。停止、失败重试、同步、配置保存等 POST 操作会改变业务状态，不属于只读诊断。
 
-如果设置了 `ADMIN_TOKEN`，所有 `/api/*` 请求都需要带 `X-Admin-Token` 请求头。
+完整排查步骤、常见错误和模块地图见[问题定位指南](docs/agents/debugging.md)。
+
+## 发布
+
+**当前：** 维护者受控发布。贡献者不能直接运行 Railway 上线、重启、变量修改、飞书迁移或任务重试。
+
+**目标流程（待单独配置）：** PR → 自动测试 → 维护者审核 → 合并 `main` → Railway 等待 CI 成功后部署 → 健康检查与业务验收。配置前须先完成生产代码基线对齐；不得直接把旧 `main` 接成生产源。
+
+涉及功能、算法或修复的生产发布，必须按 [AGENTS.md](AGENTS.md) 完成飞书“110自动化迭代记录”的发布前/验收后留痕。纯文档 PR 不会触发业务部署，本 PR 不开启自动部署或调整权限。
