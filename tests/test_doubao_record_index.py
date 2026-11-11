@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 from api.services.doubao_record_index import DoubaoRecordIndex
@@ -122,7 +123,7 @@ class DoubaoRecordIndexTests(unittest.TestCase):
         )
         self.assertEqual(feishu.page_calls, 0)
 
-    def test_expired_index_is_rebuilt_before_serving_row_numbers(self):
+    def test_expired_index_serves_snapshot_and_schedules_refresh(self):
         now = [100.0]
 
         class FakeFeishu:
@@ -149,8 +150,44 @@ class DoubaoRecordIndexTests(unittest.TestCase):
         feishu.record_id = "rec-new"
         now[0] = 1000
 
-        self.assertEqual(index.row_numbers(), {"rec-new": 1})
+        with patch.object(index, "_refresh_in_background") as refresh:
+            self.assertEqual(index.row_numbers(), {"rec-old": 1})
+            refresh.assert_called_once()
+        self.assertEqual(feishu.page_calls, 1)
+        self.assertEqual(index.row_numbers(force_refresh=True), {"rec-new": 1})
         self.assertEqual(feishu.page_calls, 2)
+
+    def test_persisted_snapshot_survives_restart_without_expiration(self):
+        class Redis:
+            value = None
+            def set(self, key, value, **kwargs):
+                self.value = value
+                self.options = kwargs
+            def get(self, key):
+                return self.value
+
+        settings = SimpleNamespace(doubao_table_id="table", redis_url="mock")
+        redis = Redis()
+        original = DoubaoRecordIndex(settings, None, clock=lambda: 100)
+        original._redis = redis
+        original._save(["rec-a", "rec-b"])
+        self.assertNotIn("ex", redis.options)
+        restarted = DoubaoRecordIndex(settings, None, clock=lambda: 1000)
+        restarted._redis = redis
+        with patch.object(restarted, "_refresh_in_background") as refresh:
+            self.assertEqual(restarted.row_numbers(), {"rec-a": 1, "rec-b": 2})
+            refresh.assert_called_once()
+
+    def test_incomplete_refresh_preserves_previous_snapshot(self):
+        class Feishu:
+            def list_records_page(self, *args, **kwargs):
+                return {"items": [{"record_id": "new"}], "total": 2,
+                        "has_more": True, "page_token": ""}
+        index = DoubaoRecordIndex(SimpleNamespace(doubao_table_id="table", redis_url=""), Feishu())
+        index._save(["old"])
+        with self.assertRaises(RuntimeError):
+            index.row_numbers(force_refresh=True)
+        self.assertEqual(index._record_ids, ["old"])
 
 
 if __name__ == "__main__":

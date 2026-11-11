@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import json
-from threading import Lock
+from threading import Lock, Thread
+import logging
 import time
 from typing import Any, Callable
 
@@ -27,6 +28,7 @@ class DoubaoRecordIndex:
         self.feishu = feishu
         self._clock = clock
         self._lock = Lock()
+        self._refresh_lock = Lock()
         self._record_ids: list[str] = []
         self._cached_at = 0.0
         self._redis = None
@@ -93,38 +95,65 @@ class DoubaoRecordIndex:
         required_end: int = 0,
         force_refresh: bool = False,
     ) -> tuple[list[str], int]:
-        with self._lock:
-            if force_refresh:
-                self.invalidate()
-            cached_ids = self._load()
-            cache_fresh = bool(
-                self._cached_at
-                and self._clock() - self._cached_at < INDEX_CACHE_TTL_SECONDS
-            )
-            if cached_ids and cache_fresh and (not required_end or required_end <= len(cached_ids)):
+        # A complete persisted snapshot remains usable while it is refreshed.
+        # Explicit refresh and ranges beyond it still require a current scan.
+        if not force_refresh:
+            with self._lock:
+                cached_ids = self._load()
+                stale = self._clock() - self._cached_at >= INDEX_CACHE_TTL_SECONDS
+            if cached_ids and (not required_end or required_end <= len(cached_ids)):
+                if stale:
+                    self._refresh_in_background()
                 return cached_ids, len(cached_ids)
+        with self._refresh_lock:
+            return self._rebuild()
 
-            first_page = self.feishu.list_records_page(
+    def _refresh_in_background(self) -> None:
+        if not self._refresh_lock.acquire(blocking=False):
+            return
+
+        def refresh():
+            try:
+                self._rebuild()
+            except Exception:
+                logging.getLogger(__name__).warning("Doubao row index refresh failed; retaining previous snapshot")
+            finally:
+                self._refresh_lock.release()
+
+        try:
+            Thread(target=refresh, name="doubao-row-index-refresh", daemon=True).start()
+        except Exception:
+            self._refresh_lock.release()
+            raise
+
+    def _rebuild(self) -> tuple[list[str], int]:
+        # Do network I/O outside the snapshot lock so existing readers proceed.
+        first_page = self.feishu.list_records_page(
+            self.settings.doubao_table_id,
+            page_size=500,
+            field_names=["商品名称"],
+        )
+        total = int(first_page.get("total") or 0)
+        record_ids = self._record_ids_from(first_page["items"])
+        page = first_page
+        seen_tokens = set()
+        while page["has_more"]:
+            page_token = str(page.get("page_token") or "")
+            if not page_token or page_token in seen_tokens:
+                raise RuntimeError("Incomplete Doubao row index: invalid pagination cursor")
+            seen_tokens.add(page_token)
+            page = self.feishu.list_records_page(
                 self.settings.doubao_table_id,
                 page_size=500,
+                page_token=page_token,
                 field_names=["商品名称"],
             )
-            total = int(first_page.get("total") or 0)
-            record_ids = self._record_ids_from(first_page["items"])
-            page = first_page
-            while page["has_more"]:
-                page_token = str(page.get("page_token") or "")
-                if not page_token:
-                    break
-                page = self.feishu.list_records_page(
-                    self.settings.doubao_table_id,
-                    page_size=500,
-                    page_token=page_token,
-                    field_names=["商品名称"],
-                )
-                record_ids.extend(self._record_ids_from(page["items"]))
+            record_ids.extend(self._record_ids_from(page["items"]))
+        if total and len(record_ids) != total:
+            raise RuntimeError("Incomplete Doubao row index: record count mismatch")
+        with self._lock:
             self._save(record_ids)
-            return record_ids, total or len(record_ids)
+        return record_ids, total or len(record_ids)
 
     @staticmethod
     def _record_ids_from(records: list[dict[str, Any]]) -> list[str]:
@@ -178,7 +207,6 @@ class DoubaoRecordIndex:
                     ensure_ascii=False,
                     separators=(",", ":"),
                 ),
-                ex=86400,
             )
         except Exception:
             return
