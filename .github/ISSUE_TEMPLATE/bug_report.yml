@@ -1,0 +1,53 @@
+name: Bug 反馈 / Agent 排查入口
+description: 提供版本、最小复现与脱敏证据，先定位再决定修复范围。
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先阅读 README、AGENTS.md 与 CONTRIBUTING.md。
+        请勿提交 Key、Cookie、数据库密码、授权头、未脱敏 HAR 或签名 URL。
+        反馈问题本身不授权生产写入、重试、付费或部署。
+  - type: input
+    id: baseline
+    attributes:
+      label: 版本与基线
+      description: 填提交 SHA、生产 release；不知道请写未知，不能猜。
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: 发生环境
+      options:
+        - 本地 mock / 测试环境
+        - 预览环境
+        - 生产环境（当前仅报告 / 只读排查）
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 最小复现、预期和实际
+      description: 页面、点击顺序、筛选条件、发生时间/时区、脱敏任务 ID。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 脱敏证据与已经检查的内容
+      description: HTTP 状态、错误码/request_id、任务状态、相关日志；区分事实与假设。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 建议范围、验收标准与未知项
+      description: 希望改什么、不改什么；是否缺少基线、权限或测试资源。
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 安全确认
+      options:
+        - label: 我已移除秘密和敏感数据，未把诊断误当作生产操作授权。
+          required: true
