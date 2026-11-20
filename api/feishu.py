@@ -54,7 +54,12 @@ class FeishuClient:
         method = method.upper()
         headers = kwargs.pop("headers", self.headers())
         timeout = kwargs.pop("timeout", 60)
-        attempts = 5 if method == "GET" else (3 if method in {"PUT", "DELETE"} else 1)
+        # batch_get is a read despite using POST. Never replay create/upload
+        # requests: their outcome may be unknown after an upstream failure.
+        safe_read = method == "GET" or (
+            method == "POST" and path.endswith("/records/batch_get")
+        )
+        attempts = 8 if safe_read else (3 if method in {"PUT", "DELETE"} else 1)
         last_data: dict[str, Any] = {}
         for attempt in range(attempts):
             resp = self._session.request(
@@ -77,10 +82,12 @@ class FeishuClient:
                 or resp.status_code >= 500
                 or data.get("code") == 1254291
                 or "data not ready" in message.lower()
+                or "数据尚未准备好" in message
+                or "数据未准备好" in message
             )
             if not transient or attempt + 1 >= attempts:
                 break
-            time.sleep(0.5 * (2 ** attempt))
+            time.sleep(min(8.0, 0.5 * (2 ** attempt)))
         raise FeishuError(last_data.get("msg") or str(last_data)[:500])
 
     def list_records_page(
