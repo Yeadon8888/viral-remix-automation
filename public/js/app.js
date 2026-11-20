@@ -2128,8 +2128,18 @@ async function refreshStaleActivePage() {
   }
 }
 
+function visibleJobHistory(jobs) {
+  let hasBackfill = false;
+  return [...jobs].reverse().filter((job) => {
+    if (jobLabel(job) !== "管理表展示自动补写") return true;
+    if (hasBackfill) return false;
+    hasBackfill = true;
+    return true;
+  }).slice(0, 20);
+}
+
 async function loadJobs() {
-  const data = await api("/api/jobs?limit=30");
+  const data = await api("/api/jobs?limit=100");
   const previousActiveJobIds = new Set(state.jobs
     .filter((job) => ["queued", "running"].includes(job.status))
     .map((job) => job.id));
@@ -2160,7 +2170,7 @@ async function loadJobs() {
   state.lastActiveJobNames = nextActiveNames;
   if (nextSnapshot !== state.lastJobsSnapshot) {
     state.lastJobsSnapshot = nextSnapshot;
-    const visibleJobs = data.data.slice(-20).reverse();
+    const visibleJobs = visibleJobHistory(data.data);
     $("jobs").innerHTML = visibleJobs.map(renderJob).join("");
     bindJobActions();
     renderJobSummary(visibleJobs);
